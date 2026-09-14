@@ -1,0 +1,14 @@
+{
+  "name": "nosh-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Nosh WhatsApp-first backend",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
