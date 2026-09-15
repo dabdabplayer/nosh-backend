@@ -398,6 +398,8 @@ async function handleWhatsAppWebhook(request, response, url) {
     return;
   }
 
+  console.info("Received WhatsApp webhook POST.");
+
   try {
     const rawBody = await readRawBody(request);
     const signature = request.headers["x-hub-signature-256"];
@@ -406,6 +408,9 @@ async function handleWhatsAppWebhook(request, response, url) {
       typeof signature !== "string" ||
       !verifyWebhookSignature(rawBody, signature, config.whatsapp.appSecret)
     ) {
+      console.warn("Rejected WhatsApp webhook POST: invalid signature.", {
+        hasSignatureHeader: typeof signature === "string",
+      });
       sendJson(response, 401, { error: "invalid_webhook_signature" });
       return;
     }
@@ -413,6 +418,7 @@ async function handleWhatsAppWebhook(request, response, url) {
     const payload = parseWhatsAppWebhookPayload(rawBody);
 
     if (payload === undefined) {
+      console.warn("Rejected WhatsApp webhook POST: unparseable payload.");
       sendJson(response, 400, { error: "invalid_whatsapp_webhook_payload" });
       return;
     }
