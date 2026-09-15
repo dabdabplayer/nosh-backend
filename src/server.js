@@ -1,6 +1,7 @@
 import http from "node:http";
 import { config } from "./config.js";
 import { InProcessMessageIdempotency } from "./message-idempotency.js";
+import { sendTextMessage } from "./whatsapp-client.js";
 import {
   extractInboundTextMessages,
   parseWhatsAppWebhookPayload,
@@ -11,6 +12,11 @@ import {
 
 const serviceName = "nosh-backend";
 const processedMessageIds = new InProcessMessageIdempotency();
+
+// Placeholder reply until conversation orchestration (intent handling,
+// Swiggy MCP calls) lands in a later increment.
+const PLACEHOLDER_REPLY_TEXT =
+  "Thanks for messaging Nosh! We're still setting things up — full replies are coming soon.";
 
 function sendJson(response, statusCode, payload) {
   response.writeHead(statusCode, {
@@ -37,6 +43,28 @@ function acknowledgeIncomingTextMessages(messages) {
   console.info("Received supported inbound WhatsApp text message(s).", {
     count: messages.length,
   });
+}
+
+async function replyToIncomingTextMessages(messages) {
+  if (!config.whatsapp.sendEnabled || messages.length === 0) {
+    return;
+  }
+
+  await Promise.allSettled(
+    messages.map(async (message) => {
+      try {
+        await sendTextMessage({
+          accessToken: config.whatsapp.accessToken,
+          apiVersion: config.whatsapp.apiVersion,
+          phoneNumberId: message.phoneNumberId,
+          to: message.from,
+          text: PLACEHOLDER_REPLY_TEXT,
+        });
+      } catch (error) {
+        console.error("Failed to send WhatsApp reply.", { name: error.name });
+      }
+    }),
+  );
 }
 
 async function handleWhatsAppWebhook(request, response, url) {
@@ -88,8 +116,9 @@ async function handleWhatsAppWebhook(request, response, url) {
     const unprocessedMessages = processedMessageIds.takeUnprocessed(messages);
     acknowledgeIncomingTextMessages(unprocessedMessages);
 
-    // Persistence, orchestration, and replies arrive in later increments.
+    // Persistence and conversation orchestration arrive in later increments.
     sendJson(response, 200, { status: "received" });
+    await replyToIncomingTextMessages(unprocessedMessages);
   } catch (error) {
     if (error.code === "BODY_TOO_LARGE") {
       sendJson(response, 413, { error: "payload_too_large" });

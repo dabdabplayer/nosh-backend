@@ -1,5 +1,6 @@
 const DEFAULT_PORT = 3000;
 const DEFAULT_WHATSAPP_WEBHOOK_PATH = "/webhooks/whatsapp";
+const DEFAULT_WHATSAPP_API_VERSION = "v21.0";
 
 function readPort(value) {
   if (value === undefined || value === "") {
@@ -51,6 +52,14 @@ if (Boolean(whatsappVerifyToken) !== Boolean(metaAppSecret)) {
   );
 }
 
+const whatsappAccessToken = readOptionalSecret(
+  process.env.WHATSAPP_ACCESS_TOKEN,
+  "WHATSAPP_ACCESS_TOKEN",
+);
+const whatsappApiVersion =
+  readOptionalSecret(process.env.WHATSAPP_API_VERSION, "WHATSAPP_API_VERSION") ??
+  DEFAULT_WHATSAPP_API_VERSION;
+
 // SWIGGY_FOOD_TEST_TOKEN is a stand-in for per-user OAuth 2.1 + PKCE tokens
 // (see https://mcp.swiggy.com/builders/docs/start/authenticate) until that
 // flow is implemented. Do not use this path in production.
@@ -71,8 +80,11 @@ export const config = Object.freeze({
   environment: process.env.NODE_ENV ?? "development",
   port: readPort(process.env.PORT),
   whatsapp: Object.freeze({
+    accessToken: whatsappAccessToken,
+    apiVersion: whatsappApiVersion,
     appSecret: metaAppSecret,
     enabled: Boolean(whatsappVerifyToken && metaAppSecret),
+    sendEnabled: Boolean(whatsappAccessToken),
     verifyToken: whatsappVerifyToken,
     webhookPath: readWebhookPath(process.env.WHATSAPP_WEBHOOK_PATH),
   }),
