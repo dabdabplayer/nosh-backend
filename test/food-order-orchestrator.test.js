@@ -17,7 +17,14 @@ function payload(data) {
 }
 
 function cartPayload(data) {
-  return payload({ statusCode: 0, statusMessage: "ok", data });
+  return payload({ statusCode: 0, statusMessage: "CART_UPDATED_SUCCESSFULLY", data });
+}
+
+// A failed mutation can still surface with a non-zero statusCode while
+// echoing back a data object (e.g. the cart unchanged) - confirmed via the
+// real envelope shape, { statusCode, statusMessage, data }, live.
+function cartFailurePayload(data) {
+  return payload({ statusCode: 1, statusMessage: "FAILED", data });
 }
 
 const nvidiaNim = Object.freeze({
@@ -91,6 +98,80 @@ test("parseOrderConfirmationReply recognizes common negative replies", () => {
 
 test("parseOrderConfirmationReply returns undefined for anything else", () => {
   assert.equal(parseOrderConfirmationReply("maybe later"), undefined);
+});
+
+// --- getFoodOrderReply: restaurant selection by number ---
+
+test("getFoodOrderReply: a bare number picks the restaurant off the shown list, deterministically (no NLU call)", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", {
+    addressId: "addr-1",
+    restaurantCandidates: [
+      { id: "r-billu", name: "Billu's Pasta Hut (Ad)" },
+      { id: "r-kfc", name: "KFC (Ad)" },
+    ],
+  });
+  const pendingOrderConfirmations = new PendingOrderConfirmations();
+
+  let classifyOrderIntentCalled = false;
+  const reply = await getFoodOrderReply({
+    message: message("2"),
+    swiggyFoodClient: fakeClient(),
+    pendingCartSessions,
+    pendingOrderConfirmations,
+    classifyOrderIntent: async () => {
+      classifyOrderIntentCalled = true;
+      return undefined;
+    },
+    nvidiaNim,
+  });
+
+  assert.equal(classifyOrderIntentCalled, false);
+  assert.equal(reply, "Got it — what would you like from KFC (Ad)?");
+  assert.deepEqual(pendingCartSessions.peek("sender-1"), {
+    addressId: "addr-1",
+    restaurantId: "r-kfc",
+    restaurantName: "KFC (Ad)",
+  });
+});
+
+test("getFoodOrderReply: an out-of-range or non-numeric reply falls through to normal intent classification", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", {
+    addressId: "addr-1",
+    restaurantCandidates: [{ id: "r-kfc", name: "KFC" }],
+  });
+  const pendingOrderConfirmations = new PendingOrderConfirmations();
+
+  const reply = await getFoodOrderReply({
+    message: message("from KFC add wings"),
+    swiggyFoodClient: fakeClient(),
+    pendingCartSessions,
+    pendingOrderConfirmations,
+    classifyOrderIntent: async () => undefined,
+    nvidiaNim,
+  });
+
+  assert.equal(reply, undefined);
+});
+
+test("getFoodOrderReply: works even when NVIDIA NIM is disabled, since restaurant selection is deterministic", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", {
+    addressId: "addr-1",
+    restaurantCandidates: [{ id: "r-kfc", name: "KFC" }],
+  });
+  const pendingOrderConfirmations = new PendingOrderConfirmations();
+
+  const reply = await getFoodOrderReply({
+    message: message("1"),
+    swiggyFoodClient: fakeClient(),
+    pendingCartSessions,
+    pendingOrderConfirmations,
+    nvidiaNim: { enabled: false },
+  });
+
+  assert.equal(reply, "Got it — what would you like from KFC?");
 });
 
 // --- getFoodOrderReply: add_to_cart ---
@@ -210,6 +291,62 @@ test("getFoodOrderReply: add_to_cart honors an explicit restaurant name instead 
   assert.deepEqual(pendingCartSessions.peek("sender-1"), {
     restaurantId: "r-pizzahut",
     restaurantName: "Pizza Hut",
+    addressId: "addr-1",
+  });
+});
+
+test("getFoodOrderReply: add_to_cart skips a sponsored ad ranked ahead of the actual named restaurant", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", { addressId: "addr-1" });
+  const pendingOrderConfirmations = new PendingOrderConfirmations();
+
+  const menuSearchCalls = [];
+  const updateFoodCartCalls = [];
+  const client = fakeClient({
+    searchRestaurants: async () =>
+      payload({
+        restaurants: [
+          { id: "r-ad", name: "Billu's Food Hut (Ad)", availabilityStatus: "OPEN" },
+          { id: "r-kfc", name: "KFC", availabilityStatus: "OPEN" },
+        ],
+      }),
+    searchMenu: async (params) => {
+      menuSearchCalls.push(params);
+      return payload({ items: [menuItem({ name: "Zinger Burger" })] });
+    },
+    updateFoodCart: async (params) => {
+      updateFoodCartCalls.push(params);
+      return cartPayload(cartData({ restaurant: { name: "KFC" } }));
+    },
+  });
+
+  const classifyOrderIntent = async () => ({
+    type: "add_to_cart",
+    query: "zinger burger",
+    quantity: 1,
+    restaurantName: "KFC",
+  });
+
+  const reply = await getFoodOrderReply({
+    message: message("from KFC add a zinger burger"),
+    swiggyFoodClient: client,
+    pendingCartSessions,
+    pendingOrderConfirmations,
+    classifyOrderIntent,
+    nvidiaNim,
+  });
+
+  assert.equal(menuSearchCalls.length, 1);
+  assert.equal(menuSearchCalls[0].restaurantIdOfAddedItem, "r-kfc");
+  // The actual mutation must target the real restaurant, not the ad -
+  // asserting the reply text alone wouldn't catch a wrong restaurantId
+  // reaching Swiggy.
+  assert.equal(updateFoodCartCalls.length, 1);
+  assert.equal(updateFoodCartCalls[0].restaurantId, "r-kfc");
+  assert.match(reply, /Added Zinger Burger to your cart/);
+  assert.deepEqual(pendingCartSessions.peek("sender-1"), {
+    restaurantId: "r-kfc",
+    restaurantName: "KFC",
     addressId: "addr-1",
   });
 });
@@ -344,6 +481,35 @@ test("getFoodOrderReply: add_to_cart sends the default variant selection, not an
       variantsV2: [{ group_id: "g-crust", variation_id: "v-crust-default" }],
     },
   ]);
+});
+
+test("getFoodOrderReply: add_to_cart does not report success when update_food_cart returns a non-zero statusCode", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
+  const pendingOrderConfirmations = new PendingOrderConfirmations();
+
+  const client = fakeClient({
+    searchMenu: async () => payload({ items: [menuItem()] }),
+    // A failed mutation can still echo back a data object (e.g. the
+    // unchanged cart) - a non-zero statusCode must never be read as "added".
+    updateFoodCart: async () => cartFailurePayload(cartData()),
+  });
+
+  const classifyOrderIntent = async () => ({ type: "add_to_cart", query: "margherita pizza", quantity: 1 });
+
+  const reply = await getFoodOrderReply({
+    message: message("add a margherita pizza"),
+    swiggyFoodClient: client,
+    pendingCartSessions,
+    pendingOrderConfirmations,
+    classifyOrderIntent,
+    nvidiaNim,
+  });
+
+  assert.doesNotMatch(reply, /Added/);
+  // Session must stay exactly as it was before the failed attempt - no
+  // restaurantName should get written in from a failed mutation's echo.
+  assert.deepEqual(pendingCartSessions.peek("sender-1"), { addressId: "addr-1", restaurantId: "r-1" });
 });
 
 test("getFoodOrderReply: add_to_cart reports a friendly message when nothing matches", async () => {

@@ -165,6 +165,20 @@ async function runRestaurantSearch(swiggyFoodClient, searchTerm, addressId, send
     return noOpenRestaurantsReply(searchTerm);
   }
 
+  // Lets a bare number reply (e.g. "2") pick a restaurant straight off this
+  // numbered list, the same way a bare number already picks an address
+  // above - without this, the list looked selectable the same way the
+  // address prompt is, but only "add X from <name>" actually worked
+  // (confirmed live). getFoodOrderReply resolves this deterministically,
+  // no NLU call needed, since food-order-orchestrator.js runs first
+  // whenever a cart session exists (see server.js).
+  if (senderId && pendingCartSessions) {
+    pendingCartSessions.set(senderId, {
+      addressId,
+      restaurantCandidates: openRestaurants.map((restaurant) => ({ id: restaurant.id, name: restaurant.name })),
+    });
+  }
+
   return formatRestaurantReply(searchTerm, openRestaurants);
 }
 

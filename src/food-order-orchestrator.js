@@ -1,4 +1,5 @@
 import { classifyOrderIntent as defaultClassifyOrderIntent } from "./nlu-client.js";
+import { parseAddressSelectionReply } from "./food-search-orchestrator.js";
 import { parseStructuredPayload } from "./swiggy-food-client.js";
 
 const MAX_COUPONS = 5;
@@ -32,8 +33,15 @@ const EMPTY_CART_REPLY = "Your cart is empty — search for something and ask me
 // Every tool that reads/writes the cart returns the real data nested under
 // `data` (confirmed live against the real Swiggy Food MCP server), unlike
 // search_restaurants/get_addresses which put fields at the top level.
+// Confirmed live (2026-09-15, real get_food_cart call): the actual envelope
+// is { statusCode, statusMessage, data }, e.g.
+// { statusCode: 0, statusMessage: "CART_UPDATED_SUCCESSFULLY", data: {...} }
+// - NOT the { success, data } shape the Builders Club docs page described
+// when fetched (that page was wrong/hallucinated for this tool; verify
+// against a live call, not the doc fetch, if this ever needs re-checking).
 function unwrapCartPayload(toolResult) {
-  return parseStructuredPayload(toolResult)?.data;
+  const payload = parseStructuredPayload(toolResult);
+  return payload?.statusCode === 0 ? payload.data : undefined;
 }
 
 function formatCartReply(cartData) {
@@ -454,6 +462,24 @@ export async function getFoodOrderReply({
   classifyOrderIntent = defaultClassifyOrderIntent,
   nvidiaNim,
 }) {
+  const session = pendingCartSessions.peek(message.from);
+
+  // A bare number reply to the restaurant list just shown (see
+  // runRestaurantSearch in food-search-orchestrator.js) is resolved
+  // deterministically here, the same way parseOrderConfirmationReply gates
+  // order placement - no NLU call needed, and it still works if NIM is
+  // down. Falls through to classifyOrderIntent below for anything that
+  // isn't a valid selection number (e.g. naming the restaurant instead).
+  if (session?.restaurantCandidates) {
+    const selectedIndex = parseAddressSelectionReply(message.text, session.restaurantCandidates.length);
+
+    if (selectedIndex !== undefined) {
+      const restaurant = session.restaurantCandidates[selectedIndex];
+      pendingCartSessions.set(message.from, { addressId: session.addressId, restaurantId: restaurant.id, restaurantName: restaurant.name });
+      return `Got it — what would you like from ${restaurant.name}?`;
+    }
+  }
+
   if (!nvidiaNim?.enabled) {
     return undefined;
   }
@@ -468,8 +494,6 @@ export async function getFoodOrderReply({
   if (!intent) {
     return undefined;
   }
-
-  const session = pendingCartSessions.peek(message.from);
 
   try {
     if (intent.type === "add_to_cart") {

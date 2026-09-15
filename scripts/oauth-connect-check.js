@@ -126,16 +126,15 @@ if (!config.swiggyFood.enabled) {
       return buildOrderConfirmationReply(message, pendingConfirmation);
     }
 
-    const classification = await classifyIncomingMessage(message, pendingAddressSelections, {
-      nvidiaNim: config.nvidiaNim,
-      pendingCartSessions,
-    });
+    // Same order-first-when-cart-active fix as server.js's buildReplyText:
+    // trying the search classifier first let it misread cart-continuation
+    // messages like "add chicken wings from KFC" as a brand new search
+    // (confirmed live) since deferring on cart-related messages was only a
+    // probabilistic prompt instruction, not a deterministic check.
+    const hasPendingAddressSelection = Boolean(pendingAddressSelections.peek(message.from));
+    const activeCartSession = pendingCartSessions.peek(message.from);
 
-    if (classification.type === "no_trigger") {
-      if (!pendingCartSessions.peek(message.from)) {
-        return "(no trigger matched - try \"find <something>\")";
-      }
-
+    if (activeCartSession && !hasPendingAddressSelection) {
       const outcome = await withSwiggyFoodClient(message.from, (swiggyFoodClient) =>
         getFoodOrderReply({
           message,
@@ -146,7 +145,22 @@ if (!config.swiggyFood.enabled) {
         }),
       );
 
-      return (outcome.authenticated ? outcome.result : undefined) ?? "(no order intent matched either)";
+      if (!outcome.authenticated) {
+        return "(no trigger matched - try \"find <something>\")";
+      }
+
+      if (outcome.result !== undefined) {
+        return outcome.result;
+      }
+    }
+
+    const classification = await classifyIncomingMessage(message, pendingAddressSelections, {
+      nvidiaNim: config.nvidiaNim,
+      pendingCartSessions,
+    });
+
+    if (classification.type === "no_trigger") {
+      return "(no trigger matched - try \"find <something>\")";
     }
 
     if (classification.type === "unrecognized_pending_reply") {

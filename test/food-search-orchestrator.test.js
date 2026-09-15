@@ -285,6 +285,39 @@ test("getFoodSearchReply searches immediately with a single unambiguous address"
   assert.match(reply, /⭐4.5/);
 });
 
+test("getFoodSearchReply records the shown restaurant list as selectable candidates on the cart session", async () => {
+  const pending = new PendingAddressSelections();
+  const pendingCartSessions = new PendingCartSessions();
+  const client = fakeSwiggyFoodClient({
+    getAddresses: async () => payload(singleAddress),
+    searchRestaurants: async () =>
+      payload({
+        restaurants: [
+          restaurant({ id: "r-1", name: "Louis Burger" }),
+          restaurant({ id: "r-2", name: "KFC" }),
+        ],
+      }),
+  });
+
+  await getFoodSearchReply({
+    message: message("find chicken wings"),
+    swiggyFoodClient: client,
+    pendingAddressSelections: pending,
+    pendingCartSessions,
+  });
+
+  // A bare number reply should be able to pick straight off this list, the
+  // same way a bare number already picks an address - see
+  // food-order-orchestrator.js's getFoodOrderReply, which reads this field.
+  assert.deepEqual(pendingCartSessions.peek("sender-1"), {
+    addressId: "addr-1",
+    restaurantCandidates: [
+      { id: "r-1", name: "Louis Burger" },
+      { id: "r-2", name: "KFC" },
+    ],
+  });
+});
+
 test("getFoodSearchReply prompts and does not search when addresses are ambiguous", async () => {
   const pending = new PendingAddressSelections();
   let searchCalled = false;

@@ -148,18 +148,20 @@ async function buildReplyText(message) {
     return buildOrderConfirmationReply(message, pendingConfirmation);
   }
 
-  const classification = await classifyIncomingMessage(message, pendingAddressSelections, {
-    nvidiaNim: config.nvidiaNim,
-    pendingCartSessions,
-  });
+  // An active cart gets first crack at the message via classifyOrderIntent,
+  // ahead of the search classifier. Previously the search classifier ran
+  // first and had to be trusted to defer on cart-related messages via its
+  // "cart-aware" prompt - confirmed live, a message like "add chicken wings
+  // from KFC" (naming a restaurant, which the cart-aware prompt treats as a
+  // possible "different restaurant" search) still got misread as a brand
+  // new search, re-prompting for an address and showing a restaurant list
+  // instead of adding to the cart. Trying the order classifier first removes
+  // that race: only if it finds no order intent do we fall through to
+  // search, so a genuinely new search still works while a cart is active.
+  const hasPendingAddressSelection = Boolean(pendingAddressSelections.peek(message.from));
+  const activeCartSession = pendingCartSessions.peek(message.from);
 
-  if (classification.type === "no_trigger") {
-    // No search trigger matched - if the sender has an active cart, try the
-    // cart/coupon/checkout intents before giving up on this message.
-    if (!pendingCartSessions.peek(message.from)) {
-      return PLACEHOLDER_REPLY_TEXT;
-    }
-
+  if (activeCartSession && !hasPendingAddressSelection) {
     const outcome = await withSwiggyFoodClient(message.from, (swiggyFoodClient) =>
       getFoodOrderReply({
         message,
@@ -170,7 +172,22 @@ async function buildReplyText(message) {
       }),
     );
 
-    return (outcome.authenticated ? outcome.result : undefined) ?? PLACEHOLDER_REPLY_TEXT;
+    if (!outcome.authenticated) {
+      return PLACEHOLDER_REPLY_TEXT;
+    }
+
+    if (outcome.result !== undefined) {
+      return outcome.result;
+    }
+  }
+
+  const classification = await classifyIncomingMessage(message, pendingAddressSelections, {
+    nvidiaNim: config.nvidiaNim,
+    pendingCartSessions,
+  });
+
+  if (classification.type === "no_trigger") {
+    return PLACEHOLDER_REPLY_TEXT;
   }
 
   // Doesn't need a Swiggy call at all - just re-prompts the existing
