@@ -20,8 +20,8 @@ if (!firstMessageText) {
     'Usage: node scripts/food-search-check.js "find biryani" ["<address selection reply>"]',
   );
   process.exitCode = 1;
-} else if (!config.swiggyFood.enabled) {
-  console.error("SWIGGY_FOOD_MCP_URL and SWIGGY_FOOD_TEST_TOKEN are not both set.");
+} else if (!config.swiggyFood.enabled || !config.swiggyFood.testToken) {
+  console.error("SWIGGY_FOOD_MCP_URL and SWIGGY_FOOD_TEST_TOKEN must both be set.");
   process.exitCode = 1;
 } else {
   const swiggyFoodClient = createSwiggyFoodClient({

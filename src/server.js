@@ -1,10 +1,13 @@
 import http from "node:http";
 import { config } from "./config.js";
-import { getFoodSearchReply } from "./food-search-orchestrator.js";
+import { classifyIncomingMessage, getFoodSearchReply } from "./food-search-orchestrator.js";
 import { InProcessMessageIdempotency } from "./message-idempotency.js";
 import { PendingAddressSelections } from "./pending-address-selection.js";
+import { PendingConnectLinks } from "./pending-connect-links.js";
 import { PendingOAuthExchanges } from "./pending-oauth-exchanges.js";
+import { PendingPostAuthActions } from "./pending-post-auth-actions.js";
 import { createSwiggyFoodClient } from "./swiggy-food-client.js";
+import { buildConnectReplyText, resolveSwiggyAccessToken } from "./swiggy-auth-flow.js";
 import {
   buildAuthorizeUrl,
   exchangeCodeForToken,
@@ -23,13 +26,13 @@ import {
 } from "./whatsapp-webhook.js";
 
 const serviceName = "nosh-backend";
+const swiggyOAuthOrigin = new URL(config.swiggyOAuth.redirectUri).origin;
 const processedMessageIds = new InProcessMessageIdempotency();
 const pendingAddressSelections = new PendingAddressSelections();
 const pendingOAuthExchanges = new PendingOAuthExchanges();
+const pendingConnectLinks = new PendingConnectLinks();
+const pendingPostAuthActions = new PendingPostAuthActions();
 const swiggyTokenStore = new SwiggyTokenStore(config.swiggyOAuth.tokenStorePath);
-const swiggyFoodClient = config.swiggyFood.enabled
-  ? createSwiggyFoodClient({ mcpUrl: config.swiggyFood.mcpUrl, token: config.swiggyFood.testToken })
-  : undefined;
 
 // Fallback reply for messages that don't trigger a Swiggy Food search (no
 // NLU/intent layer yet) and for when Swiggy Food isn't configured at all.
@@ -64,17 +67,85 @@ function acknowledgeIncomingTextMessages(messages) {
 }
 
 async function buildReplyText(message) {
-  if (!swiggyFoodClient) {
+  if (!config.swiggyFood.enabled) {
     return PLACEHOLDER_REPLY_TEXT;
   }
 
-  const foodSearchReply = await getFoodSearchReply({
-    message,
-    swiggyFoodClient,
-    pendingAddressSelections,
+  const classification = classifyIncomingMessage(message, pendingAddressSelections);
+
+  if (classification.type === "no_trigger") {
+    return PLACEHOLDER_REPLY_TEXT;
+  }
+
+  // Doesn't need a Swiggy call at all - just re-prompts the existing
+  // address choice, so it never needs to be gated on auth.
+  if (classification.type === "unrecognized_pending_reply") {
+    const reply = await getFoodSearchReply({
+      message,
+      swiggyFoodClient: undefined,
+      pendingAddressSelections,
+    });
+    return reply ?? PLACEHOLDER_REPLY_TEXT;
+  }
+
+  const searchTerm = classification.searchTerm ?? classification.pending?.searchTerm;
+
+  const authResult = await resolveSwiggyAccessToken({
+    senderId: message.from,
+    tokenStore: swiggyTokenStore,
+    authBaseUrl: config.swiggyOAuth.authBaseUrl,
   });
 
-  return foodSearchReply ?? PLACEHOLDER_REPLY_TEXT;
+  if (authResult.status === "unauthenticated") {
+    pendingPostAuthActions.set(message.from, { searchTerm, phoneNumberId: message.phoneNumberId });
+    const connectToken = pendingConnectLinks.create(message.from);
+    const connectUrl = `${swiggyOAuthOrigin}/oauth/swiggy/start?token=${connectToken}`;
+    return buildConnectReplyText({ connectUrl, searchTerm });
+  }
+
+  const swiggyFoodClient = createSwiggyFoodClient({
+    mcpUrl: config.swiggyFood.mcpUrl,
+    token: authResult.accessToken,
+  });
+
+  try {
+    const reply = await getFoodSearchReply({ message, swiggyFoodClient, pendingAddressSelections });
+    return reply ?? PLACEHOLDER_REPLY_TEXT;
+  } finally {
+    swiggyFoodClient.close().catch((error) => {
+      console.error("Failed to close per-request Swiggy Food MCP connection.", { name: error.name });
+    });
+  }
+}
+
+// After a sender finishes connecting their Swiggy account, automatically
+// resume whatever search prompted the connection instead of making them
+// repeat themselves.
+async function resumePendingSearchAfterAuth(senderId) {
+  const pendingAction = pendingPostAuthActions.take(senderId);
+
+  if (!pendingAction?.searchTerm || !config.whatsapp.sendEnabled) {
+    return;
+  }
+
+  const syntheticMessage = {
+    from: senderId,
+    id: `post-auth-resume-${Date.now()}`,
+    phoneNumberId: pendingAction.phoneNumberId,
+    text: `find ${pendingAction.searchTerm}`,
+  };
+
+  try {
+    await sendTextMessage({
+      accessToken: config.whatsapp.accessToken,
+      apiVersion: config.whatsapp.apiVersion,
+      phoneNumberId: pendingAction.phoneNumberId,
+      to: senderId,
+      text: await buildReplyText(syntheticMessage),
+    });
+  } catch (error) {
+    console.error("Failed to resume search after Swiggy auth.", { name: error.name });
+  }
 }
 
 async function replyToIncomingTextMessages(messages) {
@@ -99,20 +170,22 @@ async function replyToIncomingTextMessages(messages) {
   );
 }
 
-// Manual/dev entry point until this is wired into the WhatsApp conversation
-// flow: GET /oauth/swiggy/start?sender=<whatsapp-sender-id> kicks off the
-// PKCE authorize redirect for that sender.
+// GET /oauth/swiggy/start?token=<connect-token> kicks off the PKCE authorize
+// redirect for whichever sender that unguessable, single-use token was
+// issued to (see pending-connect-links.js for why this isn't a raw
+// ?sender= param).
 function handleSwiggyOAuthStart(request, response, url) {
-  const senderId = url.searchParams.get("sender");
+  const connectToken = url.searchParams.get("token");
+  const pendingLink = connectToken ? pendingConnectLinks.take(connectToken) : undefined;
 
-  if (!senderId) {
-    sendJson(response, 400, { error: "missing_sender", message: "Query param 'sender' is required." });
+  if (!pendingLink) {
+    sendText(response, 400, "This connection link is invalid or has expired. Please ask Nosh for a new one.");
     return;
   }
 
   const { verifier, challenge } = generatePkcePair();
   const state = generateState();
-  pendingOAuthExchanges.set(state, { senderId, codeVerifier: verifier });
+  pendingOAuthExchanges.set(state, { senderId: pendingLink.senderId, codeVerifier: verifier });
 
   const authorizeUrl = buildAuthorizeUrl({
     authBaseUrl: config.swiggyOAuth.authBaseUrl,
@@ -158,6 +231,7 @@ async function handleSwiggyOAuthCallback(request, response, url) {
 
     swiggyTokenStore.set(pending.senderId, tokenRecord);
     sendText(response, 200, "Your Swiggy account is connected. You can return to WhatsApp now.");
+    await resumePendingSearchAfterAuth(pending.senderId);
   } catch (error) {
     if (error instanceof SwiggyOAuthError) {
       console.error("Swiggy OAuth token exchange failed.", { step: error.step, error: error.error });
@@ -283,10 +357,6 @@ function shutdown(signal) {
       console.error("Server shutdown failed.", error);
       process.exitCode = 1;
     }
-  });
-
-  swiggyFoodClient?.close().catch((error) => {
-    console.error("Failed to close Swiggy Food MCP connection.", { name: error.name });
   });
 }
 

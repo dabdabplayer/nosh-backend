@@ -70,21 +70,18 @@ const whatsappApiVersion =
   readOptionalSecret(process.env.WHATSAPP_API_VERSION, "WHATSAPP_API_VERSION") ??
   DEFAULT_WHATSAPP_API_VERSION;
 
-// SWIGGY_FOOD_TEST_TOKEN is a stand-in for per-user OAuth 2.1 + PKCE tokens
-// (see https://mcp.swiggy.com/builders/docs/start/authenticate) until that
-// flow is implemented. Do not use this path in production.
 const swiggyFoodMcpUrl = readOptionalSecret(
   process.env.SWIGGY_FOOD_MCP_URL,
   "SWIGGY_FOOD_MCP_URL",
 );
+// SWIGGY_FOOD_TEST_TOKEN is a dev-only stand-in for a real per-user OAuth
+// token (see src/swiggy-oauth.js), used only by scripts/food-search-check.js.
+// The live conversation flow in server.js resolves a per-sender token via
+// swiggy-auth-flow.js instead and never reads this value.
 const swiggyFoodTestToken = readOptionalSecret(
   process.env.SWIGGY_FOOD_TEST_TOKEN,
   "SWIGGY_FOOD_TEST_TOKEN",
 );
-
-if (Boolean(swiggyFoodMcpUrl) !== Boolean(swiggyFoodTestToken)) {
-  throw new Error("SWIGGY_FOOD_MCP_URL and SWIGGY_FOOD_TEST_TOKEN must be set together.");
-}
 
 const swiggyOAuthClientId =
   readOptionalSecret(process.env.SWIGGY_OAUTH_CLIENT_ID, "SWIGGY_OAUTH_CLIENT_ID") ??
@@ -112,7 +109,7 @@ export const config = Object.freeze({
     webhookPath: readWebhookPath(process.env.WHATSAPP_WEBHOOK_PATH),
   }),
   swiggyFood: Object.freeze({
-    enabled: Boolean(swiggyFoodMcpUrl && swiggyFoodTestToken),
+    enabled: Boolean(swiggyFoodMcpUrl),
     mcpUrl: swiggyFoodMcpUrl,
     testToken: swiggyFoodTestToken,
   }),
