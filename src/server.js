@@ -1,10 +1,13 @@
 import http from "node:http";
 import { config } from "./config.js";
 import { classifyIncomingMessage, getFoodSearchReply } from "./food-search-orchestrator.js";
+import { getFoodOrderReply, parseOrderConfirmationReply, placeConfirmedOrder } from "./food-order-orchestrator.js";
 import { InProcessMessageIdempotency } from "./message-idempotency.js";
 import { PendingAddressSelections } from "./pending-address-selection.js";
+import { PendingCartSessions } from "./pending-cart-sessions.js";
 import { PendingConnectLinks } from "./pending-connect-links.js";
 import { PendingOAuthExchanges } from "./pending-oauth-exchanges.js";
+import { PendingOrderConfirmations } from "./pending-order-confirmations.js";
 import { PendingPostAuthActions } from "./pending-post-auth-actions.js";
 import { createSwiggyFoodClient } from "./swiggy-food-client.js";
 import { buildConnectReplyText, resolveSwiggyAccessToken } from "./swiggy-auth-flow.js";
@@ -32,6 +35,8 @@ const pendingAddressSelections = new PendingAddressSelections();
 const pendingOAuthExchanges = new PendingOAuthExchanges();
 const pendingConnectLinks = new PendingConnectLinks();
 const pendingPostAuthActions = new PendingPostAuthActions();
+const pendingCartSessions = new PendingCartSessions();
+const pendingOrderConfirmations = new PendingOrderConfirmations();
 const swiggyTokenStore = new SwiggyTokenStore(config.swiggyOAuth.tokenStorePath);
 
 // Fallback reply for messages that don't trigger a Swiggy Food search (no
@@ -66,15 +71,106 @@ function acknowledgeIncomingTextMessages(messages) {
   });
 }
 
+// Shared by the two newer code paths (order confirmation, cart/coupon
+// intents) that just need a plain authenticated-or-not result, unlike the
+// main search path below which has its own connect-link handling on
+// "unauthenticated". Always closes the per-request MCP connection.
+async function withSwiggyFoodClient(senderId, fn) {
+  const authResult = await resolveSwiggyAccessToken({
+    senderId,
+    tokenStore: swiggyTokenStore,
+    authBaseUrl: config.swiggyOAuth.authBaseUrl,
+  });
+
+  if (authResult.status === "unauthenticated") {
+    return { authenticated: false };
+  }
+
+  const swiggyFoodClient = createSwiggyFoodClient({
+    mcpUrl: config.swiggyFood.mcpUrl,
+    token: authResult.accessToken,
+  });
+
+  try {
+    return { authenticated: true, result: await fn(swiggyFoodClient) };
+  } finally {
+    swiggyFoodClient.close().catch((error) => {
+      console.error("Failed to close per-request Swiggy Food MCP connection.", { name: error.name });
+    });
+  }
+}
+
+// Deterministic gate for the one irreversible action (placing a real order):
+// only a literal YES/NO reply to a specific stored order summary can trigger
+// it - never an NLU/LLM judgment call. See food-order-orchestrator.js.
+async function buildOrderConfirmationReply(message, pendingConfirmation) {
+  const decision = parseOrderConfirmationReply(message.text);
+
+  if (decision === "cancel") {
+    pendingOrderConfirmations.clear(message.from);
+    return "Order cancelled. Your cart is still there if you'd like to check out again later.";
+  }
+
+  if (decision !== "confirm") {
+    return "Please reply YES to place this order, or NO to cancel.";
+  }
+
+  const outcome = await withSwiggyFoodClient(message.from, (swiggyFoodClient) =>
+    placeConfirmedOrder({ swiggyFoodClient, confirmation: pendingConfirmation }),
+  );
+
+  if (!outcome.authenticated) {
+    pendingOrderConfirmations.clear(message.from);
+    return "Your Swiggy connection expired before we could place this order. Please search again to reconnect.";
+  }
+
+  const { status, replyText, orderId, lat, lng } = outcome.result;
+
+  if (status === "placed_not_confirmed") {
+    // Keep the confirmation around with the orderId so a retried YES skips
+    // straight to confirm_order instead of placing a duplicate order.
+    pendingOrderConfirmations.set(message.from, { ...pendingConfirmation, orderId, lat, lng });
+  } else {
+    pendingOrderConfirmations.clear(message.from);
+  }
+
+  return replyText;
+}
+
 async function buildReplyText(message) {
   if (!config.swiggyFood.enabled) {
     return PLACEHOLDER_REPLY_TEXT;
   }
 
-  const classification = classifyIncomingMessage(message, pendingAddressSelections);
+  const pendingConfirmation = pendingOrderConfirmations.peek(message.from);
+
+  if (pendingConfirmation) {
+    return buildOrderConfirmationReply(message, pendingConfirmation);
+  }
+
+  const classification = await classifyIncomingMessage(message, pendingAddressSelections, {
+    nvidiaNim: config.nvidiaNim,
+    pendingCartSessions,
+  });
 
   if (classification.type === "no_trigger") {
-    return PLACEHOLDER_REPLY_TEXT;
+    // No search trigger matched - if the sender has an active cart, try the
+    // cart/coupon/checkout intents before giving up on this message.
+    if (!pendingCartSessions.peek(message.from)) {
+      return PLACEHOLDER_REPLY_TEXT;
+    }
+
+    const outcome = await withSwiggyFoodClient(message.from, (swiggyFoodClient) =>
+      getFoodOrderReply({
+        message,
+        swiggyFoodClient,
+        pendingCartSessions,
+        pendingOrderConfirmations,
+        nvidiaNim: config.nvidiaNim,
+      }),
+    );
+
+    return (outcome.authenticated ? outcome.result : undefined) ?? PLACEHOLDER_REPLY_TEXT;
   }
 
   // Doesn't need a Swiggy call at all - just re-prompts the existing
@@ -84,6 +180,8 @@ async function buildReplyText(message) {
       message,
       swiggyFoodClient: undefined,
       pendingAddressSelections,
+      pendingCartSessions,
+      classification,
     });
     return reply ?? PLACEHOLDER_REPLY_TEXT;
   }
@@ -109,7 +207,13 @@ async function buildReplyText(message) {
   });
 
   try {
-    const reply = await getFoodSearchReply({ message, swiggyFoodClient, pendingAddressSelections });
+    const reply = await getFoodSearchReply({
+      message,
+      swiggyFoodClient,
+      pendingAddressSelections,
+      pendingCartSessions,
+      classification,
+    });
     return reply ?? PLACEHOLDER_REPLY_TEXT;
   } finally {
     swiggyFoodClient.close().catch((error) => {

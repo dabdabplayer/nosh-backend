@@ -1,0 +1,285 @@
+const DEFAULT_TIMEOUT_MS = 8000;
+
+const SEARCH_SYSTEM_PROMPT = [
+  "You classify a single inbound WhatsApp message for a food-delivery bot named Nosh.",
+  "Call search_food only when the user is asking to find, search for, or start ordering food, a dish, or a restaurant for delivery.",
+  "For anything else - greetings, small talk, unrelated questions - do not call any tool.",
+].join(" ");
+
+// Used instead of SEARCH_SYSTEM_PROMPT when the sender already has an active
+// cart with a restaurant. Without this, a message like "from Pizza Hut add a
+// margherita pizza" gets misread as a brand new search (confirmed live) -
+// this classifier has no visibility into cart state on its own, so it has to
+// be told explicitly to step aside for cart-related messages and let
+// classifyOrderIntent (which does know about the cart) handle them instead.
+const SEARCH_WITH_ACTIVE_CART_SYSTEM_PROMPT = [
+  "You classify a single inbound WhatsApp message for a food-delivery bot named Nosh.",
+  "The user already has an active cart with a restaurant.",
+  "Do NOT call search_food for messages about adding items to that cart, viewing the cart, coupons, or",
+  "checking out - those are handled elsewhere and are not your job.",
+  "Only call search_food if they clearly want to search for something new, or a different restaurant.",
+  "For anything else, do not call any tool.",
+].join(" ");
+
+const SEARCH_FOOD_TOOL = Object.freeze({
+  type: "function",
+  function: {
+    name: "search_food",
+    description:
+      "The user wants to find, search for, or order a dish, cuisine, or restaurant for delivery.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "The dish, cuisine, or restaurant name to search for, as the user said it.",
+        },
+      },
+      required: ["query"],
+    },
+  },
+});
+
+const ORDER_SYSTEM_PROMPT = [
+  "You classify a single inbound WhatsApp message for a food-delivery bot named Nosh.",
+  "The user already has an active order in progress with one restaurant.",
+  "Call exactly one tool that matches what they're asking for right now: add_to_cart to add a dish,",
+  "view_cart to see what's in the cart, find_coupons to see available discounts, apply_coupon to use",
+  "a specific coupon code, or checkout when they want to place the order.",
+  "For anything else, do not call any tool.",
+].join(" ");
+
+const ADD_TO_CART_TOOL = Object.freeze({
+  type: "function",
+  function: {
+    name: "add_to_cart",
+    description: "The user wants to add a dish to their cart.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "The dish name, as the user said it. Fix obvious typos." },
+        quantity: { type: "integer", description: "How many, if stated. Defaults to 1." },
+        restaurantName: {
+          type: "string",
+          description: "The restaurant the user named, if they named one (e.g. \"from Pizza Hut\"). Omit if they didn't say.",
+        },
+      },
+      required: ["query"],
+    },
+  },
+});
+
+const VIEW_CART_TOOL = Object.freeze({
+  type: "function",
+  function: {
+    name: "view_cart",
+    description: "The user wants to see what's currently in their cart.",
+    parameters: { type: "object", properties: {} },
+  },
+});
+
+const FIND_COUPONS_TOOL = Object.freeze({
+  type: "function",
+  function: {
+    name: "find_coupons",
+    description: "The user wants to see available coupons or discounts for this order.",
+    parameters: { type: "object", properties: {} },
+  },
+});
+
+const APPLY_COUPON_TOOL = Object.freeze({
+  type: "function",
+  function: {
+    name: "apply_coupon",
+    description: "The user wants to apply a specific coupon code to their order.",
+    parameters: {
+      type: "object",
+      properties: {
+        couponCode: { type: "string", description: "The coupon code, as the user said it." },
+      },
+      required: ["couponCode"],
+    },
+  },
+});
+
+const CHECKOUT_TOOL = Object.freeze({
+  type: "function",
+  function: {
+    name: "checkout",
+    description: "The user wants to place their order / check out / pay now.",
+    parameters: { type: "object", properties: {} },
+  },
+});
+
+const ORDER_TOOLS = Object.freeze([
+  ADD_TO_CART_TOOL,
+  VIEW_CART_TOOL,
+  FIND_COUPONS_TOOL,
+  APPLY_COUPON_TOOL,
+  CHECKOUT_TOOL,
+]);
+
+// Sends one chat-completions request with the given tool schemas and returns
+// the raw tool_calls array, or undefined on any failure (non-2xx, timeout,
+// network error, malformed body). Never throws.
+async function requestToolCalls({ text, systemPrompt, tools, apiKey, baseUrl, model, fetchImpl, timeoutMs }) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetchImpl(`${baseUrl}/chat/completions`, {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        authorization: `Bearer ${apiKey}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: text },
+        ],
+        tools,
+        tool_choice: "auto",
+      }),
+    });
+
+    if (!response.ok) {
+      console.error("NVIDIA NIM classification request failed.", { status: response.status });
+      return undefined;
+    }
+
+    const body = await response.json();
+    const toolCalls = body?.choices?.[0]?.message?.tool_calls;
+    return Array.isArray(toolCalls) ? toolCalls : undefined;
+  } catch (error) {
+    console.error("NVIDIA NIM classification request errored.", { name: error.name });
+    return undefined;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function parseToolCallArgs(toolCall) {
+  try {
+    return JSON.parse(toolCall.function.arguments ?? "");
+  } catch {
+    return undefined;
+  }
+}
+
+// Classifies one inbound message via NVIDIA NIM's OpenAI-compatible chat
+// completions endpoint, using function calling for a structured result
+// instead of parsing prose. Never throws: any request failure, timeout, or
+// unparseable response resolves to undefined so callers fall back to the
+// existing literal find/search trigger - an AI outage degrades the bot, it
+// never breaks it.
+export async function classifyMessage({
+  text,
+  apiKey,
+  baseUrl,
+  model,
+  hasActiveCart = false,
+  fetchImpl = fetch,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+}) {
+  const toolCalls = await requestToolCalls({
+    text,
+    systemPrompt: hasActiveCart ? SEARCH_WITH_ACTIVE_CART_SYSTEM_PROMPT : SEARCH_SYSTEM_PROMPT,
+    tools: [SEARCH_FOOD_TOOL],
+    apiKey,
+    baseUrl,
+    model,
+    fetchImpl,
+    timeoutMs,
+  });
+
+  if (!toolCalls) {
+    return undefined;
+  }
+
+  for (const toolCall of toolCalls) {
+    if (toolCall?.function?.name !== "search_food") {
+      continue;
+    }
+
+    const args = parseToolCallArgs(toolCall);
+    const query = typeof args?.query === "string" ? args.query.trim() : "";
+
+    if (query.length > 0) {
+      return Object.freeze({ type: "search_food", query });
+    }
+  }
+
+  return undefined;
+}
+
+// Same idea as classifyMessage, but for the cart/coupon/checkout intents
+// that only make sense once a sender already has an active cart session
+// (see food-order-orchestrator.js). Never throws, same fail-closed contract.
+export async function classifyOrderIntent({
+  text,
+  apiKey,
+  baseUrl,
+  model,
+  fetchImpl = fetch,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+}) {
+  const toolCalls = await requestToolCalls({
+    text,
+    systemPrompt: ORDER_SYSTEM_PROMPT,
+    tools: ORDER_TOOLS,
+    apiKey,
+    baseUrl,
+    model,
+    fetchImpl,
+    timeoutMs,
+  });
+
+  if (!toolCalls) {
+    return undefined;
+  }
+
+  for (const toolCall of toolCalls) {
+    const name = toolCall?.function?.name;
+    const args = parseToolCallArgs(toolCall);
+
+    if (name === "add_to_cart") {
+      const query = typeof args?.query === "string" ? args.query.trim() : "";
+      if (query.length === 0) {
+        continue;
+      }
+      const quantity = Number.isInteger(args?.quantity) && args.quantity > 0 ? args.quantity : 1;
+      const restaurantName = typeof args?.restaurantName === "string" ? args.restaurantName.trim() : "";
+      return Object.freeze({
+        type: "add_to_cart",
+        query,
+        quantity,
+        restaurantName: restaurantName.length > 0 ? restaurantName : undefined,
+      });
+    }
+
+    if (name === "view_cart") {
+      return Object.freeze({ type: "view_cart" });
+    }
+
+    if (name === "find_coupons") {
+      return Object.freeze({ type: "find_coupons" });
+    }
+
+    if (name === "apply_coupon") {
+      const couponCode = typeof args?.couponCode === "string" ? args.couponCode.trim() : "";
+      if (couponCode.length === 0) {
+        continue;
+      }
+      return Object.freeze({ type: "apply_coupon", couponCode });
+    }
+
+    if (name === "checkout") {
+      return Object.freeze({ type: "checkout" });
+    }
+  }
+
+  return undefined;
+}

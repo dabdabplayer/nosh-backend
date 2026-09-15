@@ -98,6 +98,14 @@ export function createSwiggyFoodClient({
     searchMenu: (params) => callTool("search_menu", params),
     getRestaurantMenu: (params) => callTool("get_restaurant_menu", params),
     getAddresses: (params) => callTool("get_addresses", params),
+    updateFoodCart: (params) => callTool("update_food_cart", params),
+    getFoodCart: (params) => callTool("get_food_cart", params),
+    flushFoodCart: (params) => callTool("flush_food_cart", params),
+    fetchFoodCoupons: (params) => callTool("fetch_food_coupons", params),
+    applyFoodCoupon: (params) => callTool("apply_food_coupon", params),
+    getPaymentOptions: (params) => callTool("get_payment_options", params),
+    placeFoodOrder: (params) => callTool("place_food_order", params),
+    confirmOrder: (params) => callTool("confirm_order", params),
     async close() {
       if (connecting) {
         const client = await connecting;

@@ -11,6 +11,8 @@ const DEFAULT_SWIGGY_OAUTH_BASE_URL = "https://mcp.swiggy.com/auth";
 const DEFAULT_SWIGGY_OAUTH_CLIENT_ID = "swiggy-mcp";
 const DEFAULT_SWIGGY_OAUTH_REDIRECT_URI = "http://localhost:3000/oauth/swiggy/callback";
 const DEFAULT_SWIGGY_TOKEN_STORE_PATH = "data/swiggy-tokens.json";
+const DEFAULT_NVIDIA_NIM_BASE_URL = "https://integrate.api.nvidia.com/v1";
+const DEFAULT_NVIDIA_NIM_MODEL = "openai/gpt-oss-20b";
 
 function readPort(value) {
   if (value === undefined || value === "") {
@@ -83,6 +85,13 @@ const swiggyFoodTestToken = readOptionalSecret(
   "SWIGGY_FOOD_TEST_TOKEN",
 );
 
+const nvidiaNimApiKey = readOptionalSecret(process.env.NVIDIA_API_KEY, "NVIDIA_API_KEY");
+const nvidiaNimBaseUrl =
+  readOptionalSecret(process.env.NVIDIA_NIM_BASE_URL, "NVIDIA_NIM_BASE_URL") ??
+  DEFAULT_NVIDIA_NIM_BASE_URL;
+const nvidiaNimModel =
+  readOptionalSecret(process.env.NVIDIA_NIM_MODEL, "NVIDIA_NIM_MODEL") ?? DEFAULT_NVIDIA_NIM_MODEL;
+
 const swiggyOAuthClientId =
   readOptionalSecret(process.env.SWIGGY_OAUTH_CLIENT_ID, "SWIGGY_OAUTH_CLIENT_ID") ??
   DEFAULT_SWIGGY_OAUTH_CLIENT_ID;
@@ -112,6 +121,12 @@ export const config = Object.freeze({
     enabled: Boolean(swiggyFoodMcpUrl),
     mcpUrl: swiggyFoodMcpUrl,
     testToken: swiggyFoodTestToken,
+  }),
+  nvidiaNim: Object.freeze({
+    apiKey: nvidiaNimApiKey,
+    baseUrl: nvidiaNimBaseUrl,
+    enabled: Boolean(nvidiaNimApiKey),
+    model: nvidiaNimModel,
   }),
   swiggyOAuth: Object.freeze({
     authBaseUrl: swiggyOAuthBaseUrl,

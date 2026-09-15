@@ -1,3 +1,4 @@
+import { classifyMessage as defaultClassifyMessage } from "./nlu-client.js";
 import { parseStructuredPayload } from "./swiggy-food-client.js";
 
 const MAX_ADDRESS_CANDIDATES = 5;
@@ -33,9 +34,46 @@ export function parseAddressSelectionReply(text, candidateCount) {
   return index >= 0 && index < candidateCount ? index : undefined;
 }
 
-export function classifyIncomingMessage(message, pendingAddressSelections) {
+// Falls back to NVIDIA NIM intent classification only when the literal
+// find/search prefix doesn't match, so free-form messages like "I want
+// biryani" still trigger a search. Never throws - classifyMessage itself
+// fails closed, so a NIM outage just means no search-term match here.
+//
+// Passes hasActiveCart so the classifier can tell a genuine new search apart
+// from a cart-related message like "from Pizza Hut add a margherita pizza" -
+// without that context, the search classifier can't tell the two apart and
+// swallows cart messages before classifyOrderIntent ever sees them
+// (confirmed live).
+async function resolveSearchTerm(
+  trimmedText,
+  senderId,
+  { nvidiaNim, pendingCartSessions, classifyMessage = defaultClassifyMessage } = {},
+) {
+  const regexSearchTerm = matchFoodSearchTrigger(trimmedText);
+
+  if (regexSearchTerm) {
+    return regexSearchTerm;
+  }
+
+  if (!nvidiaNim?.enabled) {
+    return undefined;
+  }
+
+  const hasActiveCart = Boolean(pendingCartSessions?.peek(senderId));
+
+  const intent = await classifyMessage({
+    text: trimmedText,
+    apiKey: nvidiaNim.apiKey,
+    baseUrl: nvidiaNim.baseUrl,
+    model: nvidiaNim.model,
+    hasActiveCart,
+  });
+
+  return intent?.type === "search_food" ? intent.query : undefined;
+}
+
+export async function classifyIncomingMessage(message, pendingAddressSelections, nluOptions) {
   const trimmedText = message.text.trim();
-  const searchTerm = matchFoodSearchTrigger(trimmedText);
   const pending = pendingAddressSelections.peek(message.from);
 
   if (pending) {
@@ -48,7 +86,11 @@ export function classifyIncomingMessage(message, pendingAddressSelections) {
         selectedCandidate: pending.candidates[selectedIndex],
       };
     }
+  }
 
+  const searchTerm = await resolveSearchTerm(trimmedText, message.from, nluOptions);
+
+  if (pending) {
     if (searchTerm) {
       return { type: "new_search", searchTerm };
     }
@@ -92,7 +134,15 @@ function formatRestaurantReply(searchTerm, restaurants) {
   return [`Here's what I found for "${searchTerm}":`, ...lines].join("\n");
 }
 
-async function runRestaurantSearch(swiggyFoodClient, searchTerm, addressId) {
+// Records the resolved delivery address as a lightweight cart session (no
+// restaurant chosen yet) so a later "add to cart" doesn't need to re-resolve
+// the address or make the user pick a restaurant by number first -
+// food-order-orchestrator.js fills in the restaurant on the first add.
+async function runRestaurantSearch(swiggyFoodClient, searchTerm, addressId, senderId, pendingCartSessions) {
+  if (senderId && pendingCartSessions) {
+    pendingCartSessions.set(senderId, { addressId });
+  }
+
   let searchResult;
   try {
     searchResult = await swiggyFoodClient.searchRestaurants({ query: searchTerm, addressId });
@@ -118,7 +168,13 @@ async function runRestaurantSearch(swiggyFoodClient, searchTerm, addressId) {
   return formatRestaurantReply(searchTerm, openRestaurants);
 }
 
-async function handleNewFoodSearch(senderId, searchTerm, swiggyFoodClient, pendingAddressSelections) {
+async function handleNewFoodSearch(
+  senderId,
+  searchTerm,
+  swiggyFoodClient,
+  pendingAddressSelections,
+  pendingCartSessions,
+) {
   let addressResult;
   try {
     addressResult = await swiggyFoodClient.getAddresses({});
@@ -155,7 +211,7 @@ async function handleNewFoodSearch(senderId, searchTerm, swiggyFoodClient, pendi
     return GENERIC_FALLBACK_REPLY;
   }
 
-  return runRestaurantSearch(swiggyFoodClient, searchTerm, addressId);
+  return runRestaurantSearch(swiggyFoodClient, searchTerm, addressId, senderId, pendingCartSessions);
 }
 
 // The single entry point server.js calls. Never throws: any Swiggy tool
@@ -163,8 +219,25 @@ async function handleNewFoodSearch(senderId, searchTerm, swiggyFoodClient, pendi
 // non-technical reply, per AGENTS.md's rule against exposing raw MCP errors.
 // Returns undefined for ordinary messages so the caller falls back to its
 // own static placeholder reply.
-export async function getFoodSearchReply({ message, swiggyFoodClient, pendingAddressSelections }) {
-  const classification = classifyIncomingMessage(message, pendingAddressSelections);
+//
+// Accepts an already-computed `classification` when the caller ran one
+// already (server.js and the dev scripts do, to decide auth/routing before
+// calling this). Reusing it avoids a second NLU call for the same message -
+// classifying twice doubles exposure to NIM latency/timeouts for no benefit,
+// and previously could silently discard an already-correct classification
+// if only the second call happened to time out.
+export async function getFoodSearchReply({
+  message,
+  swiggyFoodClient,
+  pendingAddressSelections,
+  pendingCartSessions,
+  nvidiaNim,
+  classifyMessage,
+  classification: precomputedClassification,
+}) {
+  const classification =
+    precomputedClassification ??
+    (await classifyIncomingMessage(message, pendingAddressSelections, { nvidiaNim, classifyMessage }));
 
   try {
     switch (classification.type) {
@@ -178,6 +251,7 @@ export async function getFoodSearchReply({ message, swiggyFoodClient, pendingAdd
           classification.searchTerm,
           swiggyFoodClient,
           pendingAddressSelections,
+          pendingCartSessions,
         );
 
       case "address_selection_answer":
@@ -186,6 +260,8 @@ export async function getFoodSearchReply({ message, swiggyFoodClient, pendingAdd
           swiggyFoodClient,
           classification.pending.searchTerm,
           classification.selectedCandidate.id,
+          message.from,
+          pendingCartSessions,
         );
 
       case "unrecognized_pending_reply":

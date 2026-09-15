@@ -7,6 +7,7 @@ import {
   parseAddressSelectionReply,
 } from "../src/food-search-orchestrator.js";
 import { PendingAddressSelections } from "../src/pending-address-selection.js";
+import { PendingCartSessions } from "../src/pending-cart-sessions.js";
 
 function message(text, from = "sender-1") {
   return { from, id: "wamid.1", phoneNumberId: "pn-1", text };
@@ -90,50 +91,161 @@ test("parseAddressSelectionReply returns undefined for non-numeric text", () => 
 
 // --- classifyIncomingMessage ---
 
-test("classifyIncomingMessage: trigger with no pending state is a new search", () => {
+test("classifyIncomingMessage: trigger with no pending state is a new search", async () => {
   const pending = new PendingAddressSelections();
-  assert.deepEqual(classifyIncomingMessage(message("find biryani"), pending), {
+  assert.deepEqual(await classifyIncomingMessage(message("find biryani"), pending), {
     type: "new_search",
     searchTerm: "biryani",
   });
 });
 
-test("classifyIncomingMessage: no trigger and no pending state is no_trigger", () => {
+test("classifyIncomingMessage: no trigger and no pending state is no_trigger", async () => {
   const pending = new PendingAddressSelections();
-  assert.deepEqual(classifyIncomingMessage(message("hello"), pending), { type: "no_trigger" });
+  assert.deepEqual(await classifyIncomingMessage(message("hello"), pending), { type: "no_trigger" });
 });
 
-test("classifyIncomingMessage: valid numeric reply while pending answers the prompt", () => {
+test("classifyIncomingMessage: valid numeric reply while pending answers the prompt", async () => {
   const pending = new PendingAddressSelections();
   const candidates = [{ id: "addr-1", label: "Home" }, { id: "addr-2", label: "Other" }];
   pending.set("sender-1", { searchTerm: "biryani", candidates });
 
-  assert.deepEqual(classifyIncomingMessage(message("2"), pending), {
+  assert.deepEqual(await classifyIncomingMessage(message("2"), pending), {
     type: "address_selection_answer",
     pending: { searchTerm: "biryani", candidates },
     selectedCandidate: candidates[1],
   });
 });
 
-test("classifyIncomingMessage: a new trigger overrides a stale pending prompt", () => {
+test("classifyIncomingMessage: a new trigger overrides a stale pending prompt", async () => {
   const pending = new PendingAddressSelections();
   pending.set("sender-1", { searchTerm: "biryani", candidates: [{ id: "addr-1", label: "Home" }] });
 
-  assert.deepEqual(classifyIncomingMessage(message("find pizza"), pending), {
+  assert.deepEqual(await classifyIncomingMessage(message("find pizza"), pending), {
     type: "new_search",
     searchTerm: "pizza",
   });
 });
 
-test("classifyIncomingMessage: unrelated text while pending is unrecognized", () => {
+test("classifyIncomingMessage: unrelated text while pending is unrecognized", async () => {
   const pending = new PendingAddressSelections();
   const candidates = [{ id: "addr-1", label: "Home" }];
   pending.set("sender-1", { searchTerm: "biryani", candidates });
 
-  assert.deepEqual(classifyIncomingMessage(message("no thanks"), pending), {
+  assert.deepEqual(await classifyIncomingMessage(message("no thanks"), pending), {
     type: "unrecognized_pending_reply",
     pending: { searchTerm: "biryani", candidates },
   });
+});
+
+test("classifyIncomingMessage: falls back to NIM classification when there's no literal trigger", async () => {
+  const pending = new PendingAddressSelections();
+  const calls = [];
+  const classifyMessage = async (params) => {
+    calls.push(params);
+    return { type: "search_food", query: "biryani" };
+  };
+
+  const result = await classifyIncomingMessage(message("I want biryani"), pending, {
+    nvidiaNim: { enabled: true, apiKey: "key", baseUrl: "https://example.test", model: "test-model" },
+    classifyMessage,
+  });
+
+  assert.deepEqual(result, { type: "new_search", searchTerm: "biryani" });
+  assert.deepEqual(calls, [
+    {
+      text: "I want biryani",
+      apiKey: "key",
+      baseUrl: "https://example.test",
+      model: "test-model",
+      hasActiveCart: false,
+    },
+  ]);
+});
+
+test("classifyIncomingMessage: does not call NIM when the literal trigger already matched", async () => {
+  const pending = new PendingAddressSelections();
+  let called = false;
+  const classifyMessage = async () => {
+    called = true;
+    return { type: "search_food", query: "should not be used" };
+  };
+
+  const result = await classifyIncomingMessage(message("find biryani"), pending, {
+    nvidiaNim: { enabled: true, apiKey: "key", baseUrl: "https://example.test", model: "test-model" },
+    classifyMessage,
+  });
+
+  assert.equal(called, false);
+  assert.deepEqual(result, { type: "new_search", searchTerm: "biryani" });
+});
+
+test("classifyIncomingMessage: NIM classification failure falls back to no_trigger", async () => {
+  const pending = new PendingAddressSelections();
+  const classifyMessage = async () => undefined;
+
+  const result = await classifyIncomingMessage(message("I want biryani"), pending, {
+    nvidiaNim: { enabled: true, apiKey: "key", baseUrl: "https://example.test", model: "test-model" },
+    classifyMessage,
+  });
+
+  assert.deepEqual(result, { type: "no_trigger" });
+});
+
+test("classifyIncomingMessage: tells the classifier about an active cart session (regression - without this, cart-related messages like \"from Pizza Hut add a margherita pizza\" get misread as a brand new search)", async () => {
+  const pending = new PendingAddressSelections();
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
+
+  const calls = [];
+  const classifyMessage = async (params) => {
+    calls.push(params);
+    return undefined;
+  };
+
+  await classifyIncomingMessage(message("from Pizza Hut add a margherita pizza"), pending, {
+    nvidiaNim: { enabled: true, apiKey: "key", baseUrl: "https://example.test", model: "test-model" },
+    pendingCartSessions,
+    classifyMessage,
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].hasActiveCart, true);
+});
+
+test("classifyIncomingMessage: reports no active cart when there isn't one", async () => {
+  const pending = new PendingAddressSelections();
+  const pendingCartSessions = new PendingCartSessions();
+
+  const calls = [];
+  const classifyMessage = async (params) => {
+    calls.push(params);
+    return undefined;
+  };
+
+  await classifyIncomingMessage(message("I want biryani"), pending, {
+    nvidiaNim: { enabled: true, apiKey: "key", baseUrl: "https://example.test", model: "test-model" },
+    pendingCartSessions,
+    classifyMessage,
+  });
+
+  assert.equal(calls[0].hasActiveCart, false);
+});
+
+test("classifyIncomingMessage: NIM is skipped entirely when not enabled", async () => {
+  const pending = new PendingAddressSelections();
+  let called = false;
+  const classifyMessage = async () => {
+    called = true;
+    return { type: "search_food", query: "biryani" };
+  };
+
+  const result = await classifyIncomingMessage(message("I want biryani"), pending, {
+    nvidiaNim: { enabled: false },
+    classifyMessage,
+  });
+
+  assert.equal(called, false);
+  assert.deepEqual(result, { type: "no_trigger" });
 });
 
 // --- getFoodSearchReply ---
