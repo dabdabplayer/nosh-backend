@@ -51,6 +51,22 @@ if (Boolean(whatsappVerifyToken) !== Boolean(metaAppSecret)) {
   );
 }
 
+// SWIGGY_FOOD_TEST_TOKEN is a stand-in for per-user OAuth 2.1 + PKCE tokens
+// (see https://mcp.swiggy.com/builders/docs/start/authenticate) until that
+// flow is implemented. Do not use this path in production.
+const swiggyFoodMcpUrl = readOptionalSecret(
+  process.env.SWIGGY_FOOD_MCP_URL,
+  "SWIGGY_FOOD_MCP_URL",
+);
+const swiggyFoodTestToken = readOptionalSecret(
+  process.env.SWIGGY_FOOD_TEST_TOKEN,
+  "SWIGGY_FOOD_TEST_TOKEN",
+);
+
+if (Boolean(swiggyFoodMcpUrl) !== Boolean(swiggyFoodTestToken)) {
+  throw new Error("SWIGGY_FOOD_MCP_URL and SWIGGY_FOOD_TEST_TOKEN must be set together.");
+}
+
 export const config = Object.freeze({
   environment: process.env.NODE_ENV ?? "development",
   port: readPort(process.env.PORT),
@@ -59,5 +75,10 @@ export const config = Object.freeze({
     enabled: Boolean(whatsappVerifyToken && metaAppSecret),
     verifyToken: whatsappVerifyToken,
     webhookPath: readWebhookPath(process.env.WHATSAPP_WEBHOOK_PATH),
+  }),
+  swiggyFood: Object.freeze({
+    enabled: Boolean(swiggyFoodMcpUrl && swiggyFoodTestToken),
+    mcpUrl: swiggyFoodMcpUrl,
+    testToken: swiggyFoodTestToken,
   }),
 });

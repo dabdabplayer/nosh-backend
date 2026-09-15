@@ -1,5 +1,6 @@
 import http from "node:http";
 import { config } from "./config.js";
+import { InProcessMessageIdempotency } from "./message-idempotency.js";
 import {
   extractInboundTextMessages,
   parseWhatsAppWebhookPayload,
@@ -9,6 +10,7 @@ import {
 } from "./whatsapp-webhook.js";
 
 const serviceName = "nosh-backend";
+const processedMessageIds = new InProcessMessageIdempotency();
 
 function sendJson(response, statusCode, payload) {
   response.writeHead(statusCode, {
@@ -83,9 +85,10 @@ async function handleWhatsAppWebhook(request, response, url) {
     }
 
     const messages = extractInboundTextMessages(payload);
-    acknowledgeIncomingTextMessages(messages);
+    const unprocessedMessages = processedMessageIds.takeUnprocessed(messages);
+    acknowledgeIncomingTextMessages(unprocessedMessages);
 
-    // Persistence, idempotency, orchestration, and replies arrive in later increments.
+    // Persistence, orchestration, and replies arrive in later increments.
     sendJson(response, 200, { status: "received" });
   } catch (error) {
     if (error.code === "BODY_TOO_LARGE") {

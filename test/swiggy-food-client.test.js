@@ -1,0 +1,139 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  createSwiggyFoodClient,
+  parseToolResult,
+  SwiggyFoodToolError,
+} from "../src/swiggy-food-client.js";
+
+function fakeClient({ callTool, close = async () => {} }) {
+  return { connect: async () => {}, callTool, close };
+}
+
+test("parseToolResult joins text blocks and passes through structuredContent", () => {
+  const result = {
+    content: [
+      { type: "text", text: "Biryani House" },
+      { type: "text", text: "Pizza Place" },
+      { type: "image", data: "ignored" },
+    ],
+    structuredContent: { restaurants: [{ id: "r1" }] },
+  };
+
+  assert.deepEqual(parseToolResult(result), {
+    text: "Biryani House\nPizza Place",
+    structured: { restaurants: [{ id: "r1" }] },
+  });
+});
+
+test("parseToolResult tolerates missing content and structuredContent", () => {
+  assert.deepEqual(parseToolResult({}), { text: "", structured: null });
+});
+
+test("searchRestaurants calls the search_restaurants tool with the given arguments", async () => {
+  const calls = [];
+  const client = createSwiggyFoodClient({
+    mcpUrl: "https://example.invalid/food",
+    token: "test-token",
+    createClient: () =>
+      fakeClient({
+        callTool: async (request) => {
+          calls.push(request);
+          return { content: [{ type: "text", text: "ok" }] };
+        },
+      }),
+    createTransport: () => ({}),
+  });
+
+  const result = await client.searchRestaurants({ query: "biryani", addressId: "addr-1" });
+
+  assert.deepEqual(calls, [
+    { name: "search_restaurants", arguments: { query: "biryani", addressId: "addr-1" } },
+  ]);
+  assert.equal(result.text, "ok");
+});
+
+test("reuses a single connection across multiple tool calls", async () => {
+  let createClientCount = 0;
+  const client = createSwiggyFoodClient({
+    mcpUrl: "https://example.invalid/food",
+    token: "test-token",
+    createClient: () => {
+      createClientCount += 1;
+      return fakeClient({ callTool: async () => ({ content: [] }) });
+    },
+    createTransport: () => ({}),
+  });
+
+  await client.searchRestaurants({ query: "pizza" });
+  await client.searchMenu({ query: "margherita" });
+
+  assert.equal(createClientCount, 1);
+});
+
+test("wraps a tool-level error response in SwiggyFoodToolError without leaking it", async () => {
+  const client = createSwiggyFoodClient({
+    mcpUrl: "https://example.invalid/food",
+    token: "test-token",
+    createClient: () =>
+      fakeClient({
+        callTool: async () => ({ isError: true, content: [{ type: "text", text: "boom" }] }),
+      }),
+    createTransport: () => ({}),
+  });
+
+  await assert.rejects(client.searchRestaurants({ query: "pizza" }), (error) => {
+    assert.ok(error instanceof SwiggyFoodToolError);
+    assert.equal(error.toolName, "search_restaurants");
+    assert.equal(error.message, 'Swiggy Food tool "search_restaurants" failed.');
+    return true;
+  });
+});
+
+test("wraps a transport-level failure in SwiggyFoodToolError", async () => {
+  const transportError = new Error("connection reset");
+  const client = createSwiggyFoodClient({
+    mcpUrl: "https://example.invalid/food",
+    token: "test-token",
+    createClient: () =>
+      fakeClient({
+        callTool: async () => {
+          throw transportError;
+        },
+      }),
+    createTransport: () => ({}),
+  });
+
+  await assert.rejects(client.searchMenu({ query: "biryani" }), (error) => {
+    assert.ok(error instanceof SwiggyFoodToolError);
+    assert.equal(error.cause, transportError);
+    return true;
+  });
+});
+
+test("close() closes an established connection and allows reconnecting", async () => {
+  let closeCount = 0;
+  let connectCount = 0;
+  const client = createSwiggyFoodClient({
+    mcpUrl: "https://example.invalid/food",
+    token: "test-token",
+    createClient: () => {
+      connectCount += 1;
+      return fakeClient({
+        callTool: async () => ({ content: [] }),
+        close: async () => {
+          closeCount += 1;
+        },
+      });
+    },
+    createTransport: () => ({}),
+  });
+
+  await client.searchRestaurants({ query: "pizza" });
+  await client.close();
+  await client.close();
+  await client.searchRestaurants({ query: "pizza" });
+
+  assert.equal(closeCount, 1);
+  assert.equal(connectCount, 2);
+});
