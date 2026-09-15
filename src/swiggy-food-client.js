@@ -30,6 +30,26 @@ export function parseToolResult(result) {
   });
 }
 
+// The MCP SDK may surface a tool's JSON payload as structuredContent or as a
+// text block containing a JSON string, depending on the server. Try
+// structured first, fall back to parsing text, and never throw — callers
+// treat undefined as "unparseable" and fall back to a generic reply.
+export function parseStructuredPayload(toolResult) {
+  if (toolResult?.structured && typeof toolResult.structured === "object") {
+    return toolResult.structured;
+  }
+
+  if (typeof toolResult?.text === "string" && toolResult.text.length > 0) {
+    try {
+      return JSON.parse(toolResult.text);
+    } catch {
+      return undefined;
+    }
+  }
+
+  return undefined;
+}
+
 // Wraps the official MCP SDK client so callers only depend on this
 // project's interface. `createClient`/`createTransport` are injectable for
 // testing without a real network connection.
@@ -77,6 +97,7 @@ export function createSwiggyFoodClient({
     searchRestaurants: (params) => callTool("search_restaurants", params),
     searchMenu: (params) => callTool("search_menu", params),
     getRestaurantMenu: (params) => callTool("get_restaurant_menu", params),
+    getAddresses: (params) => callTool("get_addresses", params),
     async close() {
       if (connecting) {
         const client = await connecting;

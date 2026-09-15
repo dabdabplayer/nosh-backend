@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   createSwiggyFoodClient,
+  parseStructuredPayload,
   parseToolResult,
   SwiggyFoodToolError,
 } from "../src/swiggy-food-client.js";
@@ -51,6 +52,52 @@ test("searchRestaurants calls the search_restaurants tool with the given argumen
     { name: "search_restaurants", arguments: { query: "biryani", addressId: "addr-1" } },
   ]);
   assert.equal(result.text, "ok");
+});
+
+test("getAddresses calls the get_addresses tool with the given arguments", async () => {
+  const calls = [];
+  const client = createSwiggyFoodClient({
+    mcpUrl: "https://example.invalid/food",
+    token: "test-token",
+    createClient: () =>
+      fakeClient({
+        callTool: async (request) => {
+          calls.push(request);
+          return { content: [{ type: "text", text: "ok" }] };
+        },
+      }),
+    createTransport: () => ({}),
+  });
+
+  await client.getAddresses({ page: 1 });
+
+  assert.deepEqual(calls, [{ name: "get_addresses", arguments: { page: 1 } }]);
+});
+
+test("parseStructuredPayload prefers a non-null structured object", () => {
+  const payload = parseStructuredPayload({
+    text: "ignored",
+    structured: { addresses: [] },
+  });
+
+  assert.deepEqual(payload, { addresses: [] });
+});
+
+test("parseStructuredPayload falls back to parsing text as JSON", () => {
+  const payload = parseStructuredPayload({
+    text: JSON.stringify({ restaurants: [] }),
+    structured: null,
+  });
+
+  assert.deepEqual(payload, { restaurants: [] });
+});
+
+test("parseStructuredPayload returns undefined for unparseable text", () => {
+  assert.equal(parseStructuredPayload({ text: "not json", structured: null }), undefined);
+});
+
+test("parseStructuredPayload returns undefined when both fields are absent", () => {
+  assert.equal(parseStructuredPayload({ text: "", structured: null }), undefined);
 });
 
 test("reuses a single connection across multiple tool calls", async () => {

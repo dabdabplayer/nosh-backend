@@ -1,6 +1,9 @@
 import http from "node:http";
 import { config } from "./config.js";
+import { getFoodSearchReply } from "./food-search-orchestrator.js";
 import { InProcessMessageIdempotency } from "./message-idempotency.js";
+import { PendingAddressSelections } from "./pending-address-selection.js";
+import { createSwiggyFoodClient } from "./swiggy-food-client.js";
 import { sendTextMessage } from "./whatsapp-client.js";
 import {
   extractInboundTextMessages,
@@ -12,9 +15,13 @@ import {
 
 const serviceName = "nosh-backend";
 const processedMessageIds = new InProcessMessageIdempotency();
+const pendingAddressSelections = new PendingAddressSelections();
+const swiggyFoodClient = config.swiggyFood.enabled
+  ? createSwiggyFoodClient({ mcpUrl: config.swiggyFood.mcpUrl, token: config.swiggyFood.testToken })
+  : undefined;
 
-// Placeholder reply until conversation orchestration (intent handling,
-// Swiggy MCP calls) lands in a later increment.
+// Fallback reply for messages that don't trigger a Swiggy Food search (no
+// NLU/intent layer yet) and for when Swiggy Food isn't configured at all.
 const PLACEHOLDER_REPLY_TEXT =
   "Thanks for messaging Nosh! We're still setting things up — full replies are coming soon.";
 
@@ -45,6 +52,20 @@ function acknowledgeIncomingTextMessages(messages) {
   });
 }
 
+async function buildReplyText(message) {
+  if (!swiggyFoodClient) {
+    return PLACEHOLDER_REPLY_TEXT;
+  }
+
+  const foodSearchReply = await getFoodSearchReply({
+    message,
+    swiggyFoodClient,
+    pendingAddressSelections,
+  });
+
+  return foodSearchReply ?? PLACEHOLDER_REPLY_TEXT;
+}
+
 async function replyToIncomingTextMessages(messages) {
   if (!config.whatsapp.sendEnabled || messages.length === 0) {
     return;
@@ -58,7 +79,7 @@ async function replyToIncomingTextMessages(messages) {
           apiVersion: config.whatsapp.apiVersion,
           phoneNumberId: message.phoneNumberId,
           to: message.from,
-          text: PLACEHOLDER_REPLY_TEXT,
+          text: await buildReplyText(message),
         });
       } catch (error) {
         console.error("Failed to send WhatsApp reply.", { name: error.name });
@@ -116,7 +137,7 @@ async function handleWhatsAppWebhook(request, response, url) {
     const unprocessedMessages = processedMessageIds.takeUnprocessed(messages);
     acknowledgeIncomingTextMessages(unprocessedMessages);
 
-    // Persistence and conversation orchestration arrive in later increments.
+    // Persistence beyond in-memory dedup/pending-address state arrives later.
     sendJson(response, 200, { status: "received" });
     await replyToIncomingTextMessages(unprocessedMessages);
   } catch (error) {
@@ -171,6 +192,10 @@ function shutdown(signal) {
       console.error("Server shutdown failed.", error);
       process.exitCode = 1;
     }
+  });
+
+  swiggyFoodClient?.close().catch((error) => {
+    console.error("Failed to close Swiggy Food MCP connection.", { name: error.name });
   });
 }
 
