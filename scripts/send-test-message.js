@@ -21,7 +21,7 @@ if (!phoneNumberId || !to) {
     apiVersion: config.whatsapp.apiVersion,
     phoneNumberId,
     to,
-    text: "Nosh backend outbound test (via src/whatsapp-client.js) — if you see this, sending works.",
+    text: "Hi this is Nosh on behalf of Aarav, big things coming soon, wait and watch.",
   });
 
   console.log("Sent.", result);

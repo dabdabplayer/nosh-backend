@@ -1,6 +1,16 @@
 const DEFAULT_PORT = 3000;
 const DEFAULT_WHATSAPP_WEBHOOK_PATH = "/webhooks/whatsapp";
 const DEFAULT_WHATSAPP_API_VERSION = "v21.0";
+// Verified live against https://mcp.swiggy.com/.well-known/oauth-authorization-server
+const DEFAULT_SWIGGY_OAUTH_BASE_URL = "https://mcp.swiggy.com/auth";
+// Swiggy's Dynamic Client Registration (POST /auth/register) currently
+// returns this same client_id regardless of the registering app's name or
+// redirect_uris - confirmed by registering twice with different values.
+// There is no real per-app client identity yet, so this is just the value
+// their server hands back; it is not a secret.
+const DEFAULT_SWIGGY_OAUTH_CLIENT_ID = "swiggy-mcp";
+const DEFAULT_SWIGGY_OAUTH_REDIRECT_URI = "http://localhost:3000/oauth/swiggy/callback";
+const DEFAULT_SWIGGY_TOKEN_STORE_PATH = "data/swiggy-tokens.json";
 
 function readPort(value) {
   if (value === undefined || value === "") {
@@ -76,6 +86,19 @@ if (Boolean(swiggyFoodMcpUrl) !== Boolean(swiggyFoodTestToken)) {
   throw new Error("SWIGGY_FOOD_MCP_URL and SWIGGY_FOOD_TEST_TOKEN must be set together.");
 }
 
+const swiggyOAuthClientId =
+  readOptionalSecret(process.env.SWIGGY_OAUTH_CLIENT_ID, "SWIGGY_OAUTH_CLIENT_ID") ??
+  DEFAULT_SWIGGY_OAUTH_CLIENT_ID;
+const swiggyOAuthRedirectUri =
+  readOptionalSecret(process.env.SWIGGY_OAUTH_REDIRECT_URI, "SWIGGY_OAUTH_REDIRECT_URI") ??
+  DEFAULT_SWIGGY_OAUTH_REDIRECT_URI;
+const swiggyOAuthBaseUrl =
+  readOptionalSecret(process.env.SWIGGY_OAUTH_BASE_URL, "SWIGGY_OAUTH_BASE_URL") ??
+  DEFAULT_SWIGGY_OAUTH_BASE_URL;
+const swiggyTokenStorePath =
+  readOptionalSecret(process.env.SWIGGY_TOKEN_STORE_PATH, "SWIGGY_TOKEN_STORE_PATH") ??
+  DEFAULT_SWIGGY_TOKEN_STORE_PATH;
+
 export const config = Object.freeze({
   environment: process.env.NODE_ENV ?? "development",
   port: readPort(process.env.PORT),
@@ -92,5 +115,11 @@ export const config = Object.freeze({
     enabled: Boolean(swiggyFoodMcpUrl && swiggyFoodTestToken),
     mcpUrl: swiggyFoodMcpUrl,
     testToken: swiggyFoodTestToken,
+  }),
+  swiggyOAuth: Object.freeze({
+    authBaseUrl: swiggyOAuthBaseUrl,
+    clientId: swiggyOAuthClientId,
+    redirectUri: swiggyOAuthRedirectUri,
+    tokenStorePath: swiggyTokenStorePath,
   }),
 });

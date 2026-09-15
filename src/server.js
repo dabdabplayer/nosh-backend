@@ -3,7 +3,16 @@ import { config } from "./config.js";
 import { getFoodSearchReply } from "./food-search-orchestrator.js";
 import { InProcessMessageIdempotency } from "./message-idempotency.js";
 import { PendingAddressSelections } from "./pending-address-selection.js";
+import { PendingOAuthExchanges } from "./pending-oauth-exchanges.js";
 import { createSwiggyFoodClient } from "./swiggy-food-client.js";
+import {
+  buildAuthorizeUrl,
+  exchangeCodeForToken,
+  generatePkcePair,
+  generateState,
+  SwiggyOAuthError,
+} from "./swiggy-oauth.js";
+import { SwiggyTokenStore } from "./swiggy-token-store.js";
 import { sendTextMessage } from "./whatsapp-client.js";
 import {
   extractInboundTextMessages,
@@ -16,6 +25,8 @@ import {
 const serviceName = "nosh-backend";
 const processedMessageIds = new InProcessMessageIdempotency();
 const pendingAddressSelections = new PendingAddressSelections();
+const pendingOAuthExchanges = new PendingOAuthExchanges();
+const swiggyTokenStore = new SwiggyTokenStore(config.swiggyOAuth.tokenStorePath);
 const swiggyFoodClient = config.swiggyFood.enabled
   ? createSwiggyFoodClient({ mcpUrl: config.swiggyFood.mcpUrl, token: config.swiggyFood.testToken })
   : undefined;
@@ -88,6 +99,76 @@ async function replyToIncomingTextMessages(messages) {
   );
 }
 
+// Manual/dev entry point until this is wired into the WhatsApp conversation
+// flow: GET /oauth/swiggy/start?sender=<whatsapp-sender-id> kicks off the
+// PKCE authorize redirect for that sender.
+function handleSwiggyOAuthStart(request, response, url) {
+  const senderId = url.searchParams.get("sender");
+
+  if (!senderId) {
+    sendJson(response, 400, { error: "missing_sender", message: "Query param 'sender' is required." });
+    return;
+  }
+
+  const { verifier, challenge } = generatePkcePair();
+  const state = generateState();
+  pendingOAuthExchanges.set(state, { senderId, codeVerifier: verifier });
+
+  const authorizeUrl = buildAuthorizeUrl({
+    authBaseUrl: config.swiggyOAuth.authBaseUrl,
+    clientId: config.swiggyOAuth.clientId,
+    redirectUri: config.swiggyOAuth.redirectUri,
+    codeChallenge: challenge,
+    state,
+  });
+
+  response.writeHead(302, { location: authorizeUrl });
+  response.end();
+}
+
+async function handleSwiggyOAuthCallback(request, response, url) {
+  const state = url.searchParams.get("state");
+  const oauthError = url.searchParams.get("error");
+  const pending = state ? pendingOAuthExchanges.take(state) : undefined;
+
+  if (!pending) {
+    sendText(response, 400, "This Swiggy connection link is invalid or has expired. Please try again.");
+    return;
+  }
+
+  if (oauthError) {
+    sendText(response, 200, "Swiggy connection cancelled. You can try again anytime.");
+    return;
+  }
+
+  const code = url.searchParams.get("code");
+
+  if (!code) {
+    sendText(response, 400, "This Swiggy connection link is invalid or has expired. Please try again.");
+    return;
+  }
+
+  try {
+    const tokenRecord = await exchangeCodeForToken({
+      authBaseUrl: config.swiggyOAuth.authBaseUrl,
+      code,
+      codeVerifier: pending.codeVerifier,
+      redirectUri: config.swiggyOAuth.redirectUri,
+    });
+
+    swiggyTokenStore.set(pending.senderId, tokenRecord);
+    sendText(response, 200, "Your Swiggy account is connected. You can return to WhatsApp now.");
+  } catch (error) {
+    if (error instanceof SwiggyOAuthError) {
+      console.error("Swiggy OAuth token exchange failed.", { step: error.step, error: error.error });
+    } else {
+      console.error("Swiggy OAuth callback failed unexpectedly.", { name: error.name });
+    }
+
+    sendText(response, 502, "Couldn't connect your Swiggy account right now. Please try again.");
+  }
+}
+
 async function handleWhatsAppWebhook(request, response, url) {
   if (!config.whatsapp.enabled) {
     sendJson(response, 503, {
@@ -156,6 +237,16 @@ const server = http.createServer(async (request, response) => {
 
   if (url.pathname === config.whatsapp.webhookPath) {
     await handleWhatsAppWebhook(request, response, url);
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/oauth/swiggy/start") {
+    handleSwiggyOAuthStart(request, response, url);
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/oauth/swiggy/callback") {
+    await handleSwiggyOAuthCallback(request, response, url);
     return;
   }
 
