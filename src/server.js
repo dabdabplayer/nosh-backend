@@ -9,6 +9,7 @@ import { PendingConnectLinks } from "./pending-connect-links.js";
 import { PendingOAuthExchanges } from "./pending-oauth-exchanges.js";
 import { PendingOrderConfirmations } from "./pending-order-confirmations.js";
 import { PendingPostAuthActions } from "./pending-post-auth-actions.js";
+import { PRIVACY_POLICY_HTML } from "./privacy-policy.js";
 import { createSwiggyFoodClient } from "./swiggy-food-client.js";
 import { buildConnectReplyText, resolveSwiggyAccessToken } from "./swiggy-auth-flow.js";
 import {
@@ -56,6 +57,13 @@ function sendText(response, statusCode, body) {
   response.writeHead(statusCode, {
     "content-type": "text/plain; charset=utf-8",
     "cache-control": "no-store",
+  });
+  response.end(body);
+}
+
+function sendHtml(response, statusCode, body) {
+  response.writeHead(statusCode, {
+    "content-type": "text/html; charset=utf-8",
   });
   response.end(body);
 }
@@ -442,6 +450,11 @@ const server = http.createServer(async (request, response) => {
 
   if (request.method === "GET" && url.pathname === "/oauth/swiggy/callback") {
     await handleSwiggyOAuthCallback(request, response, url);
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/privacy-policy") {
+    sendHtml(response, 200, PRIVACY_POLICY_HTML);
     return;
   }
 
