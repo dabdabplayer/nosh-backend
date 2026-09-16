@@ -6,8 +6,9 @@ name: Security
 #   - npm audit: checks against the public npm/GitHub advisory database.
 #   - Gitleaks: an open-source secret scanner with its own pattern library,
 #     run from its own official container image.
-#   - CodeQL: GitHub's semantic static-analysis engine, using security query
-#     packs maintained by GitHub's security team, not by this repo.
+#   - Semgrep: open-source static analysis using free, publicly-maintained
+#     rule packs from the Semgrep Registry - not GitHub's CodeQL, which
+#     requires a paid GitHub Advanced Security license for private repos.
 # The adversarial webhook security regression suite (test/security-adversarial.test.js)
 # already runs as part of `npm test` in test.yml - it's a real, hand-written
 # suite, but it asserts security PROPERTIES ("an invalid signature must be
@@ -61,21 +62,17 @@ jobs:
           docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:latest \
             detect --source /repo --verbose --redact
 
-  codeql:
-    name: CodeQL static analysis
+  static-analysis:
+    name: Static analysis (Semgrep)
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      security-events: write
-      actions: read
     steps:
       - name: Check out source
         uses: actions/checkout@v4
 
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
-        with:
-          languages: javascript
-
-      - name: Run CodeQL analysis
-        uses: github/codeql-action/analyze@v3
+      # p/security-audit and p/javascript are free, publicly-maintained
+      # rule packs from the Semgrep Registry - no account or login needed.
+      # --error makes Semgrep exit non-zero (failing the job) on any finding.
+      - name: Run Semgrep
+        run: |
+          docker run --rm -v "$PWD:/src" semgrep/semgrep \
+            semgrep scan --config=p/security-audit --config=p/javascript --error
