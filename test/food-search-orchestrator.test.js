@@ -157,6 +157,7 @@ test("classifyIncomingMessage: falls back to NIM classification when there's no 
       apiKey: "key",
       baseUrl: "https://example.test",
       model: "test-model",
+      timeoutMs: undefined,
       hasActiveCart: false,
     },
   ]);

@@ -532,6 +532,7 @@ export async function getFoodOrderReply({
     apiKey: nvidiaNim.apiKey,
     baseUrl: nvidiaNim.baseUrl,
     model: nvidiaNim.model,
+    timeoutMs: nvidiaNim.timeoutMs,
   });
 
   if (!intent) {

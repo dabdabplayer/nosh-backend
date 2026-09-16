@@ -66,6 +66,7 @@ async function resolveSearchTerm(
     apiKey: nvidiaNim.apiKey,
     baseUrl: nvidiaNim.baseUrl,
     model: nvidiaNim.model,
+    timeoutMs: nvidiaNim.timeoutMs,
     hasActiveCart,
   });
 

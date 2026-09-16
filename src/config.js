@@ -13,6 +13,11 @@ const DEFAULT_SWIGGY_OAUTH_REDIRECT_URI = "http://localhost:3000/oauth/swiggy/ca
 const DEFAULT_SWIGGY_TOKEN_STORE_PATH = "data/swiggy-tokens.json";
 const DEFAULT_NVIDIA_NIM_BASE_URL = "https://integrate.api.nvidia.com/v1";
 const DEFAULT_NVIDIA_NIM_MODEL = "openai/gpt-oss-20b";
+// NVIDIA NIM's hosted inference has real, sometimes multi-second latency -
+// confirmed live (an 8s timeout was aborting almost every classification
+// call in production). 25s gives it real room without hanging a reply
+// indefinitely if NIM is actually down.
+const DEFAULT_NVIDIA_NIM_TIMEOUT_MS = 25_000;
 
 function readPort(value) {
   if (value === undefined || value === "") {
@@ -106,6 +111,22 @@ const nvidiaNimBaseUrl =
 const nvidiaNimModel =
   readOptionalSecret(process.env.NVIDIA_NIM_MODEL, "NVIDIA_NIM_MODEL") ?? DEFAULT_NVIDIA_NIM_MODEL;
 
+function readNvidiaNimTimeoutMs(value) {
+  if (value === undefined || value === "") {
+    return DEFAULT_NVIDIA_NIM_TIMEOUT_MS;
+  }
+
+  const timeoutMs = Number(value);
+
+  if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new Error("NVIDIA_NIM_TIMEOUT_MS must be a positive integer.");
+  }
+
+  return timeoutMs;
+}
+
+const nvidiaNimTimeoutMs = readNvidiaNimTimeoutMs(process.env.NVIDIA_NIM_TIMEOUT_MS);
+
 const swiggyOAuthClientId =
   readOptionalSecret(process.env.SWIGGY_OAUTH_CLIENT_ID, "SWIGGY_OAUTH_CLIENT_ID") ??
   DEFAULT_SWIGGY_OAUTH_CLIENT_ID;
@@ -148,6 +169,7 @@ export const config = Object.freeze({
     baseUrl: nvidiaNimBaseUrl,
     enabled: Boolean(nvidiaNimApiKey),
     model: nvidiaNimModel,
+    timeoutMs: nvidiaNimTimeoutMs,
   }),
   swiggyOAuth: Object.freeze({
     authBaseUrl: swiggyOAuthBaseUrl,
