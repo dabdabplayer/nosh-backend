@@ -9,24 +9,28 @@ server.
 
 ## Scope
 
-- The Node.js backend (`src/`) as of commit `891d18c` plus the uncommitted
-  token-encryption fix from this review (see "Findings" below).
-- WhatsApp webhook ingestion, Swiggy OAuth flow, token storage, and general
-  HTTP-layer hardening.
+- The Node.js backend (`src/`), covering the manual review (commit
+  `891d18c` onward) and the CI automation added afterward (through
+  `ae1bf97` — see Part 3).
+- WhatsApp webhook ingestion, Swiggy OAuth flow, token storage, general
+  HTTP-layer hardening, and (Part 3) continuous automated scanning on every
+  push.
 - Out of scope: Swiggy's own MCP servers, Meta's WhatsApp Cloud API
   infrastructure, and anything requiring production credentials (all
   testing used local dev secrets only, with `WHATSAPP_ACCESS_TOKEN` removed
   for the duration of the active test phase to guarantee no real outbound
   WhatsApp message could be sent as a side effect).
 
-## Overall rating: **Good, with one real fix applied and one open hardening item**
+## Overall rating: **Good, with two real fixes applied (one caught by automated tooling after the manual pass) and one open hardening item**
 
 The codebase held up well against a real adversarial pass — no injection,
 no auth bypass, no crash, no information disclosure found anywhere in the
-attack surface tested. One genuine plaintext-secrets-at-rest finding was
-found and fixed during this review (see below). This is a pre-production,
-low-traffic app, not a hardened multi-tenant SaaS product — the rating
-reflects that context, not a formal third-party audit.
+attack surface tested. Two genuine findings came out of this review overall:
+plaintext secrets at rest (manual review, Part 1) and a missing GCM
+authentication-tag-length pin (caught by the Semgrep CI check on its first
+real run, Part 3) — both fixed. This is a pre-production, low-traffic app,
+not a hardened multi-tenant SaaS product — the rating reflects that
+context, not a formal third-party audit.
 
 ## Part 1 — Static review: plaintext storage of sensitive data
 
@@ -68,6 +72,57 @@ outbound WhatsApp send as a side effect.
 | 17 | Oversized payload (2MB vs. documented 1MB limit) | Byte-exact HMAC-signed 2MB body | ✅ 413 `payload_too_large`, server stayed healthy immediately after |
 | 18 | Server survival across the full battery | `GET /health` after every phase | ✅ Stayed responsive (`200`) throughout — no crash, no hang, at any point |
 
+## Part 3 — Continuous security (CI, added after the manual review)
+
+Per the user's explicit request, the manual review above was turned into
+permanent, automated checks that run on every push/PR — not a one-off.
+Deliberately built from independent, externally-maintained tools rather
+than custom assertions this repo's own author controls, plus a permanent
+regression suite ported from Part 2's adversarial battery.
+
+**`.github/workflows/security.yml`** — three jobs:
+
+| Job | Tool | What it checks |
+| --- | --- | --- |
+| `dependency-audit` | `npm audit --audit-level=high` | Known CVEs against the public npm/GitHub advisory database |
+| `secret-scan` | Gitleaks (official image, plain `docker run`) | Secrets committed anywhere in git history, not just the current tree |
+| `static-analysis` | Semgrep (`p/security-audit` + `p/javascript`, free public registry rules) | Real static-analysis security patterns |
+
+**`test/security-adversarial.test.js`** — 12 of Part 2's tests (signature
+verification, subscription handshake, `__proto__` injection, wrong payload
+shapes, malformed JSON, oversized body, path traversal, server survival)
+rebuilt as a permanent suite that spawns the real `src/server.js` and fires
+genuine attacks at it. Fully hermetic (its own dummy secrets, not the
+outer environment's), so it already runs via the existing `test.yml` on
+every push with no extra CI configuration needed.
+
+### What actually happened setting this up
+
+- **CodeQL was tried first, failed for a licensing reason, not a code
+  reason.** GitHub's code-scanning upload requires GitHub Advanced
+  Security, which is paid for private repos. First CI run: `npm audit` and
+  Gitleaks both passed clean; CodeQL failed on "Code scanning is not
+  enabled for this repository" - nothing to do with the code. Replaced
+  with Semgrep, which needs no account or paid license for its public
+  registry rules.
+- **Semgrep's first real run found a genuine issue.** `javascript.node-crypto.security.gcm-no-tag-length`
+  flagged `src/swiggy-token-store.js`: `createCipheriv`/`createDecipheriv`
+  for the AES-256-GCM token encryption (added earlier in this same review,
+  Part 1) didn't pin an explicit `authTagLength`. Without it, a
+  shorter-than-expected authentication tag could in principle be accepted,
+  weakening GCM's authentication guarantee - narrow given the existing
+  trust boundary (an attacker who can already tamper with
+  `data/swiggy-tokens.json` has bigger problems), but a real, free,
+  zero-downside fix. **Fixed**: pinned to 16 bytes (the standard/maximum
+  length, already what Node produces by default - no behavior change for
+  normal operation) on both the encrypt and decrypt side, plus an explicit
+  length check before `setAuthTag()`.
+
+This is the outcome the CI setup was supposed to produce: an independent
+tool, with rules this repo's author doesn't control, catching something a
+manual pass missed. All three jobs and the full test suite (190/190) are
+green as of commit `ae1bf97`.
+
 ## Open item (not fixed, flagged for a decision)
 
 - **No TTL on connect-link tokens or OAuth `state` values** (`PendingConnectLinks`, `PendingOAuthExchanges`). Not exploitable today — 128-bit entropy makes brute-forcing infeasible regardless of how long a token stays valid — but a leaked-and-unused token remains valid indefinitely instead of expiring after, e.g., 10 minutes. Low severity, real defense-in-depth gap. Not yet actioned as of this writing.
@@ -77,4 +132,4 @@ outbound WhatsApp send as a side effect.
 - Load/DoS resilience at volume (only single-request tests were run; no burst/concurrency stress test).
 - Anything requiring real production Swiggy or Meta credentials (this session's other work already covers Swiggy MCP error handling and retry behavior separately — see `docs/RUNBOOK.md`).
 - Infrastructure-level hardening (AWS IAM, network ACLs, secrets-manager integration) — not yet applicable, migration hasn't happened yet.
-- Static analysis tooling (no SAST/linter security plugin run — this was a manual review plus `npm audit`).
+- Dynamic/runtime scanning at scale (e.g. a full OWASP ZAP-style scan) — the adversarial suite is targeted, not exhaustive fuzzing.
