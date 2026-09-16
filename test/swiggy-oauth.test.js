@@ -53,7 +53,7 @@ test("buildAuthorizeUrl builds the documented query string", () => {
   assert.equal(parsed.searchParams.get("code_challenge"), "challenge-123");
   assert.equal(parsed.searchParams.get("code_challenge_method"), "S256");
   assert.equal(parsed.searchParams.get("state"), "state-abc");
-  assert.equal(parsed.searchParams.get("scope"), "mcp:tools");
+  assert.equal(parsed.searchParams.get("scope"), "mcp:tools mcp:resources mcp:prompts");
 });
 
 test("exchangeCodeForToken posts the documented body and parses the token response", async () => {

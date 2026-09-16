@@ -44,7 +44,13 @@ export function buildAuthorizeUrl({ authBaseUrl, clientId, redirectUri, codeChal
   url.searchParams.set("code_challenge", codeChallenge);
   url.searchParams.set("code_challenge_method", "S256");
   url.searchParams.set("state", state);
-  url.searchParams.set("scope", scope ?? "mcp:tools");
+  // Requests all three v1 scopes uniformly, per the go-live checklist's
+  // "v1 scopes are requested uniformly" requirement - Nosh only calls tools
+  // today, but the checklist asks for all three regardless, and Swiggy's own
+  // documented token response example grants all three back even when only
+  // mcp:tools was requested (scopes are server-level, not finely enforced in
+  // v1 per the auth docs), so this costs nothing and matches what's asked.
+  url.searchParams.set("scope", scope ?? "mcp:tools mcp:resources mcp:prompts");
   return url.toString();
 }
 

@@ -1,6 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { SwiggyAuthFailureError, withSwiggyRetry } from "./swiggy-retry.js";
+import { SwiggyAuthFailureError, SwiggyRateLimitedError, withSwiggyRetry } from "./swiggy-retry.js";
 
 const CLIENT_NAME = "nosh-backend";
 const CLIENT_VERSION = "0.1.0";
@@ -104,7 +104,9 @@ export function createSwiggyFoodClient({
         durationMs: Date.now() - startedAt,
         errorName: error?.name,
       });
-      throw error instanceof SwiggyAuthFailureError ? error : new SwiggyFoodToolError(name, error);
+      throw error instanceof SwiggyAuthFailureError || error instanceof SwiggyRateLimitedError
+        ? error
+        : new SwiggyFoodToolError(name, error);
     }
 
     if (result?.isError) {
