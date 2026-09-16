@@ -40,6 +40,20 @@ function readOptionalSecret(value, name) {
   return value;
 }
 
+function readRolloutPercent(value) {
+  if (value === undefined || value === "") {
+    return 100;
+  }
+
+  const percent = Number(value);
+
+  if (!Number.isInteger(percent) || percent < 0 || percent > 100) {
+    throw new Error("ROLLOUT_PERCENT must be an integer between 0 and 100.");
+  }
+
+  return percent;
+}
+
 function readWebhookPath(value) {
   if (value === undefined || value === "") {
     return DEFAULT_WHATSAPP_WEBHOOK_PATH;
@@ -108,6 +122,13 @@ const swiggyTokenStorePath =
 export const config = Object.freeze({
   environment: process.env.NODE_ENV ?? "development",
   port: readPort(process.env.PORT),
+  // Percentage-based go-live ramp (1% -> 10% -> 50% -> 100%): a sender
+  // outside the rollout gets the same placeholder reply as when Swiggy Food
+  // isn't configured at all. Defaults to 100 (everyone) so existing
+  // deployments are unaffected unless ROLLOUT_PERCENT is explicitly set.
+  rollout: Object.freeze({
+    percent: readRolloutPercent(process.env.ROLLOUT_PERCENT),
+  }),
   whatsapp: Object.freeze({
     accessToken: whatsappAccessToken,
     apiVersion: whatsappApiVersion,

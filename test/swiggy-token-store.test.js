@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -50,4 +50,16 @@ test("tokens for different senders don't interfere with each other", () => {
 
   assert.deepEqual(store.get("sender-1"), { accessToken: "one" });
   assert.deepEqual(store.get("sender-2"), { accessToken: "two" });
+});
+
+test("the raw sender id (a phone number) is never written to disk in plaintext", () => {
+  const filePath = tempStorePath();
+  const store = new SwiggyTokenStore(filePath);
+  const senderId = "+919220133162";
+
+  store.set(senderId, { accessToken: "abc" });
+
+  const fileContents = readFileSync(filePath, "utf8");
+  assert.ok(!fileContents.includes(senderId));
+  assert.ok(!fileContents.includes("9220133162"));
 });

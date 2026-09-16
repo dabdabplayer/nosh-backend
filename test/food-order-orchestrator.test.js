@@ -911,3 +911,49 @@ test("placeConfirmedOrder never calls placeFoodOrder again once an orderId is al
   assert.equal(placeCalls, 0);
   assert.equal(result.status, "confirmed");
 });
+
+test("placeConfirmedOrder treats a placeFoodOrder throw as success if a new order shows up in getFoodOrders (went through despite the error)", async () => {
+  let getFoodOrdersCalls = 0;
+  const confirmCalls = [];
+  const client = {
+    getFoodOrders: async () => {
+      getFoodOrdersCalls += 1;
+      // First call (the pre-attempt baseline) sees only the old order;
+      // the second call (after placeFoodOrder throws) sees a new one too.
+      const orders = getFoodOrdersCalls === 1 ? [{ orderId: "old-order" }] : [{ orderId: "old-order" }, { orderId: "new-order" }];
+      return payload({ orders });
+    },
+    placeFoodOrder: async () => {
+      throw new Error("network error, response lost");
+    },
+    confirmOrder: async (params) => {
+      confirmCalls.push(params);
+      return payload({ result: "success" });
+    },
+  };
+
+  const result = await placeConfirmedOrder({
+    swiggyFoodClient: client,
+    confirmation: { addressId: "addr-1", cartId: 1, paymentMethod: "Cash" },
+  });
+
+  assert.equal(result.status, "confirmed");
+  assert.equal(confirmCalls.length, 1);
+  assert.equal(confirmCalls[0].orderId, "new-order");
+});
+
+test("placeConfirmedOrder still reports failure when placeFoodOrder throws and no new order appears", async () => {
+  const client = {
+    getFoodOrders: async () => payload({ orders: [{ orderId: "old-order" }] }),
+    placeFoodOrder: async () => {
+      throw new Error("boom");
+    },
+  };
+
+  const result = await placeConfirmedOrder({
+    swiggyFoodClient: client,
+    confirmation: { addressId: "addr-1", cartId: 1, paymentMethod: "Cash" },
+  });
+
+  assert.equal(result.status, "failed");
+});

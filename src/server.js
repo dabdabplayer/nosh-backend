@@ -10,6 +10,7 @@ import { PendingOAuthExchanges } from "./pending-oauth-exchanges.js";
 import { PendingOrderConfirmations } from "./pending-order-confirmations.js";
 import { PendingPostAuthActions } from "./pending-post-auth-actions.js";
 import { PRIVACY_POLICY_HTML } from "./privacy-policy.js";
+import { isSenderInRollout } from "./rollout.js";
 import { createSwiggyFoodClient } from "./swiggy-food-client.js";
 import { buildConnectReplyText, resolveSwiggyAccessToken } from "./swiggy-auth-flow.js";
 import {
@@ -19,6 +20,7 @@ import {
   generateState,
   SwiggyOAuthError,
 } from "./swiggy-oauth.js";
+import { SwiggyAuthFailureError } from "./swiggy-retry.js";
 import { SwiggyTokenStore } from "./swiggy-token-store.js";
 import { sendTextMessage } from "./whatsapp-client.js";
 import {
@@ -101,6 +103,15 @@ async function withSwiggyFoodClient(senderId, fn) {
 
   try {
     return { authenticated: true, result: await fn(swiggyFoodClient) };
+  } catch (error) {
+    if (error instanceof SwiggyAuthFailureError) {
+      // Swiggy rejected the token mid-conversation even though our locally
+      // tracked expiry said it was still good - drop it so the next message
+      // goes through the normal reconnect flow instead of failing silently.
+      swiggyTokenStore.delete(senderId);
+      return { authenticated: false };
+    }
+    throw error;
   } finally {
     swiggyFoodClient.close().catch((error) => {
       console.error("Failed to close per-request Swiggy Food MCP connection.", { name: error.name });
@@ -147,6 +158,10 @@ async function buildOrderConfirmationReply(message, pendingConfirmation) {
 
 async function buildReplyText(message) {
   if (!config.swiggyFood.enabled) {
+    return PLACEHOLDER_REPLY_TEXT;
+  }
+
+  if (!isSenderInRollout(message.from, config.rollout.percent)) {
     return PLACEHOLDER_REPLY_TEXT;
   }
 

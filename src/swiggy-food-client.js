@@ -1,8 +1,21 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { SwiggyAuthFailureError, withSwiggyRetry } from "./swiggy-retry.js";
 
 const CLIENT_NAME = "nosh-backend";
 const CLIENT_VERSION = "0.1.0";
+
+// Not yet emitted by Swiggy MCP as of v1.0 - the field only starts appearing
+// once v1.1 ships (see https://mcp.swiggy.com/builders/docs/operate/versioning.md).
+// This is pre-wired now, as their own docs recommend, so nothing else needs
+// to change when it does: { tool, replaced_by, remove_after }.
+function warnIfDeprecated(toolName, result) {
+  const deprecation = result?._meta?.swiggy?.deprecation;
+
+  if (deprecation) {
+    console.warn("Swiggy tool deprecation notice.", { toolName, ...deprecation });
+  }
+}
 
 export class SwiggyFoodToolError extends Error {
   constructor(toolName, cause) {
@@ -77,18 +90,36 @@ export function createSwiggyFoodClient({
   }
 
   async function callTool(name, args) {
-    const client = await ensureConnected();
+    const startedAt = Date.now();
 
     let result;
     try {
-      result = await client.callTool({ name, arguments: args });
+      result = await withSwiggyRetry(async () => {
+        const client = await ensureConnected();
+        return client.callTool({ name, arguments: args });
+      });
     } catch (error) {
-      throw new SwiggyFoodToolError(name, error);
+      console.error("Swiggy Food tool call failed.", {
+        toolName: name,
+        durationMs: Date.now() - startedAt,
+        errorName: error?.name,
+      });
+      throw error instanceof SwiggyAuthFailureError ? error : new SwiggyFoodToolError(name, error);
     }
 
     if (result?.isError) {
+      console.error("Swiggy Food tool call returned an error result.", {
+        toolName: name,
+        durationMs: Date.now() - startedAt,
+      });
       throw new SwiggyFoodToolError(name, result);
     }
+
+    console.info("Swiggy Food tool call succeeded.", {
+      toolName: name,
+      durationMs: Date.now() - startedAt,
+    });
+    warnIfDeprecated(name, result);
 
     return parseToolResult(result);
   }

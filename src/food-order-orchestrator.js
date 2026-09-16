@@ -380,25 +380,56 @@ async function handleCheckout({ senderId, swiggyFoodClient, addressId, restauran
   return formatOrderSummary(cartData, paymentOptions.cod.displayName ?? "Cash on Delivery");
 }
 
+// Best-effort check for "did place_food_order actually go through despite
+// the error", used only when placeFoodOrder itself throws. Swiggy's tools
+// don't expose a way to correlate a specific placement attempt to an order
+// (no idempotency key, no cart->order link), and get_food_orders' own
+// orderedTime is a year-less, human-readable string ("September 8, 3:59 PM")
+// - confirmed live - so it can't be parsed to check recency. A before/after
+// set-diff on orderId sidesteps both problems: it doesn't need to parse a
+// timestamp, only to notice an order that wasn't there a moment ago. It can
+// still misattribute if a genuinely different order lands in that same
+// window (e.g. another device orders concurrently), but that's strictly
+// better than the previous behavior of no check at all before this fix.
+async function findOrderPlacedSinceSnapshot(swiggyFoodClient, addressId, priorOrderIds) {
+  try {
+    const afterData = parseStructuredPayload(await swiggyFoodClient.getFoodOrders({ addressId }));
+    return afterData?.orders?.find((order) => !priorOrderIds.has(order.orderId));
+  } catch {
+    return undefined;
+  }
+}
+
 // Only called after server.js's deterministic YES check on a pending
 // confirmation - never from NLU classification.
 //
 // Non-idempotent retry safety (AGENTS.md: never blindly retry a
 // non-idempotent commerce operation, check whether it already succeeded
-// first): Swiggy's tools don't expose a way to correlate a cart to a past
-// order, so this tracks success locally instead - once place_food_order
-// returns an orderId, it's saved onto the pending confirmation itself
-// (see server.js) and a retried YES skips straight to confirm_order rather
-// than placing a second order. This protects against a retry within the
-// same pending-confirmation lifecycle; it doesn't survive a process
-// restart, consistent with every other Pending* store's documented
-// in-memory-only limitation.
+// first): once place_food_order returns an orderId, it's saved onto the
+// pending confirmation itself (see server.js) and a retried YES skips
+// straight to confirm_order rather than placing a second order. That
+// protects a retry within the same pending-confirmation lifecycle (doesn't
+// survive a process restart, same as every other Pending* store). It does
+// NOT protect the case where placeFoodOrder itself throws without us ever
+// learning the orderId - for that, findOrderPlacedSinceSnapshot below
+// snapshots the order list first and diffs it against the failure so a
+// retry doesn't double-order just because the success response got lost.
 export async function placeConfirmedOrder({ swiggyFoodClient, confirmation }) {
   let orderId = confirmation.orderId;
   let lat = confirmation.lat;
   let lng = confirmation.lng;
 
   if (!orderId) {
+    let priorOrderIds;
+    try {
+      const beforeData = parseStructuredPayload(
+        await swiggyFoodClient.getFoodOrders({ addressId: confirmation.addressId }),
+      );
+      priorOrderIds = new Set((beforeData?.orders ?? []).map((order) => order.orderId));
+    } catch {
+      priorOrderIds = undefined; // Best-effort baseline only - proceed without it if it fails.
+    }
+
     let placeResult;
     try {
       placeResult = await swiggyFoodClient.placeFoodOrder({
@@ -406,18 +437,30 @@ export async function placeConfirmedOrder({ swiggyFoodClient, confirmation }) {
         paymentMethod: confirmation.paymentMethod,
       });
     } catch {
-      return { status: "failed", replyText: "Sorry, I couldn't place that order right now. Please try again in a bit." };
+      const newOrder = priorOrderIds
+        ? await findOrderPlacedSinceSnapshot(swiggyFoodClient, confirmation.addressId, priorOrderIds)
+        : undefined;
+
+      if (!newOrder) {
+        return { status: "failed", replyText: "Sorry, I couldn't place that order right now. Please try again in a bit." };
+      }
+
+      // It actually went through despite the error - fall through to
+      // confirm_order below instead of telling the user it failed.
+      orderId = newOrder.orderId;
     }
 
-    const orderData = parseStructuredPayload(placeResult);
+    if (!orderId) {
+      const orderData = parseStructuredPayload(placeResult);
 
-    if (!orderData?.orderId) {
-      return { status: "failed", replyText: "Sorry, I couldn't place that order right now. Please try again in a bit." };
+      if (!orderData?.orderId) {
+        return { status: "failed", replyText: "Sorry, I couldn't place that order right now. Please try again in a bit." };
+      }
+
+      orderId = orderData.orderId;
+      lat = orderData.lat;
+      lng = orderData.lng;
     }
-
-    orderId = orderData.orderId;
-    lat = orderData.lat;
-    lng = orderData.lng;
   }
 
   try {
