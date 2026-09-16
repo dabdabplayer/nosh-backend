@@ -140,6 +140,30 @@ const swiggyTokenStorePath =
   readOptionalSecret(process.env.SWIGGY_TOKEN_STORE_PATH, "SWIGGY_TOKEN_STORE_PATH") ??
   DEFAULT_SWIGGY_TOKEN_STORE_PATH;
 
+// Required, not optional: SwiggyTokenStore encrypts every record it writes
+// (see src/swiggy-token-store.js) - found live during a pre-migration
+// security review that the token VALUES, not just the lookup key, were
+// sitting on disk in plain JSON. A 32-byte key, base64-encoded. Generate one
+// with: node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+function readSwiggyTokenEncryptionKey(value) {
+  if (!value) {
+    throw new Error(
+      "SWIGGY_TOKEN_ENCRYPTION_KEY must be set (32 random bytes, base64-encoded). " +
+        'Generate one with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'base64\'))"',
+    );
+  }
+
+  const key = Buffer.from(value, "base64");
+
+  if (key.length !== 32) {
+    throw new Error("SWIGGY_TOKEN_ENCRYPTION_KEY must decode (from base64) to exactly 32 bytes.");
+  }
+
+  return key;
+}
+
+const swiggyTokenEncryptionKey = readSwiggyTokenEncryptionKey(process.env.SWIGGY_TOKEN_ENCRYPTION_KEY);
+
 export const config = Object.freeze({
   environment: process.env.NODE_ENV ?? "development",
   port: readPort(process.env.PORT),
@@ -176,5 +200,6 @@ export const config = Object.freeze({
     clientId: swiggyOAuthClientId,
     redirectUri: swiggyOAuthRedirectUri,
     tokenStorePath: swiggyTokenStorePath,
+    tokenEncryptionKey: swiggyTokenEncryptionKey,
   }),
 });

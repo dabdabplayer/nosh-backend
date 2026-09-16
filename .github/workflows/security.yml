@@ -1,0 +1,81 @@
+name: Security
+
+# Runs on every push and PR, separate from the functional test workflow
+# (test.yml). Deliberately built from independent, externally-maintained
+# tools rather than custom assertions this repo's own author controls:
+#   - npm audit: checks against the public npm/GitHub advisory database.
+#   - Gitleaks: an open-source secret scanner with its own pattern library,
+#     run from its own official container image.
+#   - CodeQL: GitHub's semantic static-analysis engine, using security query
+#     packs maintained by GitHub's security team, not by this repo.
+# The adversarial webhook security regression suite (test/security-adversarial.test.js)
+# already runs as part of `npm test` in test.yml - it's a real, hand-written
+# suite, but it asserts security PROPERTIES ("an invalid signature must be
+# rejected") against the real running server, not a tautology, so it isn't
+# duplicated here.
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-audit:
+    name: Dependency vulnerability audit (npm audit)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Audit for known vulnerabilities (fails on high/critical)
+        run: npm audit --audit-level=high
+
+  secret-scan:
+    name: Secret scanning (Gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source (full history, so past commits are scanned too)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Runs on the normal runner (not as a job-level container) and invokes
+      # Gitleaks via a plain `docker run`, matching its own documented usage
+      # exactly. A job-level `container:` would run every step - including
+      # the JS-based checkout action above, which needs Node.js - inside the
+      # Gitleaks image, which is a minimal security-tool image unlikely to
+      # have that; this sidesteps the risk instead of assuming it doesn't apply.
+      - name: Run Gitleaks
+        run: |
+          docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:latest \
+            detect --source /repo --verbose --redact
+
+  codeql:
+    name: CodeQL static analysis
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript
+
+      - name: Run CodeQL analysis
+        uses: github/codeql-action/analyze@v3

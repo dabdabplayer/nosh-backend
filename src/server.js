@@ -40,7 +40,10 @@ const pendingConnectLinks = new PendingConnectLinks();
 const pendingPostAuthActions = new PendingPostAuthActions();
 const pendingCartSessions = new PendingCartSessions();
 const pendingOrderConfirmations = new PendingOrderConfirmations();
-const swiggyTokenStore = new SwiggyTokenStore(config.swiggyOAuth.tokenStorePath);
+const swiggyTokenStore = new SwiggyTokenStore(
+  config.swiggyOAuth.tokenStorePath,
+  config.swiggyOAuth.tokenEncryptionKey,
+);
 
 // Fallback reply for messages that don't trigger a Swiggy Food search (no
 // NLU/intent layer yet) and for when Swiggy Food isn't configured at all.

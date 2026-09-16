@@ -52,7 +52,10 @@ if (!config.swiggyFood.enabled) {
   const pendingPostAuthActions = new PendingPostAuthActions();
   const pendingCartSessions = new PendingCartSessions();
   const pendingOrderConfirmations = new PendingOrderConfirmations();
-  const swiggyTokenStore = new SwiggyTokenStore(config.swiggyOAuth.tokenStorePath);
+  const swiggyTokenStore = new SwiggyTokenStore(
+    config.swiggyOAuth.tokenStorePath,
+    config.swiggyOAuth.tokenEncryptionKey,
+  );
   const swiggyOAuthOrigin = new URL(config.swiggyOAuth.redirectUri).origin;
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
