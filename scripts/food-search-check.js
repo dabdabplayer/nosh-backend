@@ -3,10 +3,13 @@
 // round-trip (useful while the Meta app is still unpublished). Not part of
 // the app itself.
 //
-// Usage:
+// Usage (also needs the usual DYNAMODB_TABLE_NAME + SWIGGY_TOKEN_ENCRYPTION_KEY
+// from .env, since config.js requires them):
 //   SWIGGY_FOOD_MCP_URL=... SWIGGY_FOOD_TEST_TOKEN=... node scripts/food-search-check.js "find biryani"
 //   SWIGGY_FOOD_MCP_URL=... SWIGGY_FOOD_TEST_TOKEN=... node scripts/food-search-check.js "find biryani" "1"
 
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { config } from "../src/config.js";
 import { getFoodSearchReply } from "../src/food-search-orchestrator.js";
 import { PendingAddressSelections } from "../src/pending-address-selection.js";
@@ -28,7 +31,11 @@ if (!firstMessageText) {
     mcpUrl: config.swiggyFood.mcpUrl,
     token: config.swiggyFood.testToken,
   });
-  const pendingAddressSelections = new PendingAddressSelections();
+  const documentClient = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+  const pendingAddressSelections = new PendingAddressSelections({
+    documentClient,
+    tableName: config.dynamoDb.tableName,
+  });
 
   const firstReply = await getFoodSearchReply({
     message: { from: sender, id: "1", phoneNumberId: "test", text: firstMessageText },

@@ -1,18 +1,29 @@
+import { putValue, takeValue } from "./dynamo-item-store.js";
+
+function pk(senderId) {
+  return `POSTAUTH#${senderId}`;
+}
+
 // Remembers what a WhatsApp sender was trying to search for when we had to
 // interrupt them to connect their Swiggy account, so the search can resume
 // automatically once /oauth/swiggy/callback succeeds instead of making them
-// repeat themselves. In-memory, per-process, no TTL - same simplicity level
-// as the other pending-* stores.
+// repeat themselves. Backed by DynamoDB (see dynamo-item-store.js) so it
+// survives across Fargate tasks/restarts. No TTL by design, same simplicity
+// level as the in-memory version this replaced.
 export class PendingPostAuthActions {
-  #pendingBySender = new Map();
+  #documentClient;
+  #tableName;
+
+  constructor({ documentClient, tableName }) {
+    this.#documentClient = documentClient;
+    this.#tableName = tableName;
+  }
 
   set(senderId, pending) {
-    this.#pendingBySender.set(senderId, Object.freeze(pending));
+    return putValue(this.#documentClient, this.#tableName, pk(senderId), Object.freeze(pending));
   }
 
   take(senderId) {
-    const pending = this.#pendingBySender.get(senderId);
-    this.#pendingBySender.delete(senderId);
-    return pending;
+    return takeValue(this.#documentClient, this.#tableName, pk(senderId));
   }
 }
