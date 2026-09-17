@@ -1,19 +1,28 @@
-// In-memory, per-process store of in-flight OAuth authorize->callback
-// exchanges, keyed by the opaque `state` value round-tripped through
-// Swiggy's consent flow. No TTL, no persistence across restarts - same
-// simplicity level as InProcessMessageIdempotency and
-// PendingAddressSelections; an abandoned exchange just lingers harmlessly
-// until the process restarts.
+import { putValue, takeValue } from "./dynamo-item-store.js";
+
+function pk(state) {
+  return `OAUTH#${state}`;
+}
+
+// Durable store of in-flight OAuth authorize->callback exchanges, keyed by
+// the opaque `state` value round-tripped through Swiggy's consent flow.
+// Backed by DynamoDB (see dynamo-item-store.js) so it survives across
+// Fargate tasks/restarts. No TTL by design - an abandoned exchange just
+// lingers harmlessly, same as the in-memory version it replaced.
 export class PendingOAuthExchanges {
-  #pendingByState = new Map();
+  #documentClient;
+  #tableName;
+
+  constructor({ documentClient, tableName }) {
+    this.#documentClient = documentClient;
+    this.#tableName = tableName;
+  }
 
   set(state, pending) {
-    this.#pendingByState.set(state, Object.freeze(pending));
+    return putValue(this.#documentClient, this.#tableName, pk(state), Object.freeze(pending));
   }
 
   take(state) {
-    const pending = this.#pendingByState.get(state);
-    this.#pendingByState.delete(state);
-    return pending;
+    return takeValue(this.#documentClient, this.#tableName, pk(state));
   }
 }

@@ -257,7 +257,7 @@ async function handleAddToCart({
     return GENERIC_FALLBACK_REPLY;
   }
 
-  pendingCartSessions.set(senderId, { restaurantId, restaurantName: resolvedRestaurantName, addressId });
+  await pendingCartSessions.set(senderId, { restaurantId, restaurantName: resolvedRestaurantName, addressId });
 
   return [`Added ${menuItem.name} to your cart.`, formatCartReply(cartData)].join("\n\n");
 }
@@ -371,7 +371,7 @@ async function handleCheckout({ senderId, swiggyFoodClient, addressId, restauran
     return "Cash on Delivery isn't available for this order, and Nosh can't complete a UPI payment over WhatsApp yet — please finish this order in the Swiggy app.";
   }
 
-  pendingOrderConfirmations.set(senderId, {
+  await pendingOrderConfirmations.set(senderId, {
     addressId,
     cartId: cartData.cart_id,
     paymentMethod: "Cash",
@@ -505,7 +505,7 @@ export async function getFoodOrderReply({
   classifyOrderIntent = defaultClassifyOrderIntent,
   nvidiaNim,
 }) {
-  const session = pendingCartSessions.peek(message.from);
+  const session = await pendingCartSessions.peek(message.from);
 
   // A bare number reply to the restaurant list just shown (see
   // runRestaurantSearch in food-search-orchestrator.js) is resolved
@@ -518,7 +518,7 @@ export async function getFoodOrderReply({
 
     if (selectedIndex !== undefined) {
       const restaurant = session.restaurantCandidates[selectedIndex];
-      pendingCartSessions.set(message.from, { addressId: session.addressId, restaurantId: restaurant.id, restaurantName: restaurant.name });
+      await pendingCartSessions.set(message.from, { addressId: session.addressId, restaurantId: restaurant.id, restaurantName: restaurant.name });
       return `Got it — what would you like from ${restaurant.name}?`;
     }
   }

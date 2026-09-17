@@ -7,6 +7,7 @@ import {
 } from "../src/food-order-orchestrator.js";
 import { PendingCartSessions } from "../src/pending-cart-sessions.js";
 import { PendingOrderConfirmations } from "../src/pending-order-confirmations.js";
+import { testStoreDeps } from "./helpers/fake-dynamodb-document-client.js";
 
 function message(text, from = "sender-1") {
   return { from, id: "wamid.1", phoneNumberId: "pn-1", text };
@@ -103,15 +104,15 @@ test("parseOrderConfirmationReply returns undefined for anything else", () => {
 // --- getFoodOrderReply: restaurant selection by number ---
 
 test("getFoodOrderReply: a bare number picks the restaurant off the shown list, deterministically (no NLU call)", async () => {
-  const pendingCartSessions = new PendingCartSessions();
-  pendingCartSessions.set("sender-1", {
+  const pendingCartSessions = new PendingCartSessions(testStoreDeps());
+  await pendingCartSessions.set("sender-1", {
     addressId: "addr-1",
     restaurantCandidates: [
       { id: "r-billu", name: "Billu's Pasta Hut (Ad)" },
       { id: "r-kfc", name: "KFC (Ad)" },
     ],
   });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
+  const pendingOrderConfirmations = new PendingOrderConfirmations(testStoreDeps());
 
   let classifyOrderIntentCalled = false;
   const reply = await getFoodOrderReply({
@@ -128,7 +129,7 @@ test("getFoodOrderReply: a bare number picks the restaurant off the shown list, 
 
   assert.equal(classifyOrderIntentCalled, false);
   assert.equal(reply, "Got it — what would you like from KFC (Ad)?");
-  assert.deepEqual(pendingCartSessions.peek("sender-1"), {
+  assert.deepEqual(await pendingCartSessions.peek("sender-1"), {
     addressId: "addr-1",
     restaurantId: "r-kfc",
     restaurantName: "KFC (Ad)",
@@ -136,12 +137,12 @@ test("getFoodOrderReply: a bare number picks the restaurant off the shown list, 
 });
 
 test("getFoodOrderReply: an out-of-range or non-numeric reply falls through to normal intent classification", async () => {
-  const pendingCartSessions = new PendingCartSessions();
-  pendingCartSessions.set("sender-1", {
+  const pendingCartSessions = new PendingCartSessions(testStoreDeps());
+  await pendingCartSessions.set("sender-1", {
     addressId: "addr-1",
     restaurantCandidates: [{ id: "r-kfc", name: "KFC" }],
   });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
+  const pendingOrderConfirmations = new PendingOrderConfirmations(testStoreDeps());
 
   const reply = await getFoodOrderReply({
     message: message("from KFC add wings"),
@@ -156,12 +157,12 @@ test("getFoodOrderReply: an out-of-range or non-numeric reply falls through to n
 });
 
 test("getFoodOrderReply: works even when NVIDIA NIM is disabled, since restaurant selection is deterministic", async () => {
-  const pendingCartSessions = new PendingCartSessions();
-  pendingCartSessions.set("sender-1", {
+  const pendingCartSessions = new PendingCartSessions(testStoreDeps());
+  await pendingCartSessions.set("sender-1", {
     addressId: "addr-1",
     restaurantCandidates: [{ id: "r-kfc", name: "KFC" }],
   });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
+  const pendingOrderConfirmations = new PendingOrderConfirmations(testStoreDeps());
 
   const reply = await getFoodOrderReply({
     message: message("1"),
@@ -177,9 +178,9 @@ test("getFoodOrderReply: works even when NVIDIA NIM is disabled, since restauran
 // --- getFoodOrderReply: add_to_cart ---
 
 test("getFoodOrderReply: add_to_cart bootstraps a session via cross-restaurant search", async () => {
-  const pendingCartSessions = new PendingCartSessions();
-  pendingCartSessions.set("sender-1", { addressId: "addr-1" });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
+  const pendingCartSessions = new PendingCartSessions(testStoreDeps());
+  await pendingCartSessions.set("sender-1", { addressId: "addr-1" });
+  const pendingOrderConfirmations = new PendingOrderConfirmations(testStoreDeps());
 
   const searchCalls = [];
   const item = menuItem();
@@ -209,7 +210,7 @@ test("getFoodOrderReply: add_to_cart bootstraps a session via cross-restaurant s
   assert.equal(searchCalls[0].restaurantIdOfAddedItem, undefined);
   assert.equal(searchCalls[1].restaurantIdOfAddedItem, "r-1");
   assert.match(reply, /Added Margherita Pizza to your cart/);
-  assert.deepEqual(pendingCartSessions.peek("sender-1"), {
+  assert.deepEqual(await pendingCartSessions.peek("sender-1"), {
     restaurantId: "r-1",
     restaurantName: "Test Restaurant",
     addressId: "addr-1",
@@ -217,9 +218,9 @@ test("getFoodOrderReply: add_to_cart bootstraps a session via cross-restaurant s
 });
 
 test("getFoodOrderReply: add_to_cart reuses the existing restaurant and skips cross-restaurant search", async () => {
-  const pendingCartSessions = new PendingCartSessions();
-  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", restaurantName: "Test Restaurant" });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
+  const pendingCartSessions = new PendingCartSessions(testStoreDeps());
+  await pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", restaurantName: "Test Restaurant" });
+  const pendingOrderConfirmations = new PendingOrderConfirmations(testStoreDeps());
 
   const searchCalls = [];
   const client = fakeClient({
@@ -246,9 +247,9 @@ test("getFoodOrderReply: add_to_cart reuses the existing restaurant and skips cr
 });
 
 test("getFoodOrderReply: add_to_cart honors an explicit restaurant name instead of the cross-restaurant search result", async () => {
-  const pendingCartSessions = new PendingCartSessions();
-  pendingCartSessions.set("sender-1", { addressId: "addr-1" });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
+  const pendingCartSessions = new PendingCartSessions(testStoreDeps());
+  await pendingCartSessions.set("sender-1", { addressId: "addr-1" });
+  const pendingOrderConfirmations = new PendingOrderConfirmations(testStoreDeps());
 
   const restaurantSearchCalls = [];
   const menuSearchCalls = [];
@@ -288,7 +289,7 @@ test("getFoodOrderReply: add_to_cart honors an explicit restaurant name instead 
   assert.equal(menuSearchCalls.length, 1);
   assert.equal(menuSearchCalls[0].restaurantIdOfAddedItem, "r-pizzahut");
   assert.match(reply, /Added Margherita Ultimate Cheese Pizza to your cart/);
-  assert.deepEqual(pendingCartSessions.peek("sender-1"), {
+  assert.deepEqual(await pendingCartSessions.peek("sender-1"), {
     restaurantId: "r-pizzahut",
     restaurantName: "Pizza Hut",
     addressId: "addr-1",
@@ -296,9 +297,9 @@ test("getFoodOrderReply: add_to_cart honors an explicit restaurant name instead 
 });
 
 test("getFoodOrderReply: add_to_cart skips a sponsored ad ranked ahead of the actual named restaurant", async () => {
-  const pendingCartSessions = new PendingCartSessions();
-  pendingCartSessions.set("sender-1", { addressId: "addr-1" });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
+  const pendingCartSessions = new PendingCartSessions(testStoreDeps());
+  await pendingCartSessions.set("sender-1", { addressId: "addr-1" });
+  const pendingOrderConfirmations = new PendingOrderConfirmations(testStoreDeps());
 
   const menuSearchCalls = [];
   const updateFoodCartCalls = [];
@@ -344,7 +345,7 @@ test("getFoodOrderReply: add_to_cart skips a sponsored ad ranked ahead of the ac
   assert.equal(updateFoodCartCalls.length, 1);
   assert.equal(updateFoodCartCalls[0].restaurantId, "r-kfc");
   assert.match(reply, /Added Zinger Burger to your cart/);
-  assert.deepEqual(pendingCartSessions.peek("sender-1"), {
+  assert.deepEqual(await pendingCartSessions.peek("sender-1"), {
     restaurantId: "r-kfc",
     restaurantName: "KFC",
     addressId: "addr-1",
@@ -352,9 +353,9 @@ test("getFoodOrderReply: add_to_cart skips a sponsored ad ranked ahead of the ac
 });
 
 test("getFoodOrderReply: add_to_cart reports a friendly message when the named restaurant can't be found", async () => {
-  const pendingCartSessions = new PendingCartSessions();
-  pendingCartSessions.set("sender-1", { addressId: "addr-1" });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
+  const pendingCartSessions = new PendingCartSessions(testStoreDeps());
+  await pendingCartSessions.set("sender-1", { addressId: "addr-1" });
+  const pendingOrderConfirmations = new PendingOrderConfirmations(testStoreDeps());
 
   let updateCartCalled = false;
   const client = fakeClient({
@@ -386,9 +387,9 @@ test("getFoodOrderReply: add_to_cart reports a friendly message when the named r
 });
 
 test("getFoodOrderReply: add_to_cart names the restaurant when the dish isn't on its menu", async () => {
-  const pendingCartSessions = new PendingCartSessions();
-  pendingCartSessions.set("sender-1", { addressId: "addr-1" });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
+  const pendingCartSessions = new PendingCartSessions(testStoreDeps());
+  await pendingCartSessions.set("sender-1", { addressId: "addr-1" });
+  const pendingOrderConfirmations = new PendingOrderConfirmations(testStoreDeps());
 
   const client = fakeClient({
     searchRestaurants: async () =>
@@ -416,9 +417,9 @@ test("getFoodOrderReply: add_to_cart names the restaurant when the dish isn't on
 });
 
 test("getFoodOrderReply: add_to_cart ignores a restaurant hint once a session restaurant already exists", async () => {
-  const pendingCartSessions = new PendingCartSessions();
-  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", restaurantName: "Existing Place" });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
+  const pendingCartSessions = new PendingCartSessions(testStoreDeps());
+  await pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", restaurantName: "Existing Place" });
+  const pendingOrderConfirmations = new PendingOrderConfirmations(testStoreDeps());
 
   let restaurantSearchCalled = false;
   const client = fakeClient({
@@ -450,9 +451,9 @@ test("getFoodOrderReply: add_to_cart ignores a restaurant hint once a session re
 });
 
 test("getFoodOrderReply: add_to_cart sends the default variant selection, not an invented one", async () => {
-  const pendingCartSessions = new PendingCartSessions();
-  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
+  const pendingCartSessions = new PendingCartSessions(testStoreDeps());
+  await pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
+  const pendingOrderConfirmations = new PendingOrderConfirmations(testStoreDeps());
 
   let cartItemsSent;
   const client = fakeClient({
@@ -484,9 +485,9 @@ test("getFoodOrderReply: add_to_cart sends the default variant selection, not an
 });
 
 test("getFoodOrderReply: add_to_cart does not report success when update_food_cart returns a non-zero statusCode", async () => {
-  const pendingCartSessions = new PendingCartSessions();
-  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
+  const pendingCartSessions = new PendingCartSessions(testStoreDeps());
+  await pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
+  const pendingOrderConfirmations = new PendingOrderConfirmations(testStoreDeps());
 
   const client = fakeClient({
     searchMenu: async () => payload({ items: [menuItem()] }),
@@ -509,13 +510,13 @@ test("getFoodOrderReply: add_to_cart does not report success when update_food_ca
   assert.doesNotMatch(reply, /Added/);
   // Session must stay exactly as it was before the failed attempt - no
   // restaurantName should get written in from a failed mutation's echo.
-  assert.deepEqual(pendingCartSessions.peek("sender-1"), { addressId: "addr-1", restaurantId: "r-1" });
+  assert.deepEqual(await pendingCartSessions.peek("sender-1"), { addressId: "addr-1", restaurantId: "r-1" });
 });
 
 test("getFoodOrderReply: add_to_cart reports a friendly message when nothing matches", async () => {
-  const pendingCartSessions = new PendingCartSessions();
-  pendingCartSessions.set("sender-1", { addressId: "addr-1" });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
+  const pendingCartSessions = new PendingCartSessions(testStoreDeps());
+  await pendingCartSessions.set("sender-1", { addressId: "addr-1" });
+  const pendingOrderConfirmations = new PendingOrderConfirmations(testStoreDeps());
 
   const client = fakeClient({ searchMenu: async () => payload({ items: [] }) });
   const classifyOrderIntent = async () => ({ type: "add_to_cart", query: "unobtainium roll", quantity: 1 });
@@ -535,8 +536,8 @@ test("getFoodOrderReply: add_to_cart reports a friendly message when nothing mat
 // --- getFoodOrderReply: view_cart / find_coupons / apply_coupon / checkout without a session ---
 
 test("getFoodOrderReply: non-add intents without an active session report no active order", async () => {
-  const pendingCartSessions = new PendingCartSessions();
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
+  const pendingCartSessions = new PendingCartSessions(testStoreDeps());
+  const pendingOrderConfirmations = new PendingOrderConfirmations(testStoreDeps());
   const client = fakeClient();
 
   for (const type of ["view_cart", "find_coupons", "checkout"]) {
@@ -556,9 +557,9 @@ test("getFoodOrderReply: non-add intents without an active session report no act
 // --- getFoodOrderReply: view_cart ---
 
 test("getFoodOrderReply: view_cart formats the cart contents", async () => {
-  const pendingCartSessions = new PendingCartSessions();
-  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", restaurantName: "Test Restaurant" });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
+  const pendingCartSessions = new PendingCartSessions(testStoreDeps());
+  await pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", restaurantName: "Test Restaurant" });
+  const pendingOrderConfirmations = new PendingOrderConfirmations(testStoreDeps());
 
   const client = fakeClient({ getFoodCart: async () => cartPayload(cartData()) });
 
@@ -577,9 +578,9 @@ test("getFoodOrderReply: view_cart formats the cart contents", async () => {
 });
 
 test("getFoodOrderReply: view_cart reports an empty cart", async () => {
-  const pendingCartSessions = new PendingCartSessions();
-  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
+  const pendingCartSessions = new PendingCartSessions(testStoreDeps());
+  await pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
+  const pendingOrderConfirmations = new PendingOrderConfirmations(testStoreDeps());
 
   const client = fakeClient({ getFoodCart: async () => cartPayload(cartData({ items: [] })) });
 
@@ -598,9 +599,9 @@ test("getFoodOrderReply: view_cart reports an empty cart", async () => {
 // --- getFoodOrderReply: find_coupons / apply_coupon ---
 
 test("getFoodOrderReply: find_coupons lists each coupon's code as the title field", async () => {
-  const pendingCartSessions = new PendingCartSessions();
-  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
+  const pendingCartSessions = new PendingCartSessions(testStoreDeps());
+  await pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
+  const pendingOrderConfirmations = new PendingOrderConfirmations(testStoreDeps());
 
   const client = fakeClient({
     fetchFoodCoupons: async () =>
@@ -624,9 +625,9 @@ test("getFoodOrderReply: find_coupons lists each coupon's code as the title fiel
 });
 
 test("getFoodOrderReply: find_coupons reports when there are none", async () => {
-  const pendingCartSessions = new PendingCartSessions();
-  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
+  const pendingCartSessions = new PendingCartSessions(testStoreDeps());
+  await pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
+  const pendingOrderConfirmations = new PendingOrderConfirmations(testStoreDeps());
 
   const client = fakeClient({ fetchFoodCoupons: async () => payload({ coupon_sections: [] }) });
 
@@ -643,9 +644,9 @@ test("getFoodOrderReply: find_coupons reports when there are none", async () => 
 });
 
 test("getFoodOrderReply: apply_coupon reports success only when coupon_discount is greater than zero", async () => {
-  const pendingCartSessions = new PendingCartSessions();
-  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
+  const pendingCartSessions = new PendingCartSessions(testStoreDeps());
+  await pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
+  const pendingOrderConfirmations = new PendingOrderConfirmations(testStoreDeps());
 
   const client = fakeClient({
     applyFoodCoupon: async () => cartPayload(cartData({ offers: { coupon_discount: 50 } })),
@@ -664,9 +665,9 @@ test("getFoodOrderReply: apply_coupon reports success only when coupon_discount 
 });
 
 test("getFoodOrderReply: apply_coupon never claims a discount when coupon_discount is 0 (suggested, not applied)", async () => {
-  const pendingCartSessions = new PendingCartSessions();
-  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
+  const pendingCartSessions = new PendingCartSessions(testStoreDeps());
+  await pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
+  const pendingOrderConfirmations = new PendingOrderConfirmations(testStoreDeps());
 
   const client = fakeClient({
     applyFoodCoupon: async () => cartPayload(cartData({ offers: { coupon_discount: 0 } })),
@@ -686,9 +687,9 @@ test("getFoodOrderReply: apply_coupon never claims a discount when coupon_discou
 });
 
 test("getFoodOrderReply: apply_coupon degrades gracefully when the tool rejects the code", async () => {
-  const pendingCartSessions = new PendingCartSessions();
-  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
+  const pendingCartSessions = new PendingCartSessions(testStoreDeps());
+  await pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
+  const pendingOrderConfirmations = new PendingOrderConfirmations(testStoreDeps());
 
   const client = fakeClient({
     applyFoodCoupon: async () => {
@@ -711,9 +712,9 @@ test("getFoodOrderReply: apply_coupon degrades gracefully when the tool rejects 
 // --- getFoodOrderReply: checkout ---
 
 test("getFoodOrderReply: checkout builds a summary and stores a pending confirmation", async () => {
-  const pendingCartSessions = new PendingCartSessions();
-  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", restaurantName: "Test Restaurant" });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
+  const pendingCartSessions = new PendingCartSessions(testStoreDeps());
+  await pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", restaurantName: "Test Restaurant" });
+  const pendingOrderConfirmations = new PendingOrderConfirmations(testStoreDeps());
 
   const getFoodCartCalls = [];
   const client = fakeClient({
@@ -740,7 +741,7 @@ test("getFoodOrderReply: checkout builds a summary and stores a pending confirma
   assert.match(reply, /Order summary — Test Restaurant/);
   assert.match(reply, /Total to pay: ₹187/);
   assert.match(reply, /Reply YES to place this order, or NO to cancel/);
-  assert.deepEqual(pendingOrderConfirmations.peek("sender-1"), {
+  assert.deepEqual(await pendingOrderConfirmations.peek("sender-1"), {
     addressId: "addr-1",
     cartId: 1,
     paymentMethod: "Cash",
@@ -748,9 +749,9 @@ test("getFoodOrderReply: checkout builds a summary and stores a pending confirma
 });
 
 test("getFoodOrderReply: checkout refuses an empty cart", async () => {
-  const pendingCartSessions = new PendingCartSessions();
-  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
+  const pendingCartSessions = new PendingCartSessions(testStoreDeps());
+  await pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
+  const pendingOrderConfirmations = new PendingOrderConfirmations(testStoreDeps());
 
   const client = fakeClient({ getFoodCart: async () => cartPayload(cartData({ items: [] })) });
 
@@ -764,13 +765,13 @@ test("getFoodOrderReply: checkout refuses an empty cart", async () => {
   });
 
   assert.match(reply, /cart is empty/);
-  assert.equal(pendingOrderConfirmations.peek("sender-1"), undefined);
+  assert.equal(await pendingOrderConfirmations.peek("sender-1"), undefined);
 });
 
 test("getFoodOrderReply: checkout never guesses a payment method when COD isn't available", async () => {
-  const pendingCartSessions = new PendingCartSessions();
-  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
+  const pendingCartSessions = new PendingCartSessions(testStoreDeps());
+  await pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
+  const pendingOrderConfirmations = new PendingOrderConfirmations(testStoreDeps());
 
   const client = fakeClient({
     getFoodCart: async () => cartPayload(cartData()),
@@ -787,20 +788,20 @@ test("getFoodOrderReply: checkout never guesses a payment method when COD isn't 
   });
 
   assert.match(reply, /Cash on Delivery isn't available/);
-  assert.equal(pendingOrderConfirmations.peek("sender-1"), undefined);
+  assert.equal(await pendingOrderConfirmations.peek("sender-1"), undefined);
 });
 
 // --- getFoodOrderReply: fail-closed behavior ---
 
 test("getFoodOrderReply returns undefined when NVIDIA NIM isn't enabled", async () => {
-  const pendingCartSessions = new PendingCartSessions();
-  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
+  const pendingCartSessions = new PendingCartSessions(testStoreDeps());
+  await pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
 
   const reply = await getFoodOrderReply({
     message: message("add a pizza"),
     swiggyFoodClient: fakeClient(),
     pendingCartSessions,
-    pendingOrderConfirmations: new PendingOrderConfirmations(),
+    pendingOrderConfirmations: new PendingOrderConfirmations(testStoreDeps()),
     classifyOrderIntent: async () => ({ type: "add_to_cart", query: "pizza", quantity: 1 }),
     nvidiaNim: { enabled: false },
   });
@@ -809,14 +810,14 @@ test("getFoodOrderReply returns undefined when NVIDIA NIM isn't enabled", async 
 });
 
 test("getFoodOrderReply returns undefined when no order intent is classified", async () => {
-  const pendingCartSessions = new PendingCartSessions();
-  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
+  const pendingCartSessions = new PendingCartSessions(testStoreDeps());
+  await pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
 
   const reply = await getFoodOrderReply({
     message: message("thanks!"),
     swiggyFoodClient: fakeClient(),
     pendingCartSessions,
-    pendingOrderConfirmations: new PendingOrderConfirmations(),
+    pendingOrderConfirmations: new PendingOrderConfirmations(testStoreDeps()),
     classifyOrderIntent: async () => undefined,
     nvidiaNim,
   });
