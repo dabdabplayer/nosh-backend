@@ -14,7 +14,7 @@ export async function resolveSwiggyAccessToken({
   authBaseUrl,
   refreshImpl = defaultRefreshAccessToken,
 }) {
-  const record = await tokenStore.get(senderId);
+  const record = tokenStore.get(senderId);
 
   if (!record) {
     return { status: "unauthenticated" };
@@ -25,16 +25,16 @@ export async function resolveSwiggyAccessToken({
   }
 
   if (!record.refreshToken) {
-    await tokenStore.delete(senderId);
+    tokenStore.delete(senderId);
     return { status: "unauthenticated" };
   }
 
   try {
     const refreshed = await refreshImpl({ authBaseUrl, refreshToken: record.refreshToken });
-    await tokenStore.set(senderId, refreshed);
+    tokenStore.set(senderId, refreshed);
     return { status: "ok", accessToken: refreshed.accessToken };
   } catch {
-    await tokenStore.delete(senderId);
+    tokenStore.delete(senderId);
     return { status: "unauthenticated" };
   }
 }

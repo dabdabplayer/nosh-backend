@@ -59,7 +59,7 @@ async function resolveSearchTerm(
     return undefined;
   }
 
-  const hasActiveCart = Boolean(await pendingCartSessions?.peek(senderId));
+  const hasActiveCart = Boolean(pendingCartSessions?.peek(senderId));
 
   const intent = await classifyMessage({
     text: trimmedText,
@@ -75,7 +75,7 @@ async function resolveSearchTerm(
 
 export async function classifyIncomingMessage(message, pendingAddressSelections, nluOptions) {
   const trimmedText = message.text.trim();
-  const pending = await pendingAddressSelections.peek(message.from);
+  const pending = pendingAddressSelections.peek(message.from);
 
   if (pending) {
     const selectedIndex = parseAddressSelectionReply(trimmedText, pending.candidates.length);
@@ -141,7 +141,7 @@ function formatRestaurantReply(searchTerm, restaurants) {
 // food-order-orchestrator.js fills in the restaurant on the first add.
 async function runRestaurantSearch(swiggyFoodClient, searchTerm, addressId, senderId, pendingCartSessions) {
   if (senderId && pendingCartSessions) {
-    await pendingCartSessions.set(senderId, { addressId });
+    pendingCartSessions.set(senderId, { addressId });
   }
 
   let searchResult;
@@ -174,7 +174,7 @@ async function runRestaurantSearch(swiggyFoodClient, searchTerm, addressId, send
   // no NLU call needed, since food-order-orchestrator.js runs first
   // whenever a cart session exists (see server.js).
   if (senderId && pendingCartSessions) {
-    await pendingCartSessions.set(senderId, {
+    pendingCartSessions.set(senderId, {
       addressId,
       restaurantCandidates: openRestaurants.map((restaurant) => ({ id: restaurant.id, name: restaurant.name })),
     });
@@ -216,7 +216,7 @@ async function handleNewFoodSearch(
       label: formatAddressLabel(address),
     }));
 
-    await pendingAddressSelections.set(senderId, { searchTerm, candidates });
+    pendingAddressSelections.set(senderId, { searchTerm, candidates });
     return formatAddressPrompt(candidates);
   }
 
@@ -260,7 +260,7 @@ export async function getFoodSearchReply({
         return undefined;
 
       case "new_search":
-        await pendingAddressSelections.clear(message.from);
+        pendingAddressSelections.clear(message.from);
         return await handleNewFoodSearch(
           message.from,
           classification.searchTerm,
@@ -270,7 +270,7 @@ export async function getFoodSearchReply({
         );
 
       case "address_selection_answer":
-        await pendingAddressSelections.clear(message.from);
+        pendingAddressSelections.clear(message.from);
         return await runRestaurantSearch(
           swiggyFoodClient,
           classification.pending.searchTerm,

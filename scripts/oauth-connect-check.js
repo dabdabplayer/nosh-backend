@@ -12,14 +12,12 @@
 // Then type things like "find biryani" and, once prompted, "1" to pick an
 // address - exactly as you would over WhatsApp. Ctrl+C to quit.
 //
-// If a token is already saved from a previous run in the shared DynamoDB
-// table (DYNAMODB_TABLE_NAME), it skips the OAuth dance entirely and
-// searches immediately using the saved token.
+// If a token is already saved from a previous run (see
+// SWIGGY_TOKEN_STORE_PATH / data/swiggy-tokens.json), it skips the OAuth
+// dance entirely and searches immediately using the saved token.
 
 import http from "node:http";
 import readline from "node:readline/promises";
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { config } from "../src/config.js";
 import { classifyIncomingMessage, getFoodSearchReply } from "../src/food-search-orchestrator.js";
 import { getFoodOrderReply, parseOrderConfirmationReply, placeConfirmedOrder } from "../src/food-order-orchestrator.js";
@@ -48,19 +46,16 @@ if (!config.swiggyFood.enabled) {
 } else {
   const port = new URL(config.swiggyOAuth.redirectUri).port || 3000;
 
-  const documentClient = DynamoDBDocumentClient.from(new DynamoDBClient({}));
-  const storeDeps = { documentClient, tableName: config.dynamoDb.tableName };
-
-  const pendingAddressSelections = new PendingAddressSelections(storeDeps);
-  const pendingOAuthExchanges = new PendingOAuthExchanges(storeDeps);
-  const pendingConnectLinks = new PendingConnectLinks(storeDeps);
-  const pendingPostAuthActions = new PendingPostAuthActions(storeDeps);
-  const pendingCartSessions = new PendingCartSessions(storeDeps);
-  const pendingOrderConfirmations = new PendingOrderConfirmations(storeDeps);
-  const swiggyTokenStore = new SwiggyTokenStore({
-    ...storeDeps,
-    encryptionKey: config.swiggyOAuth.tokenEncryptionKey,
-  });
+  const pendingAddressSelections = new PendingAddressSelections();
+  const pendingOAuthExchanges = new PendingOAuthExchanges();
+  const pendingConnectLinks = new PendingConnectLinks();
+  const pendingPostAuthActions = new PendingPostAuthActions();
+  const pendingCartSessions = new PendingCartSessions();
+  const pendingOrderConfirmations = new PendingOrderConfirmations();
+  const swiggyTokenStore = new SwiggyTokenStore(
+    config.swiggyOAuth.tokenStorePath,
+    config.swiggyOAuth.tokenEncryptionKey,
+  );
   const swiggyOAuthOrigin = new URL(config.swiggyOAuth.redirectUri).origin;
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
@@ -98,7 +93,7 @@ if (!config.swiggyFood.enabled) {
     const decision = parseOrderConfirmationReply(message.text);
 
     if (decision === "cancel") {
-      await pendingOrderConfirmations.clear(message.from);
+      pendingOrderConfirmations.clear(message.from);
       return "Order cancelled. Your cart is still there if you'd like to check out again later.";
     }
 
@@ -111,16 +106,16 @@ if (!config.swiggyFood.enabled) {
     );
 
     if (!outcome.authenticated) {
-      await pendingOrderConfirmations.clear(message.from);
+      pendingOrderConfirmations.clear(message.from);
       return "Your Swiggy connection expired before we could place this order. Please search again to reconnect.";
     }
 
     const { status, replyText, orderId, lat, lng } = outcome.result;
 
     if (status === "placed_not_confirmed") {
-      await pendingOrderConfirmations.set(message.from, { ...pendingConfirmation, orderId, lat, lng });
+      pendingOrderConfirmations.set(message.from, { ...pendingConfirmation, orderId, lat, lng });
     } else {
-      await pendingOrderConfirmations.clear(message.from);
+      pendingOrderConfirmations.clear(message.from);
     }
 
     return replyText;
@@ -128,7 +123,7 @@ if (!config.swiggyFood.enabled) {
 
   // Same decision logic as server.js's buildReplyText, minus the WhatsApp send.
   async function buildReplyText(message) {
-    const pendingConfirmation = await pendingOrderConfirmations.peek(message.from);
+    const pendingConfirmation = pendingOrderConfirmations.peek(message.from);
 
     if (pendingConfirmation) {
       return buildOrderConfirmationReply(message, pendingConfirmation);
@@ -139,8 +134,8 @@ if (!config.swiggyFood.enabled) {
     // messages like "add chicken wings from KFC" as a brand new search
     // (confirmed live) since deferring on cart-related messages was only a
     // probabilistic prompt instruction, not a deterministic check.
-    const hasPendingAddressSelection = Boolean(await pendingAddressSelections.peek(message.from));
-    const activeCartSession = await pendingCartSessions.peek(message.from);
+    const hasPendingAddressSelection = Boolean(pendingAddressSelections.peek(message.from));
+    const activeCartSession = pendingCartSessions.peek(message.from);
 
     if (activeCartSession && !hasPendingAddressSelection) {
       const outcome = await withSwiggyFoodClient(message.from, (swiggyFoodClient) =>
@@ -190,8 +185,8 @@ if (!config.swiggyFood.enabled) {
     });
 
     if (authResult.status === "unauthenticated") {
-      await pendingPostAuthActions.set(message.from, { searchTerm, phoneNumberId: "manual-test" });
-      const connectToken = await pendingConnectLinks.create(message.from);
+      pendingPostAuthActions.set(message.from, { searchTerm, phoneNumberId: "manual-test" });
+      const connectToken = pendingConnectLinks.create(message.from);
       const connectUrl = `${swiggyOAuthOrigin}/oauth/swiggy/start?token=${connectToken}`;
       return buildConnectReplyText({ connectUrl, searchTerm });
     }
@@ -228,7 +223,7 @@ if (!config.swiggyFood.enabled) {
   // Fired from the real /oauth/swiggy/callback once login succeeds, so the
   // search that prompted the connect link resumes without you retyping it.
   async function resumePendingSearchAfterAuth(senderId) {
-    const pendingAction = await pendingPostAuthActions.take(senderId);
+    const pendingAction = pendingPostAuthActions.take(senderId);
     if (!pendingAction?.searchTerm) {
       return;
     }
@@ -237,9 +232,9 @@ if (!config.swiggyFood.enabled) {
     await sendAsTestSender(`find ${pendingAction.searchTerm}`);
   }
 
-  async function handleStart(request, response, url) {
+  function handleStart(request, response, url) {
     const connectToken = url.searchParams.get("token");
-    const pendingLink = connectToken ? await pendingConnectLinks.take(connectToken) : undefined;
+    const pendingLink = connectToken ? pendingConnectLinks.take(connectToken) : undefined;
 
     if (!pendingLink) {
       sendText(response, 400, "This connection link is invalid or has expired.");
@@ -248,7 +243,7 @@ if (!config.swiggyFood.enabled) {
 
     const { verifier, challenge } = generatePkcePair();
     const state = generateState();
-    await pendingOAuthExchanges.set(state, { senderId: pendingLink.senderId, codeVerifier: verifier });
+    pendingOAuthExchanges.set(state, { senderId: pendingLink.senderId, codeVerifier: verifier });
 
     const authorizeUrl = buildAuthorizeUrl({
       authBaseUrl: config.swiggyOAuth.authBaseUrl,
@@ -265,7 +260,7 @@ if (!config.swiggyFood.enabled) {
   async function handleCallback(request, response, url) {
     const state = url.searchParams.get("state");
     const oauthError = url.searchParams.get("error");
-    const pending = state ? await pendingOAuthExchanges.take(state) : undefined;
+    const pending = state ? pendingOAuthExchanges.take(state) : undefined;
 
     if (!pending) {
       sendText(response, 400, "This Swiggy connection link is invalid or has expired.");
@@ -292,7 +287,7 @@ if (!config.swiggyFood.enabled) {
         redirectUri: config.swiggyOAuth.redirectUri,
       });
 
-      await swiggyTokenStore.set(pending.senderId, tokenRecord);
+      swiggyTokenStore.set(pending.senderId, tokenRecord);
       sendText(response, 200, "Your Swiggy account is connected! Check the terminal running this script.");
       await resumePendingSearchAfterAuth(pending.senderId);
     } catch (error) {
@@ -309,7 +304,7 @@ if (!config.swiggyFood.enabled) {
     const url = new URL(request.url, `http://${request.headers.host ?? "localhost"}`);
 
     if (url.pathname === "/oauth/swiggy/start") {
-      await handleStart(request, response, url);
+      handleStart(request, response, url);
       return;
     }
 

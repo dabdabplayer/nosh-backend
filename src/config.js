@@ -10,6 +10,7 @@ const DEFAULT_SWIGGY_OAUTH_BASE_URL = "https://mcp.swiggy.com/auth";
 // their server hands back; it is not a secret.
 const DEFAULT_SWIGGY_OAUTH_CLIENT_ID = "swiggy-mcp";
 const DEFAULT_SWIGGY_OAUTH_REDIRECT_URI = "http://localhost:3000/oauth/swiggy/callback";
+const DEFAULT_SWIGGY_TOKEN_STORE_PATH = "data/swiggy-tokens.json";
 const DEFAULT_NVIDIA_NIM_BASE_URL = "https://integrate.api.nvidia.com/v1";
 const DEFAULT_NVIDIA_NIM_MODEL = "openai/gpt-oss-20b";
 // NVIDIA NIM's hosted inference has real, sometimes multi-second latency -
@@ -135,26 +136,9 @@ const swiggyOAuthRedirectUri =
 const swiggyOAuthBaseUrl =
   readOptionalSecret(process.env.SWIGGY_OAUTH_BASE_URL, "SWIGGY_OAUTH_BASE_URL") ??
   DEFAULT_SWIGGY_OAUTH_BASE_URL;
-
-// The single shared DynamoDB table backing SwiggyTokenStore and every
-// Pending* store (see src/dynamo-item-store.js) - required, not optional,
-// since none of those stores have another storage backend anymore.
-function readDynamoDbTableName(value) {
-  if (!value) {
-    throw new Error("DYNAMODB_TABLE_NAME must be set to the shared Nosh state table's name.");
-  }
-
-  return value;
-}
-
-const dynamoDbTableName = readDynamoDbTableName(process.env.DYNAMODB_TABLE_NAME);
-
-// Optional - only set for local development against DynamoDB Local, or by
-// the hermetic adversarial test suite pointing at its in-process fake
-// DynamoDB endpoint. Left unset (the normal case), the AWS SDK resolves the
-// real regional DynamoDB endpoint and credentials the usual way (env vars,
-// shared config, or the ECS task role in production).
-const dynamoDbEndpoint = readOptionalSecret(process.env.DYNAMODB_ENDPOINT_URL, "DYNAMODB_ENDPOINT_URL");
+const swiggyTokenStorePath =
+  readOptionalSecret(process.env.SWIGGY_TOKEN_STORE_PATH, "SWIGGY_TOKEN_STORE_PATH") ??
+  DEFAULT_SWIGGY_TOKEN_STORE_PATH;
 
 // Required, not optional: SwiggyTokenStore encrypts every record it writes
 // (see src/swiggy-token-store.js) - found live during a pre-migration
@@ -215,10 +199,7 @@ export const config = Object.freeze({
     authBaseUrl: swiggyOAuthBaseUrl,
     clientId: swiggyOAuthClientId,
     redirectUri: swiggyOAuthRedirectUri,
+    tokenStorePath: swiggyTokenStorePath,
     tokenEncryptionKey: swiggyTokenEncryptionKey,
-  }),
-  dynamoDb: Object.freeze({
-    tableName: dynamoDbTableName,
-    endpoint: dynamoDbEndpoint,
   }),
 });

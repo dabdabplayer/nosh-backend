@@ -1,37 +1,24 @@
-import { deleteValue, getValue, putValue, takeValue } from "./dynamo-item-store.js";
-
-// Shared single DynamoDB table (see dynamo-item-store.js) - this store owns
-// keys of the form ADDR#<senderId>.
-function pk(senderId) {
-  return `ADDR#${senderId}`;
-}
-
-// Durable store of an in-flight "which address?" prompt per WhatsApp
-// sender, backed by DynamoDB so it survives across Fargate tasks/restarts.
-// No TTL by design - matches the exact behavior of the in-memory version it
-// replaced.
+// In-memory, per-process store of an in-flight "which address?" prompt per
+// WhatsApp sender. No TTL, no persistence across restarts — same simplicity
+// level as InProcessMessageIdempotency, accepted as a known limitation.
 export class PendingAddressSelections {
-  #documentClient;
-  #tableName;
-
-  constructor({ documentClient, tableName }) {
-    this.#documentClient = documentClient;
-    this.#tableName = tableName;
-  }
+  #pendingBySender = new Map();
 
   set(senderId, pending) {
-    return putValue(this.#documentClient, this.#tableName, pk(senderId), Object.freeze(pending));
+    this.#pendingBySender.set(senderId, Object.freeze(pending));
   }
 
   peek(senderId) {
-    return getValue(this.#documentClient, this.#tableName, pk(senderId));
+    return this.#pendingBySender.get(senderId);
   }
 
   take(senderId) {
-    return takeValue(this.#documentClient, this.#tableName, pk(senderId));
+    const pending = this.#pendingBySender.get(senderId);
+    this.#pendingBySender.delete(senderId);
+    return pending;
   }
 
   clear(senderId) {
-    return deleteValue(this.#documentClient, this.#tableName, pk(senderId));
+    this.#pendingBySender.delete(senderId);
   }
 }

@@ -1,21 +1,19 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
-import { deleteValue, getValue, putValue } from "./dynamo-item-store.js";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 
-// Persists per-WhatsApp-sender Swiggy OAuth tokens in the shared DynamoDB
-// table (see dynamo-item-store.js), so they survive across Fargate
-// tasks/restarts - a plain local file (the previous implementation) doesn't.
+// Persists per-WhatsApp-sender Swiggy OAuth tokens to a single JSON file.
+// This is a stopgap, not production-grade storage: a plain file has no
+// concurrent-write safety and won't survive an ephemeral filesystem (e.g.
+// a Render deploy without a persistent disk). Good enough for local/dev use
+// while the OAuth flow itself is being built and tested.
 //
-// senderId (a WhatsApp phone number) is hashed before it ever touches the
-// table - Swiggy's own data-and-compliance docs require hashing user
-// identifiers at rest unless there's a specific lawful reason not to, and
-// there isn't one here. The hash is one-way, so a leaked table item doesn't
-// expose phone numbers.
+// senderId (a WhatsApp phone number) is hashed before it ever touches disk -
+// Swiggy's own data-and-compliance docs require hashing user identifiers at
+// rest unless there's a specific lawful reason not to, and there isn't one
+// here. The hash is one-way, so a leaked file doesn't expose phone numbers.
 function hashSenderId(senderId) {
   return createHash("sha256").update(senderId).digest("hex");
-}
-
-function pk(hashedSenderId) {
-  return `TOKEN#${hashedSenderId}`;
 }
 
 // The token VALUES (accessToken/refreshToken) are real bearer credentials -
@@ -23,7 +21,7 @@ function pk(hashedSenderId) {
 // real Swiggy API - and hashing the lookup key does nothing to protect them.
 // Found live during a pre-AWS-migration security review: an existing local
 // data/swiggy-tokens.json had a real access/refresh token sitting in plain
-// JSON. Encrypt the whole record with AES-256-GCM before it's ever written.
+// JSON. Encrypt the whole record with AES-256-GCM before it touches disk.
 const ALGORITHM = "aes-256-gcm";
 const IV_LENGTH_BYTES = 12;
 const KEY_LENGTH_BYTES = 32;
@@ -47,8 +45,8 @@ function encryptRecord(record, key) {
   };
 }
 
-// Returns undefined (never throws) on decryption failure - e.g. the record
-// was encrypted with a since-rotated key, or corrupted. Treating that as "no
+// Returns undefined (never throws) on decryption failure - e.g. the file was
+// encrypted with a since-rotated key, or corrupted. Treating that as "no
 // token" forces a normal reconnect instead of crashing the request; the
 // caller already handles a missing token as the ordinary unauthenticated
 // case.
@@ -75,37 +73,50 @@ function decryptRecord(encrypted, key) {
 }
 
 export class SwiggyTokenStore {
-  #documentClient;
-  #tableName;
+  #filePath;
   #encryptionKey;
+  #recordsByHashedSender;
 
   // encryptionKey: a 32-byte Buffer (see config.js's SWIGGY_TOKEN_ENCRYPTION_KEY
   // handling for how it's read and validated from the environment).
-  constructor({ documentClient, tableName, encryptionKey }) {
+  constructor(filePath, encryptionKey) {
     if (!Buffer.isBuffer(encryptionKey) || encryptionKey.length !== KEY_LENGTH_BYTES) {
       throw new Error(`SwiggyTokenStore requires a ${KEY_LENGTH_BYTES}-byte encryption key.`);
     }
 
-    this.#documentClient = documentClient;
-    this.#tableName = tableName;
+    this.#filePath = filePath;
     this.#encryptionKey = encryptionKey;
+    this.#recordsByHashedSender = this.#load();
   }
 
-  async get(senderId) {
-    const encrypted = await getValue(this.#documentClient, this.#tableName, pk(hashSenderId(senderId)));
+  #load() {
+    try {
+      return JSON.parse(readFileSync(this.#filePath, "utf8"));
+    } catch (error) {
+      if (error.code === "ENOENT") {
+        return {};
+      }
+      throw error;
+    }
+  }
+
+  #save() {
+    mkdirSync(dirname(this.#filePath), { recursive: true });
+    writeFileSync(this.#filePath, JSON.stringify(this.#recordsByHashedSender, null, 2));
+  }
+
+  get(senderId) {
+    const encrypted = this.#recordsByHashedSender[hashSenderId(senderId)];
     return encrypted ? decryptRecord(encrypted, this.#encryptionKey) : undefined;
   }
 
   set(senderId, tokenRecord) {
-    return putValue(
-      this.#documentClient,
-      this.#tableName,
-      pk(hashSenderId(senderId)),
-      encryptRecord(tokenRecord, this.#encryptionKey),
-    );
+    this.#recordsByHashedSender[hashSenderId(senderId)] = encryptRecord(tokenRecord, this.#encryptionKey);
+    this.#save();
   }
 
   delete(senderId) {
-    return deleteValue(this.#documentClient, this.#tableName, pk(hashSenderId(senderId)));
+    delete this.#recordsByHashedSender[hashSenderId(senderId)];
+    this.#save();
   }
 }

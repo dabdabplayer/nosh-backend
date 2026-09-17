@@ -1,10 +1,8 @@
 import http from "node:http";
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { config } from "./config.js";
 import { classifyIncomingMessage, getFoodSearchReply } from "./food-search-orchestrator.js";
 import { getFoodOrderReply, parseOrderConfirmationReply, placeConfirmedOrder } from "./food-order-orchestrator.js";
-import { MessageIdempotency } from "./message-idempotency.js";
+import { InProcessMessageIdempotency } from "./message-idempotency.js";
 import { PendingAddressSelections } from "./pending-address-selection.js";
 import { PendingCartSessions } from "./pending-cart-sessions.js";
 import { PendingConnectLinks } from "./pending-connect-links.js";
@@ -35,26 +33,17 @@ import {
 
 const serviceName = "nosh-backend";
 const swiggyOAuthOrigin = new URL(config.swiggyOAuth.redirectUri).origin;
-
-// One shared DynamoDB table backs every stateful store below (see
-// src/dynamo-item-store.js) so conversation state survives across Fargate
-// tasks/restarts instead of living in one process's memory or local disk.
-const dynamoDocumentClient = DynamoDBDocumentClient.from(
-  new DynamoDBClient(config.dynamoDb.endpoint ? { endpoint: config.dynamoDb.endpoint } : {}),
+const processedMessageIds = new InProcessMessageIdempotency();
+const pendingAddressSelections = new PendingAddressSelections();
+const pendingOAuthExchanges = new PendingOAuthExchanges();
+const pendingConnectLinks = new PendingConnectLinks();
+const pendingPostAuthActions = new PendingPostAuthActions();
+const pendingCartSessions = new PendingCartSessions();
+const pendingOrderConfirmations = new PendingOrderConfirmations();
+const swiggyTokenStore = new SwiggyTokenStore(
+  config.swiggyOAuth.tokenStorePath,
+  config.swiggyOAuth.tokenEncryptionKey,
 );
-const storeDeps = { documentClient: dynamoDocumentClient, tableName: config.dynamoDb.tableName };
-
-const processedMessageIds = new MessageIdempotency(storeDeps);
-const pendingAddressSelections = new PendingAddressSelections(storeDeps);
-const pendingOAuthExchanges = new PendingOAuthExchanges(storeDeps);
-const pendingConnectLinks = new PendingConnectLinks(storeDeps);
-const pendingPostAuthActions = new PendingPostAuthActions(storeDeps);
-const pendingCartSessions = new PendingCartSessions(storeDeps);
-const pendingOrderConfirmations = new PendingOrderConfirmations(storeDeps);
-const swiggyTokenStore = new SwiggyTokenStore({
-  ...storeDeps,
-  encryptionKey: config.swiggyOAuth.tokenEncryptionKey,
-});
 
 // Fallback reply for messages that don't trigger a Swiggy Food search (no
 // NLU/intent layer yet) and for when Swiggy Food isn't configured at all.
@@ -122,7 +111,7 @@ async function withSwiggyFoodClient(senderId, fn) {
       // Swiggy rejected the token mid-conversation even though our locally
       // tracked expiry said it was still good - drop it so the next message
       // goes through the normal reconnect flow instead of failing silently.
-      await swiggyTokenStore.delete(senderId);
+      swiggyTokenStore.delete(senderId);
       return { authenticated: false };
     }
     throw error;
@@ -140,7 +129,7 @@ async function buildOrderConfirmationReply(message, pendingConfirmation) {
   const decision = parseOrderConfirmationReply(message.text);
 
   if (decision === "cancel") {
-    await pendingOrderConfirmations.clear(message.from);
+    pendingOrderConfirmations.clear(message.from);
     return "Order cancelled. Your cart is still there if you'd like to check out again later.";
   }
 
@@ -153,7 +142,7 @@ async function buildOrderConfirmationReply(message, pendingConfirmation) {
   );
 
   if (!outcome.authenticated) {
-    await pendingOrderConfirmations.clear(message.from);
+    pendingOrderConfirmations.clear(message.from);
     return "Your Swiggy connection expired before we could place this order. Please search again to reconnect.";
   }
 
@@ -162,9 +151,9 @@ async function buildOrderConfirmationReply(message, pendingConfirmation) {
   if (status === "placed_not_confirmed") {
     // Keep the confirmation around with the orderId so a retried YES skips
     // straight to confirm_order instead of placing a duplicate order.
-    await pendingOrderConfirmations.set(message.from, { ...pendingConfirmation, orderId, lat, lng });
+    pendingOrderConfirmations.set(message.from, { ...pendingConfirmation, orderId, lat, lng });
   } else {
-    await pendingOrderConfirmations.clear(message.from);
+    pendingOrderConfirmations.clear(message.from);
   }
 
   return replyText;
@@ -179,7 +168,7 @@ async function buildReplyText(message) {
     return PLACEHOLDER_REPLY_TEXT;
   }
 
-  const pendingConfirmation = await pendingOrderConfirmations.peek(message.from);
+  const pendingConfirmation = pendingOrderConfirmations.peek(message.from);
 
   if (pendingConfirmation) {
     return buildOrderConfirmationReply(message, pendingConfirmation);
@@ -195,8 +184,8 @@ async function buildReplyText(message) {
   // instead of adding to the cart. Trying the order classifier first removes
   // that race: only if it finds no order intent do we fall through to
   // search, so a genuinely new search still works while a cart is active.
-  const hasPendingAddressSelection = Boolean(await pendingAddressSelections.peek(message.from));
-  const activeCartSession = await pendingCartSessions.peek(message.from);
+  const hasPendingAddressSelection = Boolean(pendingAddressSelections.peek(message.from));
+  const activeCartSession = pendingCartSessions.peek(message.from);
 
   if (activeCartSession && !hasPendingAddressSelection) {
     const outcome = await withSwiggyFoodClient(message.from, (swiggyFoodClient) =>
@@ -249,8 +238,8 @@ async function buildReplyText(message) {
   });
 
   if (authResult.status === "unauthenticated") {
-    await pendingPostAuthActions.set(message.from, { searchTerm, phoneNumberId: message.phoneNumberId });
-    const connectToken = await pendingConnectLinks.create(message.from);
+    pendingPostAuthActions.set(message.from, { searchTerm, phoneNumberId: message.phoneNumberId });
+    const connectToken = pendingConnectLinks.create(message.from);
     const connectUrl = `${swiggyOAuthOrigin}/oauth/swiggy/start?token=${connectToken}`;
     return buildConnectReplyText({ connectUrl, searchTerm });
   }
@@ -280,7 +269,7 @@ async function buildReplyText(message) {
 // resume whatever search prompted the connection instead of making them
 // repeat themselves.
 async function resumePendingSearchAfterAuth(senderId) {
-  const pendingAction = await pendingPostAuthActions.take(senderId);
+  const pendingAction = pendingPostAuthActions.take(senderId);
 
   if (!pendingAction?.searchTerm || !config.whatsapp.sendEnabled) {
     return;
@@ -332,9 +321,9 @@ async function replyToIncomingTextMessages(messages) {
 // redirect for whichever sender that unguessable, single-use token was
 // issued to (see pending-connect-links.js for why this isn't a raw
 // ?sender= param).
-async function handleSwiggyOAuthStart(request, response, url) {
+function handleSwiggyOAuthStart(request, response, url) {
   const connectToken = url.searchParams.get("token");
-  const pendingLink = connectToken ? await pendingConnectLinks.take(connectToken) : undefined;
+  const pendingLink = connectToken ? pendingConnectLinks.take(connectToken) : undefined;
 
   if (!pendingLink) {
     sendText(response, 400, "This connection link is invalid or has expired. Please ask Nosh for a new one.");
@@ -343,7 +332,7 @@ async function handleSwiggyOAuthStart(request, response, url) {
 
   const { verifier, challenge } = generatePkcePair();
   const state = generateState();
-  await pendingOAuthExchanges.set(state, { senderId: pendingLink.senderId, codeVerifier: verifier });
+  pendingOAuthExchanges.set(state, { senderId: pendingLink.senderId, codeVerifier: verifier });
 
   const authorizeUrl = buildAuthorizeUrl({
     authBaseUrl: config.swiggyOAuth.authBaseUrl,
@@ -360,7 +349,7 @@ async function handleSwiggyOAuthStart(request, response, url) {
 async function handleSwiggyOAuthCallback(request, response, url) {
   const state = url.searchParams.get("state");
   const oauthError = url.searchParams.get("error");
-  const pending = state ? await pendingOAuthExchanges.take(state) : undefined;
+  const pending = state ? pendingOAuthExchanges.take(state) : undefined;
 
   if (!pending) {
     sendText(response, 400, "This Swiggy connection link is invalid or has expired. Please try again.");
@@ -387,7 +376,7 @@ async function handleSwiggyOAuthCallback(request, response, url) {
       redirectUri: config.swiggyOAuth.redirectUri,
     });
 
-    await swiggyTokenStore.set(pending.senderId, tokenRecord);
+    swiggyTokenStore.set(pending.senderId, tokenRecord);
     sendText(response, 200, "Your Swiggy account is connected. You can return to WhatsApp now.");
     await resumePendingSearchAfterAuth(pending.senderId);
   } catch (error) {
@@ -453,7 +442,7 @@ async function handleWhatsAppWebhook(request, response, url) {
     }
 
     const messages = extractInboundTextMessages(payload);
-    const unprocessedMessages = await processedMessageIds.takeUnprocessed(messages);
+    const unprocessedMessages = processedMessageIds.takeUnprocessed(messages);
     acknowledgeIncomingTextMessages(unprocessedMessages);
 
     // Persistence beyond in-memory dedup/pending-address state arrives later.
@@ -479,7 +468,7 @@ const server = http.createServer(async (request, response) => {
   }
 
   if (request.method === "GET" && url.pathname === "/oauth/swiggy/start") {
-    await handleSwiggyOAuthStart(request, response, url);
+    handleSwiggyOAuthStart(request, response, url);
     return;
   }
 

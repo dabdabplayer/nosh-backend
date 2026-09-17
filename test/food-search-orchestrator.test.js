@@ -8,7 +8,6 @@ import {
 } from "../src/food-search-orchestrator.js";
 import { PendingAddressSelections } from "../src/pending-address-selection.js";
 import { PendingCartSessions } from "../src/pending-cart-sessions.js";
-import { testStoreDeps } from "./helpers/fake-dynamodb-document-client.js";
 
 function message(text, from = "sender-1") {
   return { from, id: "wamid.1", phoneNumberId: "pn-1", text };
@@ -93,7 +92,7 @@ test("parseAddressSelectionReply returns undefined for non-numeric text", () => 
 // --- classifyIncomingMessage ---
 
 test("classifyIncomingMessage: trigger with no pending state is a new search", async () => {
-  const pending = new PendingAddressSelections(testStoreDeps());
+  const pending = new PendingAddressSelections();
   assert.deepEqual(await classifyIncomingMessage(message("find biryani"), pending), {
     type: "new_search",
     searchTerm: "biryani",
@@ -101,14 +100,14 @@ test("classifyIncomingMessage: trigger with no pending state is a new search", a
 });
 
 test("classifyIncomingMessage: no trigger and no pending state is no_trigger", async () => {
-  const pending = new PendingAddressSelections(testStoreDeps());
+  const pending = new PendingAddressSelections();
   assert.deepEqual(await classifyIncomingMessage(message("hello"), pending), { type: "no_trigger" });
 });
 
 test("classifyIncomingMessage: valid numeric reply while pending answers the prompt", async () => {
-  const pending = new PendingAddressSelections(testStoreDeps());
+  const pending = new PendingAddressSelections();
   const candidates = [{ id: "addr-1", label: "Home" }, { id: "addr-2", label: "Other" }];
-  await pending.set("sender-1", { searchTerm: "biryani", candidates });
+  pending.set("sender-1", { searchTerm: "biryani", candidates });
 
   assert.deepEqual(await classifyIncomingMessage(message("2"), pending), {
     type: "address_selection_answer",
@@ -118,8 +117,8 @@ test("classifyIncomingMessage: valid numeric reply while pending answers the pro
 });
 
 test("classifyIncomingMessage: a new trigger overrides a stale pending prompt", async () => {
-  const pending = new PendingAddressSelections(testStoreDeps());
-  await pending.set("sender-1", { searchTerm: "biryani", candidates: [{ id: "addr-1", label: "Home" }] });
+  const pending = new PendingAddressSelections();
+  pending.set("sender-1", { searchTerm: "biryani", candidates: [{ id: "addr-1", label: "Home" }] });
 
   assert.deepEqual(await classifyIncomingMessage(message("find pizza"), pending), {
     type: "new_search",
@@ -128,9 +127,9 @@ test("classifyIncomingMessage: a new trigger overrides a stale pending prompt", 
 });
 
 test("classifyIncomingMessage: unrelated text while pending is unrecognized", async () => {
-  const pending = new PendingAddressSelections(testStoreDeps());
+  const pending = new PendingAddressSelections();
   const candidates = [{ id: "addr-1", label: "Home" }];
-  await pending.set("sender-1", { searchTerm: "biryani", candidates });
+  pending.set("sender-1", { searchTerm: "biryani", candidates });
 
   assert.deepEqual(await classifyIncomingMessage(message("no thanks"), pending), {
     type: "unrecognized_pending_reply",
@@ -139,7 +138,7 @@ test("classifyIncomingMessage: unrelated text while pending is unrecognized", as
 });
 
 test("classifyIncomingMessage: falls back to NIM classification when there's no literal trigger", async () => {
-  const pending = new PendingAddressSelections(testStoreDeps());
+  const pending = new PendingAddressSelections();
   const calls = [];
   const classifyMessage = async (params) => {
     calls.push(params);
@@ -165,7 +164,7 @@ test("classifyIncomingMessage: falls back to NIM classification when there's no 
 });
 
 test("classifyIncomingMessage: does not call NIM when the literal trigger already matched", async () => {
-  const pending = new PendingAddressSelections(testStoreDeps());
+  const pending = new PendingAddressSelections();
   let called = false;
   const classifyMessage = async () => {
     called = true;
@@ -182,7 +181,7 @@ test("classifyIncomingMessage: does not call NIM when the literal trigger alread
 });
 
 test("classifyIncomingMessage: NIM classification failure falls back to no_trigger", async () => {
-  const pending = new PendingAddressSelections(testStoreDeps());
+  const pending = new PendingAddressSelections();
   const classifyMessage = async () => undefined;
 
   const result = await classifyIncomingMessage(message("I want biryani"), pending, {
@@ -194,9 +193,9 @@ test("classifyIncomingMessage: NIM classification failure falls back to no_trigg
 });
 
 test("classifyIncomingMessage: tells the classifier about an active cart session (regression - without this, cart-related messages like \"from Pizza Hut add a margherita pizza\" get misread as a brand new search)", async () => {
-  const pending = new PendingAddressSelections(testStoreDeps());
-  const pendingCartSessions = new PendingCartSessions(testStoreDeps());
-  await pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
+  const pending = new PendingAddressSelections();
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
 
   const calls = [];
   const classifyMessage = async (params) => {
@@ -215,8 +214,8 @@ test("classifyIncomingMessage: tells the classifier about an active cart session
 });
 
 test("classifyIncomingMessage: reports no active cart when there isn't one", async () => {
-  const pending = new PendingAddressSelections(testStoreDeps());
-  const pendingCartSessions = new PendingCartSessions(testStoreDeps());
+  const pending = new PendingAddressSelections();
+  const pendingCartSessions = new PendingCartSessions();
 
   const calls = [];
   const classifyMessage = async (params) => {
@@ -234,7 +233,7 @@ test("classifyIncomingMessage: reports no active cart when there isn't one", asy
 });
 
 test("classifyIncomingMessage: NIM is skipped entirely when not enabled", async () => {
-  const pending = new PendingAddressSelections(testStoreDeps());
+  const pending = new PendingAddressSelections();
   let called = false;
   const classifyMessage = async () => {
     called = true;
@@ -253,7 +252,7 @@ test("classifyIncomingMessage: NIM is skipped entirely when not enabled", async 
 // --- getFoodSearchReply ---
 
 test("getFoodSearchReply returns undefined for ordinary messages", async () => {
-  const pending = new PendingAddressSelections(testStoreDeps());
+  const pending = new PendingAddressSelections();
   const client = fakeSwiggyFoodClient({});
 
   const reply = await getFoodSearchReply({
@@ -266,7 +265,7 @@ test("getFoodSearchReply returns undefined for ordinary messages", async () => {
 });
 
 test("getFoodSearchReply searches immediately with a single unambiguous address", async () => {
-  const pending = new PendingAddressSelections(testStoreDeps());
+  const pending = new PendingAddressSelections();
   const searchCalls = [];
   const client = fakeSwiggyFoodClient({
     getAddresses: async () => payload(singleAddress),
@@ -288,8 +287,8 @@ test("getFoodSearchReply searches immediately with a single unambiguous address"
 });
 
 test("getFoodSearchReply records the shown restaurant list as selectable candidates on the cart session", async () => {
-  const pending = new PendingAddressSelections(testStoreDeps());
-  const pendingCartSessions = new PendingCartSessions(testStoreDeps());
+  const pending = new PendingAddressSelections();
+  const pendingCartSessions = new PendingCartSessions();
   const client = fakeSwiggyFoodClient({
     getAddresses: async () => payload(singleAddress),
     searchRestaurants: async () =>
@@ -311,7 +310,7 @@ test("getFoodSearchReply records the shown restaurant list as selectable candida
   // A bare number reply should be able to pick straight off this list, the
   // same way a bare number already picks an address - see
   // food-order-orchestrator.js's getFoodOrderReply, which reads this field.
-  assert.deepEqual(await pendingCartSessions.peek("sender-1"), {
+  assert.deepEqual(pendingCartSessions.peek("sender-1"), {
     addressId: "addr-1",
     restaurantCandidates: [
       { id: "r-1", name: "Louis Burger" },
@@ -321,7 +320,7 @@ test("getFoodSearchReply records the shown restaurant list as selectable candida
 });
 
 test("getFoodSearchReply prompts and does not search when addresses are ambiguous", async () => {
-  const pending = new PendingAddressSelections(testStoreDeps());
+  const pending = new PendingAddressSelections();
   let searchCalled = false;
   const client = fakeSwiggyFoodClient({
     getAddresses: async () => payload(ambiguousAddresses),
@@ -340,11 +339,11 @@ test("getFoodSearchReply prompts and does not search when addresses are ambiguou
   assert.equal(searchCalled, false);
   assert.match(reply, /1\. Home/);
   assert.match(reply, /2\. Other/);
-  assert.ok(await pending.peek("sender-1"));
+  assert.ok(pending.peek("sender-1"));
 });
 
 test("getFoodSearchReply resolves a valid follow-up reply and clears pending state", async () => {
-  const pending = new PendingAddressSelections(testStoreDeps());
+  const pending = new PendingAddressSelections();
   const searchCalls = [];
   const client = fakeSwiggyFoodClient({
     getAddresses: async () => payload(ambiguousAddresses),
@@ -368,11 +367,11 @@ test("getFoodSearchReply resolves a valid follow-up reply and clears pending sta
 
   assert.deepEqual(searchCalls, [{ query: "biryani", addressId: "addr-2" }]);
   assert.match(reply, /Test Restaurant/);
-  assert.equal(await pending.peek("sender-1"), undefined);
+  assert.equal(pending.peek("sender-1"), undefined);
 });
 
 test("getFoodSearchReply re-prompts on an invalid follow-up and keeps pending state", async () => {
-  const pending = new PendingAddressSelections(testStoreDeps());
+  const pending = new PendingAddressSelections();
   let searchCalled = false;
   const client = fakeSwiggyFoodClient({
     getAddresses: async () => payload(ambiguousAddresses),
@@ -396,11 +395,11 @@ test("getFoodSearchReply re-prompts on an invalid follow-up and keeps pending st
 
   assert.equal(searchCalled, false);
   assert.match(reply, /1\. Home/);
-  assert.ok(await pending.peek("sender-1"));
+  assert.ok(pending.peek("sender-1"));
 });
 
 test("getFoodSearchReply starts a fresh search when a new trigger arrives while pending", async () => {
-  const pending = new PendingAddressSelections(testStoreDeps());
+  const pending = new PendingAddressSelections();
   const searchCalls = [];
   const client = fakeSwiggyFoodClient({
     getAddresses: async () => payload(singleAddress),
@@ -426,7 +425,7 @@ test("getFoodSearchReply starts a fresh search when a new trigger arrives while 
 });
 
 test("getFoodSearchReply tells the user to add an address when they have none", async () => {
-  const pending = new PendingAddressSelections(testStoreDeps());
+  const pending = new PendingAddressSelections();
   let searchCalled = false;
   const client = fakeSwiggyFoodClient({
     getAddresses: async () => payload(noAddresses),
@@ -447,7 +446,7 @@ test("getFoodSearchReply tells the user to add an address when they have none", 
 });
 
 test("getFoodSearchReply uses defaultAddressId directly when clarification isn't needed", async () => {
-  const pending = new PendingAddressSelections(testStoreDeps());
+  const pending = new PendingAddressSelections();
   const searchCalls = [];
   const client = fakeSwiggyFoodClient({
     getAddresses: async () =>
@@ -472,7 +471,7 @@ test("getFoodSearchReply uses defaultAddressId directly when clarification isn't
 });
 
 test("getFoodSearchReply falls back to a generic reply when getAddresses throws", async () => {
-  const pending = new PendingAddressSelections(testStoreDeps());
+  const pending = new PendingAddressSelections();
   const client = fakeSwiggyFoodClient({
     getAddresses: async () => {
       throw new Error("boom");
@@ -489,7 +488,7 @@ test("getFoodSearchReply falls back to a generic reply when getAddresses throws"
 });
 
 test("getFoodSearchReply falls back to a generic reply when searchRestaurants throws", async () => {
-  const pending = new PendingAddressSelections(testStoreDeps());
+  const pending = new PendingAddressSelections();
   const client = fakeSwiggyFoodClient({
     getAddresses: async () => payload(singleAddress),
     searchRestaurants: async () => {
@@ -507,7 +506,7 @@ test("getFoodSearchReply falls back to a generic reply when searchRestaurants th
 });
 
 test("getFoodSearchReply falls back to a generic reply on an unparseable payload", async () => {
-  const pending = new PendingAddressSelections(testStoreDeps());
+  const pending = new PendingAddressSelections();
   const client = fakeSwiggyFoodClient({
     getAddresses: async () => ({ text: "not json", structured: null }),
   });
@@ -522,7 +521,7 @@ test("getFoodSearchReply falls back to a generic reply on an unparseable payload
 });
 
 test("getFoodSearchReply only shows OPEN restaurants", async () => {
-  const pending = new PendingAddressSelections(testStoreDeps());
+  const pending = new PendingAddressSelections();
   const client = fakeSwiggyFoodClient({
     getAddresses: async () => payload(singleAddress),
     searchRestaurants: async () =>
@@ -547,7 +546,7 @@ test("getFoodSearchReply only shows OPEN restaurants", async () => {
 });
 
 test("getFoodSearchReply reports no open restaurants when all are filtered out", async () => {
-  const pending = new PendingAddressSelections(testStoreDeps());
+  const pending = new PendingAddressSelections();
   const client = fakeSwiggyFoodClient({
     getAddresses: async () => payload(singleAddress),
     searchRestaurants: async () =>
@@ -564,7 +563,7 @@ test("getFoodSearchReply reports no open restaurants when all are filtered out",
 });
 
 test("getFoodSearchReply caps restaurant results to the top 5", async () => {
-  const pending = new PendingAddressSelections(testStoreDeps());
+  const pending = new PendingAddressSelections();
   const restaurants = Array.from({ length: 10 }, (_, index) =>
     restaurant({ id: `r-${index}`, name: `Restaurant ${index}` }),
   );
@@ -584,7 +583,7 @@ test("getFoodSearchReply caps restaurant results to the top 5", async () => {
 });
 
 test("getFoodSearchReply caps address candidates to the top 5", async () => {
-  const pending = new PendingAddressSelections(testStoreDeps());
+  const pending = new PendingAddressSelections();
   const addresses = Array.from({ length: 8 }, (_, index) => ({
     id: `addr-${index}`,
     addressLine: `${index} Some Street`,
@@ -605,11 +604,11 @@ test("getFoodSearchReply caps address candidates to the top 5", async () => {
     pendingAddressSelections: pending,
   });
 
-  assert.equal((await pending.peek("sender-1")).candidates.length, 5);
+  assert.equal(pending.peek("sender-1").candidates.length, 5);
 });
 
 test("getFoodSearchReply never leaks raw ids, tool names, or JSON artifacts", async () => {
-  const pending = new PendingAddressSelections(testStoreDeps());
+  const pending = new PendingAddressSelections();
   const client = fakeSwiggyFoodClient({
     getAddresses: async () => payload(singleAddress),
     searchRestaurants: async () => payload({ restaurants: [restaurant({ id: "super-secret-id" })] }),

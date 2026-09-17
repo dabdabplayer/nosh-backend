@@ -63,8 +63,6 @@ npm start
 
 ## Deploying this increment
 
-Use `npm start` as the start command (or `Dockerfile` in this repo, if deploying as a container). Configure the platform health check to call `GET /health`. AWS and Google Cloud both commonly inject `PORT`; the service reads it automatically.
-
-Conversation state (Swiggy tokens, pending address selections, cart sessions, etc.) lives in a single shared DynamoDB table, not local memory or disk — required so the service works correctly with more than one running instance. Set `DYNAMODB_TABLE_NAME` to a table with a String partition key named `pk` (see `.env.example`); the app won't start without it.
+Use `npm start` as the start command. Configure the platform health check to call `GET /health`. AWS and Google Cloud both commonly inject `PORT`; the service reads it automatically.
 
 Keep deployment secrets in the platform's secret manager or environment configuration. Do not commit `.env` files.
