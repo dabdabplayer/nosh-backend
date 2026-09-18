@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  buildReorderUsualReply,
+  findUsualOrder,
   getFoodOrderReply,
   parseOrderConfirmationReply,
   placeConfirmedOrder,
@@ -48,6 +50,17 @@ function fakeClient(overrides = {}) {
       (async () => payload({ cod: { available: true, displayName: "Cash on Delivery" } })),
     placeFoodOrder: overrides.placeFoodOrder,
     confirmOrder: overrides.confirmOrder,
+    getAddresses:
+      overrides.getAddresses ??
+      (async () =>
+        payload({
+          addresses: [{ id: "addr-1", addressLine: "123 Main St" }],
+          total: 1,
+          resolution: { needsUserClarification: false, defaultAddressId: "addr-1" },
+        })),
+    getFoodOrders: overrides.getFoodOrders ?? (async () => payload({ orders: [] })),
+    getFoodOrderDetails: overrides.getFoodOrderDetails,
+    flushFoodCart: overrides.flushFoodCart ?? (async () => payload({ success: true })),
   };
 }
 
@@ -80,6 +93,41 @@ function cartData(overrides) {
     offers: { coupon_applied: null, coupon_discount: 0 },
     ...overrides,
   };
+}
+
+function orderSummary(overrides) {
+  return {
+    orderId: "order-1",
+    restaurantId: "rest-1",
+    restaurantName: "Test Restaurant",
+    orderTotal: "301",
+    orderStatus: "DELIVERED",
+    orderedItems: "1x Chicken Biryani",
+    orderedTime: "September 8, 3:59 PM",
+    isActiveOrder: false,
+    actions: [],
+    ...overrides,
+  };
+}
+
+function orderDetailsPayload(overrides) {
+  return payload({
+    order: {
+      order_id: 1,
+      restaurant_id: "rest-1",
+      restaurant_name: "Test Restaurant",
+      is_reorderable_order: true,
+      order_items: [
+        {
+          item_id: "item-1",
+          name: "Chicken Biryani",
+          quantity: "1",
+          variants: [{ variation_id: 10, group_id: 1, name: "Half", price: 0 }],
+        },
+      ],
+      ...overrides,
+    },
+  });
 }
 
 // --- parseOrderConfirmationReply ---
@@ -956,4 +1004,204 @@ test("placeConfirmedOrder still reports failure when placeFoodOrder throws and n
   });
 
   assert.equal(result.status, "failed");
+});
+
+// --- findUsualOrder ---
+
+test("findUsualOrder requires at least 2 non-active orders at the same restaurant", () => {
+  const orders = [orderSummary({ orderId: "o1", restaurantId: "rest-1" })];
+  assert.equal(findUsualOrder(orders), undefined);
+});
+
+test("findUsualOrder returns the most recent qualifying order (get_food_orders is newest-first)", () => {
+  const orders = [
+    orderSummary({ orderId: "o3", restaurantId: "rest-1" }),
+    orderSummary({ orderId: "o2", restaurantId: "rest-2" }),
+    orderSummary({ orderId: "o1", restaurantId: "rest-1" }),
+    orderSummary({ orderId: "o0", restaurantId: "rest-2" }),
+  ];
+
+  const result = findUsualOrder(orders);
+  assert.equal(result.orderId, "o3");
+  assert.equal(result.restaurantId, "rest-1");
+});
+
+test("findUsualOrder ignores active (in-progress) orders when counting", () => {
+  const orders = [
+    orderSummary({ orderId: "o2", restaurantId: "rest-1", isActiveOrder: true }),
+    orderSummary({ orderId: "o1", restaurantId: "rest-1" }),
+  ];
+
+  assert.equal(findUsualOrder(orders), undefined);
+});
+
+test("findUsualOrder ignores orders with no restaurantId", () => {
+  const orders = [
+    orderSummary({ orderId: "o2", restaurantId: undefined }),
+    orderSummary({ orderId: "o1", restaurantId: undefined }),
+  ];
+
+  assert.equal(findUsualOrder(orders), undefined);
+});
+
+// --- buildReorderUsualReply ---
+
+test("buildReorderUsualReply rebuilds the cart from the qualifying order and shows the live total, not the old order's", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  const updateFoodCartCalls = [];
+  const flushCalls = [];
+
+  const client = fakeClient({
+    getFoodOrders: async () =>
+      payload({
+        orders: [
+          orderSummary({ orderId: "o2", restaurantId: "rest-1" }),
+          orderSummary({ orderId: "o1", restaurantId: "rest-1" }),
+        ],
+      }),
+    getFoodOrderDetails: async (params) => {
+      assert.deepEqual(params, { orderId: "o2" });
+      return orderDetailsPayload();
+    },
+    flushFoodCart: async () => {
+      flushCalls.push(true);
+      return payload({ success: true });
+    },
+    updateFoodCart: async (params) => {
+      updateFoodCartCalls.push(params);
+      return cartPayload(cartData());
+    },
+  });
+
+  const reply = await buildReorderUsualReply({
+    senderId: "sender-1",
+    swiggyFoodClient: client,
+    pendingCartSessions,
+  });
+
+  assert.equal(flushCalls.length, 1);
+  assert.equal(updateFoodCartCalls.length, 1);
+  assert.equal(updateFoodCartCalls[0].restaurantId, "rest-1");
+  assert.equal(updateFoodCartCalls[0].addressId, "addr-1");
+  assert.deepEqual(updateFoodCartCalls[0].cartItems, [
+    { menu_item_id: "item-1", quantity: 1, variantsV2: [{ group_id: 1, variation_id: 10 }] },
+  ]);
+  assert.match(reply, /Reordering your usual from Test Restaurant/);
+  // cartData()'s pricing.to_pay (187), not the old order's orderTotal (301)
+  // - the reply must show the freshly-rebuilt cart's live total.
+  assert.match(reply, /Total: ₹187/);
+  assert.doesNotMatch(reply, /301/);
+  assert.deepEqual(pendingCartSessions.peek("sender-1"), {
+    restaurantId: "rest-1",
+    restaurantName: "Test Restaurant",
+    addressId: "addr-1",
+  });
+});
+
+test("buildReorderUsualReply gives a plain reply when no restaurant has a repeat order", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  const client = fakeClient({
+    getFoodOrders: async () => payload({ orders: [orderSummary({ orderId: "o1", restaurantId: "rest-1" })] }),
+  });
+
+  const reply = await buildReorderUsualReply({
+    senderId: "sender-1",
+    swiggyFoodClient: client,
+    pendingCartSessions,
+  });
+
+  assert.match(reply, /don't have a repeat order/);
+  assert.equal(pendingCartSessions.peek("sender-1"), undefined);
+});
+
+test("buildReorderUsualReply declines when Swiggy reports the qualifying order isn't reorderable", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  const client = fakeClient({
+    getFoodOrders: async () =>
+      payload({
+        orders: [
+          orderSummary({ orderId: "o2", restaurantId: "rest-1" }),
+          orderSummary({ orderId: "o1", restaurantId: "rest-1" }),
+        ],
+      }),
+    getFoodOrderDetails: async () => orderDetailsPayload({ is_reorderable_order: false }),
+  });
+
+  const reply = await buildReorderUsualReply({
+    senderId: "sender-1",
+    swiggyFoodClient: client,
+    pendingCartSessions,
+  });
+
+  assert.match(reply, /don't have a repeat order/);
+});
+
+test("buildReorderUsualReply tells the user to add an address when they have none", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  const client = fakeClient({
+    getAddresses: async () => payload({ addresses: [], total: 0 }),
+  });
+
+  const reply = await buildReorderUsualReply({
+    senderId: "sender-1",
+    swiggyFoodClient: client,
+    pendingCartSessions,
+  });
+
+  assert.match(reply, /don't have a saved delivery address/);
+});
+
+test("buildReorderUsualReply skips an order item with no item_id rather than inventing one", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  const updateFoodCartCalls = [];
+  const client = fakeClient({
+    getFoodOrders: async () =>
+      payload({
+        orders: [
+          orderSummary({ orderId: "o2", restaurantId: "rest-1" }),
+          orderSummary({ orderId: "o1", restaurantId: "rest-1" }),
+        ],
+      }),
+    getFoodOrderDetails: async () =>
+      orderDetailsPayload({
+        order_items: [
+          { item_id: "item-1", name: "Chicken Biryani", quantity: "1" },
+          { name: "Mystery Item", quantity: "1" },
+        ],
+      }),
+    updateFoodCart: async (params) => {
+      updateFoodCartCalls.push(params);
+      return cartPayload(cartData());
+    },
+  });
+
+  await buildReorderUsualReply({ senderId: "sender-1", swiggyFoodClient: client, pendingCartSessions });
+
+  assert.equal(updateFoodCartCalls[0].cartItems.length, 1);
+  assert.equal(updateFoodCartCalls[0].cartItems[0].menu_item_id, "item-1");
+});
+
+test("buildReorderUsualReply falls back to a generic reply when updateFoodCart throws", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  const client = fakeClient({
+    getFoodOrders: async () =>
+      payload({
+        orders: [
+          orderSummary({ orderId: "o2", restaurantId: "rest-1" }),
+          orderSummary({ orderId: "o1", restaurantId: "rest-1" }),
+        ],
+      }),
+    getFoodOrderDetails: async () => orderDetailsPayload(),
+    updateFoodCart: async () => {
+      throw new Error("boom");
+    },
+  });
+
+  const reply = await buildReorderUsualReply({
+    senderId: "sender-1",
+    swiggyFoodClient: client,
+    pendingCartSessions,
+  });
+
+  assert.match(reply, /couldn't do that right now/);
 });

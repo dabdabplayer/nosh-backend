@@ -6,7 +6,7 @@ const MAX_RESTAURANT_RESULTS = 5;
 
 const GENERIC_FALLBACK_REPLY =
   "Sorry, I couldn't complete that search right now. Please try again in a bit.";
-const NO_SAVED_ADDRESS_REPLY =
+export const NO_SAVED_ADDRESS_REPLY =
   "You don't have a saved delivery address yet. Please add one in the Swiggy app and try again.";
 
 function noOpenRestaurantsReply(searchTerm) {
@@ -37,14 +37,19 @@ export function parseAddressSelectionReply(text, candidateCount) {
 // Falls back to NVIDIA NIM intent classification only when the literal
 // find/search prefix doesn't match, so free-form messages like "I want
 // biryani" still trigger a search. Never throws - classifyMessage itself
-// fails closed, so a NIM outage just means no search-term match here.
+// fails closed, so a NIM outage just means no match here.
 //
 // Passes hasActiveCart so the classifier can tell a genuine new search apart
 // from a cart-related message like "from Pizza Hut add a margherita pizza" -
 // without that context, the search classifier can't tell the two apart and
 // swallows cart messages before classifyOrderIntent ever sees them
 // (confirmed live).
-async function resolveSearchTerm(
+//
+// Returns the raw { type: "search_food", query } / { type: "reorder_usual" }
+// intent (not just a search term) so classifyIncomingMessage below can tell
+// the two apart - a literal find/search match is always treated as
+// search_food, never reorder_usual.
+async function resolveIntent(
   trimmedText,
   senderId,
   { nvidiaNim, pendingCartSessions, classifyMessage = defaultClassifyMessage } = {},
@@ -52,7 +57,7 @@ async function resolveSearchTerm(
   const regexSearchTerm = matchFoodSearchTrigger(trimmedText);
 
   if (regexSearchTerm) {
-    return regexSearchTerm;
+    return { type: "search_food", query: regexSearchTerm };
   }
 
   if (!nvidiaNim?.enabled) {
@@ -70,7 +75,7 @@ async function resolveSearchTerm(
     hasActiveCart,
   });
 
-  return intent?.type === "search_food" ? intent.query : undefined;
+  return intent?.type === "search_food" || intent?.type === "reorder_usual" ? intent : undefined;
 }
 
 export async function classifyIncomingMessage(message, pendingAddressSelections, nluOptions) {
@@ -89,7 +94,17 @@ export async function classifyIncomingMessage(message, pendingAddressSelections,
     }
   }
 
-  const searchTerm = await resolveSearchTerm(trimmedText, message.from, nluOptions);
+  const intent = await resolveIntent(trimmedText, message.from, nluOptions);
+
+  // A reorder request supersedes any stale "which address?" prompt the same
+  // way a genuine new search does below - the caller is expected to clear
+  // pendingAddressSelections, same as the new_search case in
+  // getFoodSearchReply.
+  if (intent?.type === "reorder_usual") {
+    return { type: "reorder_usual" };
+  }
+
+  const searchTerm = intent?.type === "search_food" ? intent.query : undefined;
 
   if (pending) {
     if (searchTerm) {

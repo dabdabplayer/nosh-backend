@@ -1,8 +1,9 @@
 import { classifyOrderIntent as defaultClassifyOrderIntent } from "./nlu-client.js";
-import { parseAddressSelectionReply } from "./food-search-orchestrator.js";
+import { NO_SAVED_ADDRESS_REPLY, parseAddressSelectionReply } from "./food-search-orchestrator.js";
 import { parseStructuredPayload } from "./swiggy-food-client.js";
 
 const MAX_COUPONS = 5;
+const MIN_USUAL_ORDER_COUNT = 2;
 
 const CONFIRM_REPLY_PATTERN = /^(yes|y|confirm|confirmed|place( it)?|proceed)$/i;
 const CANCEL_REPLY_PATTERN = /^(no|n|cancel|cancelled|canceled|stop)$/i;
@@ -44,6 +45,54 @@ function unwrapCartPayload(toolResult) {
   return payload?.statusCode === 0 ? payload.data : undefined;
 }
 
+// Breaks out every charge Swiggy's cart pricing carries (item total,
+// delivery charge, taxes, coupon discount) instead of only showing the
+// final to_pay figure - a lump total makes it look like Nosh is hiding
+// charges when it's really just delivery fee + taxes on top of the item
+// price. Field names are FoodCartPricing/FoodCartOffers from
+// get_food_cart's documented output schema. Only shows a line when its
+// field is actually present, per this file's existing "never invent a
+// fallback value" convention.
+function formatPricingBreakdown(pricing, offers, { totalLabel = "Total" } = {}) {
+  if (!pricing) {
+    return [];
+  }
+
+  const lines = [];
+
+  if (typeof pricing.item_total === "number") {
+    lines.push(`Item total: ₹${pricing.item_total}`);
+  }
+
+  if (typeof pricing.delivery_charge === "number") {
+    lines.push(`Delivery charge: ₹${pricing.delivery_charge}`);
+  }
+
+  // Swiggy's own field name (taxes_and_charges, not just "taxes") already
+  // says this is a bundle - get_food_cart/update_food_cart's documented
+  // FoodCartPricing doesn't break it into GST vs. a platform/convenience
+  // fee vs. anything else, and there's no live Swiggy account available to
+  // inspect a real response for undocumented sub-fields. Label it as the
+  // bundle it is rather than inventing a split Swiggy doesn't provide.
+  if (typeof pricing.taxes_and_charges === "number") {
+    lines.push(`Taxes & other charges: ₹${pricing.taxes_and_charges}`);
+  }
+
+  // coupon_discount can be present but 0 when Swiggy auto-suggests a coupon
+  // without actually applying it (see handleApplyCoupon below) - only show
+  // a discount line once it's genuinely applied.
+  const couponDiscount = offers?.coupon_discount;
+  if (typeof couponDiscount === "number" && couponDiscount > 0) {
+    lines.push(`Coupon discount: −₹${couponDiscount}`);
+  }
+
+  if (typeof pricing.to_pay === "number") {
+    lines.push(`${totalLabel}: ₹${pricing.to_pay}`);
+  }
+
+  return lines;
+}
+
 function formatCartReply(cartData) {
   if (!cartData || !Array.isArray(cartData.items) || cartData.items.length === 0) {
     return EMPTY_CART_REPLY;
@@ -57,12 +106,197 @@ function formatCartReply(cartData) {
     return `${item.quantity}x ${item.name}${suffix} — ₹${item.total}`;
   });
 
-  const toPay = cartData.pricing?.to_pay;
-  const totalLine = typeof toPay === "number" ? `Total: ₹${toPay}` : undefined;
-
-  return [`Your cart (${cartData.restaurant?.name ?? "restaurant"}):`, ...lines, totalLine]
+  return [
+    `Your cart (${cartData.restaurant?.name ?? "restaurant"}):`,
+    ...lines,
+    ...formatPricingBreakdown(cartData.pricing, cartData.offers),
+  ]
     .filter(Boolean)
     .join("\n");
+}
+
+const NO_USUAL_REPLY =
+  "You don't have a repeat order yet for me to reorder — search for a restaurant or dish instead.";
+
+// get_food_orders' own doc says results come back newest-first, so scanning
+// in the given array order and stopping at the first restaurant that
+// reaches MIN_USUAL_ORDER_COUNT gives both "which restaurant qualifies" and
+// "their most recent order there" in one pass, with no timestamp parsing
+// needed - orderedTime is a year-less, human-readable string elsewhere in
+// this file (see findOrderPlacedSinceSnapshot below) and can't be used for
+// recency comparison.
+//
+// Swiggy doesn't document an orderStatus enum (their own docs warn against
+// inventing status/enum values), so there's no confirmed "completed" string
+// to match against. isActiveOrder is the only typed, unambiguous signal at
+// this list level - "not active" (delivered, cancelled, or failed all
+// alike) is used as "reached a terminal state" for counting purposes. A
+// cancelled order can therefore count toward the >=2 threshold same as a
+// delivered one; the actual reorder is still gated by is_reorderable_order
+// (checked via get_food_order_details below) and by the ordinary
+// deterministic YES/NO confirmation before anything is placed, so a
+// mis-qualified count here is a minor UX miss, not a safety issue.
+export function findUsualOrder(orders, { minCount = MIN_USUAL_ORDER_COUNT } = {}) {
+  const terminalOrders = orders.filter((order) => order?.restaurantId && order.isActiveOrder !== true);
+
+  const countsByRestaurant = new Map();
+  for (const order of terminalOrders) {
+    countsByRestaurant.set(order.restaurantId, (countsByRestaurant.get(order.restaurantId) ?? 0) + 1);
+  }
+
+  return terminalOrders.find((order) => countsByRestaurant.get(order.restaurantId) >= minCount);
+}
+
+// Rebuilds cartItems from get_food_order_details' order_items for
+// update_food_cart. Field mapping (item_id -> menu_item_id, variants'
+// {variation_id, group_id} -> a variantsV2 selection pair) is inferred from
+// Swiggy's documented schemas, NOT yet confirmed against a real live call
+// (no production/staging Swiggy account was available while building this)
+// - re-verify against an actual get_food_order_details response before
+// relying on this in production, the same way this file's other "confirmed
+// live" comments were established. Addons are deliberately dropped: there's
+// no live-verified update_food_cart addons INPUT shape anywhere in this
+// codebase to map onto (handleAddToCart above never sends addons either),
+// so a reordered item may come back without its previous add-ons rather
+// than risk sending an invented field shape.
+function buildReorderCartItems(orderItems) {
+  return orderItems
+    .filter((item) => typeof item?.item_id === "string" && item.item_id.length > 0)
+    .map((item) => {
+      const variantsV2 =
+        Array.isArray(item.variants) && item.variants.length > 0
+          ? item.variants
+              .filter((variant) => variant?.group_id !== undefined && variant?.variation_id !== undefined)
+              .map((variant) => ({ group_id: variant.group_id, variation_id: variant.variation_id }))
+          : undefined;
+
+      return {
+        menu_item_id: item.item_id,
+        quantity: Number.parseInt(item.quantity, 10) > 0 ? Number.parseInt(item.quantity, 10) : 1,
+        variantsV2: variantsV2 && variantsV2.length > 0 ? variantsV2 : undefined,
+      };
+    });
+}
+
+// The single entry point for the "reorder my usual" intent (see
+// src/nlu-client.js's reorder_usual tool and
+// src/food-search-orchestrator.js's classifyIncomingMessage). Calls
+// get_food_orders live every time - no caching - per this feature's design.
+//
+// Requires >=2 non-active orders at the SAME restaurant to call it a
+// "usual" (a single past order isn't a pattern); otherwise returns
+// NO_USUAL_REPLY so the caller's normal message handling applies, same as
+// any other unmatched message - this deliberately does not guess at a
+// search term or invent a recommendation (out of scope per this feature's
+// spec: no ranking/scoring, no unsolicited suggestions).
+//
+// On a match: fetches that order's structured items via
+// get_food_order_details, clears the cart, rebuilds it item-for-item, and
+// hands off into the EXACT SAME pendingCartSessions/formatCartReply path
+// handleAddToCart uses - so the normal view-cart/checkout/YES-NO-confirm
+// flow (getFoodOrderReply, placeConfirmedOrder) picks it up unmodified.
+// Always shows the freshly-rebuilt cart's live total, never the old order's
+// orderTotal - Swiggy pricing/availability can differ since the order was
+// placed, and AGENTS.md forbids showing stale/fabricated pricing.
+export async function buildReorderUsualReply({ senderId, swiggyFoodClient, pendingCartSessions }) {
+  let addressResult;
+  try {
+    addressResult = await swiggyFoodClient.getAddresses({});
+  } catch {
+    return GENERIC_FALLBACK_REPLY;
+  }
+
+  const parsedAddresses = parseStructuredPayload(addressResult);
+  const addresses = Array.isArray(parsedAddresses?.addresses) ? parsedAddresses.addresses : undefined;
+
+  if (addresses === undefined) {
+    return GENERIC_FALLBACK_REPLY;
+  }
+
+  if ((typeof parsedAddresses?.total === "number" ? parsedAddresses.total : addresses.length) === 0) {
+    return NO_SAVED_ADDRESS_REPLY;
+  }
+
+  // Unlike food-search-orchestrator.js's handleNewFoodSearch, this doesn't
+  // prompt to disambiguate between multiple saved addresses - reorder is
+  // meant to be a one-message shortcut, and that prompt-and-wait flow isn't
+  // exported from that module. Falls back to the account's default address
+  // (or its first saved one) - a scoped simplification, not an oversight.
+  const addressId = parsedAddresses?.resolution?.defaultAddressId ?? addresses[0]?.id;
+
+  if (!addressId) {
+    return GENERIC_FALLBACK_REPLY;
+  }
+
+  let ordersResult;
+  try {
+    ordersResult = await swiggyFoodClient.getFoodOrders({ addressId });
+  } catch {
+    return GENERIC_FALLBACK_REPLY;
+  }
+
+  const orders = parseStructuredPayload(ordersResult)?.orders;
+
+  if (!Array.isArray(orders)) {
+    return GENERIC_FALLBACK_REPLY;
+  }
+
+  const usualOrder = findUsualOrder(orders);
+
+  if (!usualOrder) {
+    return NO_USUAL_REPLY;
+  }
+
+  let detailsResult;
+  try {
+    detailsResult = await swiggyFoodClient.getFoodOrderDetails({ orderId: usualOrder.orderId });
+  } catch {
+    return GENERIC_FALLBACK_REPLY;
+  }
+
+  const order = parseStructuredPayload(detailsResult)?.order;
+
+  if (!order?.is_reorderable_order || !Array.isArray(order.order_items)) {
+    return NO_USUAL_REPLY;
+  }
+
+  const cartItems = buildReorderCartItems(order.order_items);
+
+  if (cartItems.length === 0) {
+    return NO_USUAL_REPLY;
+  }
+
+  try {
+    await swiggyFoodClient.flushFoodCart({});
+  } catch {
+    return GENERIC_FALLBACK_REPLY;
+  }
+
+  let cartResult;
+  try {
+    cartResult = await swiggyFoodClient.updateFoodCart({
+      restaurantId: order.restaurant_id,
+      restaurantName: order.restaurant_name,
+      addressId,
+      cartItems,
+    });
+  } catch {
+    return GENERIC_FALLBACK_REPLY;
+  }
+
+  const cartData = unwrapCartPayload(cartResult);
+
+  if (!cartData) {
+    return GENERIC_FALLBACK_REPLY;
+  }
+
+  pendingCartSessions.set(senderId, {
+    restaurantId: order.restaurant_id,
+    restaurantName: order.restaurant_name,
+    addressId,
+  });
+
+  return [`Reordering your usual from ${order.restaurant_name}:`, formatCartReply(cartData)].join("\n\n");
 }
 
 // Auto-picks each variant group's Swiggy-marked default (falling back to the
@@ -324,12 +558,11 @@ async function handleApplyCoupon({ swiggyFoodClient, couponCode, addressId }) {
 
 function formatOrderSummary(cartData, paymentMethodLabel) {
   const lines = cartData.items.map((item) => `${item.quantity}x ${item.name} — ₹${item.total}`);
-  const toPay = cartData.pricing?.to_pay;
 
   return [
     `Order summary — ${cartData.restaurant?.name ?? "your order"}:`,
     ...lines,
-    typeof toPay === "number" ? `Total to pay: ₹${toPay}` : undefined,
+    ...formatPricingBreakdown(cartData.pricing, cartData.offers, { totalLabel: "Total to pay" }),
     `Payment: ${paymentMethodLabel}`,
     "",
     "Reply YES to place this order, or NO to cancel.",

@@ -39,13 +39,18 @@ export async function resolveSwiggyAccessToken({
   }
 }
 
-// The searchTerm is echoed back so the user knows their request wasn't
-// dropped - we automatically resume it once they finish connecting.
+// The searchTerm (when there is one) is echoed back so the user knows their
+// request wasn't dropped - we automatically resume it once they finish
+// connecting. Omitting searchTerm (the reorder_usual case - see
+// src/food-order-orchestrator.js's buildReorderUsualReply) uses a generic
+// action phrase instead, since there's no specific term to echo.
 export function buildConnectReplyText({ connectUrl, searchTerm }) {
+  const actionText = searchTerm ? `search for "${searchTerm}"` : "reorder your usual";
+
   return [
-    `To search for "${searchTerm}", please connect your Swiggy account first:`,
+    `To ${actionText}, please connect your Swiggy account first:`,
     connectUrl,
     "",
-    "I'll run your search automatically once you're connected.",
+    "I'll do that automatically once you're connected.",
   ].join("\n");
 }

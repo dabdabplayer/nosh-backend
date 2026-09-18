@@ -74,6 +74,46 @@ test("getAddresses calls the get_addresses tool with the given arguments", async
   assert.deepEqual(calls, [{ name: "get_addresses", arguments: { page: 1 } }]);
 });
 
+test("getFoodOrders calls the get_food_orders tool with the given arguments", async () => {
+  const calls = [];
+  const client = createSwiggyFoodClient({
+    mcpUrl: "https://example.invalid/food",
+    token: "test-token",
+    createClient: () =>
+      fakeClient({
+        callTool: async (request) => {
+          calls.push(request);
+          return { content: [{ type: "text", text: "ok" }] };
+        },
+      }),
+    createTransport: () => ({}),
+  });
+
+  await client.getFoodOrders({ addressId: "addr-1" });
+
+  assert.deepEqual(calls, [{ name: "get_food_orders", arguments: { addressId: "addr-1" } }]);
+});
+
+test("getFoodOrderDetails calls the get_food_order_details tool with the given arguments", async () => {
+  const calls = [];
+  const client = createSwiggyFoodClient({
+    mcpUrl: "https://example.invalid/food",
+    token: "test-token",
+    createClient: () =>
+      fakeClient({
+        callTool: async (request) => {
+          calls.push(request);
+          return { content: [{ type: "text", text: "ok" }] };
+        },
+      }),
+    createTransport: () => ({}),
+  });
+
+  await client.getFoodOrderDetails({ orderId: "order-1" });
+
+  assert.deepEqual(calls, [{ name: "get_food_order_details", arguments: { orderId: "order-1" } }]);
+});
+
 test("parseStructuredPayload prefers a non-null structured object", () => {
   const payload = parseStructuredPayload({
     text: "ignored",

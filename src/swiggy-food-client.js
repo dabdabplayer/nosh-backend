@@ -139,6 +139,8 @@ export function createSwiggyFoodClient({
     getPaymentOptions: (params) => callTool("get_payment_options", params),
     placeFoodOrder: (params) => callTool("place_food_order", params),
     confirmOrder: (params) => callTool("confirm_order", params),
+    getFoodOrders: (params) => callTool("get_food_orders", params),
+    getFoodOrderDetails: (params) => callTool("get_food_order_details", params),
     async close() {
       if (connecting) {
         const client = await connecting;

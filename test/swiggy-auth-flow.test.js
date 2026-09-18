@@ -123,3 +123,12 @@ test("buildConnectReplyText includes the connect URL and the search term", () =>
   assert.match(text, /biryani/);
   assert.match(text, /http:\/\/localhost:3000\/oauth\/swiggy\/start\?token=abc/);
 });
+
+test("buildConnectReplyText falls back to a generic action phrase without a search term", () => {
+  const text = buildConnectReplyText({
+    connectUrl: "http://localhost:3000/oauth/swiggy/start?token=abc",
+  });
+
+  assert.match(text, /reorder your usual/);
+  assert.match(text, /http:\/\/localhost:3000\/oauth\/swiggy\/start\?token=abc/);
+});

@@ -249,6 +249,48 @@ test("classifyIncomingMessage: NIM is skipped entirely when not enabled", async 
   assert.deepEqual(result, { type: "no_trigger" });
 });
 
+test("classifyIncomingMessage: a reorder_usual tool call becomes a reorder_usual classification", async () => {
+  const pending = new PendingAddressSelections();
+  const classifyMessage = async () => ({ type: "reorder_usual" });
+
+  const result = await classifyIncomingMessage(message("get me my usual"), pending, {
+    nvidiaNim: { enabled: true, apiKey: "key", baseUrl: "https://example.test", model: "test-model" },
+    classifyMessage,
+  });
+
+  assert.deepEqual(result, { type: "reorder_usual" });
+});
+
+test("classifyIncomingMessage: reorder_usual overrides a stale pending address prompt", async () => {
+  const pending = new PendingAddressSelections();
+  pending.set("sender-1", { searchTerm: "pizza", candidates: [{ id: "addr-1", label: "Home" }] });
+  const classifyMessage = async () => ({ type: "reorder_usual" });
+
+  const result = await classifyIncomingMessage(message("get me my usual"), pending, {
+    nvidiaNim: { enabled: true, apiKey: "key", baseUrl: "https://example.test", model: "test-model" },
+    classifyMessage,
+  });
+
+  assert.deepEqual(result, { type: "reorder_usual" });
+});
+
+test("classifyIncomingMessage: a literal find/search trigger is never read as reorder_usual", async () => {
+  const pending = new PendingAddressSelections();
+  let called = false;
+  const classifyMessage = async () => {
+    called = true;
+    return { type: "reorder_usual" };
+  };
+
+  const result = await classifyIncomingMessage(message("find biryani"), pending, {
+    nvidiaNim: { enabled: true, apiKey: "key", baseUrl: "https://example.test", model: "test-model" },
+    classifyMessage,
+  });
+
+  assert.equal(called, false);
+  assert.deepEqual(result, { type: "new_search", searchTerm: "biryani" });
+});
+
 // --- getFoodSearchReply ---
 
 test("getFoodSearchReply returns undefined for ordinary messages", async () => {

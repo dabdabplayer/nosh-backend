@@ -1,7 +1,12 @@
 import http from "node:http";
 import { config } from "./config.js";
 import { classifyIncomingMessage, getFoodSearchReply } from "./food-search-orchestrator.js";
-import { getFoodOrderReply, parseOrderConfirmationReply, placeConfirmedOrder } from "./food-order-orchestrator.js";
+import {
+  buildReorderUsualReply,
+  getFoodOrderReply,
+  parseOrderConfirmationReply,
+  placeConfirmedOrder,
+} from "./food-order-orchestrator.js";
 import { InProcessMessageIdempotency } from "./message-idempotency.js";
 import { PendingAddressSelections } from "./pending-address-selection.js";
 import { PendingCartSessions } from "./pending-cart-sessions.js";
@@ -229,7 +234,15 @@ async function buildReplyText(message) {
     return reply ?? PLACEHOLDER_REPLY_TEXT;
   }
 
+  const isReorderUsual = classification.type === "reorder_usual";
   const searchTerm = classification.searchTerm ?? classification.pending?.searchTerm;
+
+  if (isReorderUsual) {
+    // A reorder request supersedes any stale "which address?" prompt, the
+    // same way a genuine new search does inside getFoodSearchReply's own
+    // "new_search" case.
+    pendingAddressSelections.clear(message.from);
+  }
 
   const authResult = await resolveSwiggyAccessToken({
     senderId: message.from,
@@ -238,10 +251,15 @@ async function buildReplyText(message) {
   });
 
   if (authResult.status === "unauthenticated") {
-    pendingPostAuthActions.set(message.from, { searchTerm, phoneNumberId: message.phoneNumberId });
+    pendingPostAuthActions.set(
+      message.from,
+      isReorderUsual
+        ? { kind: "reorder_usual", phoneNumberId: message.phoneNumberId }
+        : { kind: "search", searchTerm, phoneNumberId: message.phoneNumberId },
+    );
     const connectToken = pendingConnectLinks.create(message.from);
     const connectUrl = `${swiggyOAuthOrigin}/oauth/swiggy/start?token=${connectToken}`;
-    return buildConnectReplyText({ connectUrl, searchTerm });
+    return buildConnectReplyText({ connectUrl, searchTerm: isReorderUsual ? undefined : searchTerm });
   }
 
   const swiggyFoodClient = createSwiggyFoodClient({
@@ -250,13 +268,15 @@ async function buildReplyText(message) {
   });
 
   try {
-    const reply = await getFoodSearchReply({
-      message,
-      swiggyFoodClient,
-      pendingAddressSelections,
-      pendingCartSessions,
-      classification,
-    });
+    const reply = isReorderUsual
+      ? await buildReorderUsualReply({ senderId: message.from, swiggyFoodClient, pendingCartSessions })
+      : await getFoodSearchReply({
+          message,
+          swiggyFoodClient,
+          pendingAddressSelections,
+          pendingCartSessions,
+          classification,
+        });
     return reply ?? PLACEHOLDER_REPLY_TEXT;
   } finally {
     swiggyFoodClient.close().catch((error) => {
@@ -266,12 +286,27 @@ async function buildReplyText(message) {
 }
 
 // After a sender finishes connecting their Swiggy account, automatically
-// resume whatever search prompted the connection instead of making them
-// repeat themselves.
+// resume whatever search (or reorder) prompted the connection instead of
+// making them repeat themselves.
+//
+// The reorder_usual resume text isn't a deterministic trigger like "find X"
+// is - it goes back through NLU classification (resolveIntent doesn't
+// special-case it the way it does the find/search prefix), so this is
+// best-effort: if NVIDIA NIM happens to be disabled or misclassifies right
+// at this moment, the resume silently falls through to the normal
+// placeholder instead of resuming, same as any other NLU outage elsewhere
+// in this app.
 async function resumePendingSearchAfterAuth(senderId) {
   const pendingAction = pendingPostAuthActions.take(senderId);
 
-  if (!pendingAction?.searchTerm || !config.whatsapp.sendEnabled) {
+  if (!pendingAction || !config.whatsapp.sendEnabled) {
+    return;
+  }
+
+  const resumeText =
+    pendingAction.kind === "reorder_usual" ? "reorder my usual" : `find ${pendingAction.searchTerm}`;
+
+  if (pendingAction.kind !== "reorder_usual" && !pendingAction.searchTerm) {
     return;
   }
 
@@ -279,7 +314,7 @@ async function resumePendingSearchAfterAuth(senderId) {
     from: senderId,
     id: `post-auth-resume-${Date.now()}`,
     phoneNumberId: pendingAction.phoneNumberId,
-    text: `find ${pendingAction.searchTerm}`,
+    text: resumeText,
   };
 
   try {

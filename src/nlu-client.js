@@ -2,7 +2,9 @@ const DEFAULT_TIMEOUT_MS = 8000;
 
 const SEARCH_SYSTEM_PROMPT = [
   "You classify a single inbound WhatsApp message for a food-delivery bot named Nosh.",
-  "Call search_food only when the user is asking to find, search for, or start ordering food, a dish, or a restaurant for delivery.",
+  "Call search_food when the user is asking to find, search for, or start ordering a dish, cuisine, or restaurant they named.",
+  "Call reorder_usual instead when the user asks to repeat, reorder, or get their usual/regular food order WITHOUT naming a",
+  "specific dish, cuisine, or restaurant (e.g. \"get me my usual\", \"order the same as last time\", \"reorder what I always get\").",
   "For anything else - greetings, small talk, unrelated questions - do not call any tool.",
 ].join(" ");
 
@@ -37,6 +39,17 @@ const SEARCH_FOOD_TOOL = Object.freeze({
       },
       required: ["query"],
     },
+  },
+});
+
+const REORDER_USUAL_TOOL = Object.freeze({
+  type: "function",
+  function: {
+    name: "reorder_usual",
+    description:
+      "The user wants to repeat, reorder, or get their usual/regular food order, without naming a specific dish, " +
+      "cuisine, or restaurant.",
+    parameters: { type: "object", properties: {} },
   },
 });
 
@@ -184,10 +197,13 @@ export async function classifyMessage({
   fetchImpl = fetch,
   timeoutMs = DEFAULT_TIMEOUT_MS,
 }) {
+  // reorder_usual is only offered when there's no active cart - it's a way
+  // to START an order (like search_food), not a cart-manipulation intent,
+  // and isn't part of the scope the cart-aware prompt/tool set covers.
   const toolCalls = await requestToolCalls({
     text,
     systemPrompt: hasActiveCart ? SEARCH_WITH_ACTIVE_CART_SYSTEM_PROMPT : SEARCH_SYSTEM_PROMPT,
-    tools: [SEARCH_FOOD_TOOL],
+    tools: hasActiveCart ? [SEARCH_FOOD_TOOL] : [SEARCH_FOOD_TOOL, REORDER_USUAL_TOOL],
     apiKey,
     baseUrl,
     model,
@@ -200,7 +216,13 @@ export async function classifyMessage({
   }
 
   for (const toolCall of toolCalls) {
-    if (toolCall?.function?.name !== "search_food") {
+    const name = toolCall?.function?.name;
+
+    if (name === "reorder_usual") {
+      return Object.freeze({ type: "reorder_usual" });
+    }
+
+    if (name !== "search_food") {
       continue;
     }
 

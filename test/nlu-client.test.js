@@ -40,6 +40,42 @@ test("classifyMessage returns a search_food intent for a matching tool call", as
   assert.equal(body.tools[0].function.name, "search_food");
 });
 
+test("classifyMessage returns a reorder_usual intent for a matching tool call", async () => {
+  const fetchImpl = async () =>
+    toolCallResponse([{ function: { name: "reorder_usual", arguments: "{}" } }]);
+
+  const result = await classifyMessage({
+    text: "get me my usual",
+    apiKey: "test-key",
+    baseUrl: "https://example.test/v1",
+    model: "test-model",
+    fetchImpl,
+  });
+
+  assert.deepEqual(result, { type: "reorder_usual" });
+});
+
+test("classifyMessage does not offer reorder_usual when hasActiveCart is true", async () => {
+  const requests = [];
+  const fetchImpl = async (url, options) => {
+    requests.push(options);
+    return toolCallResponse(undefined);
+  };
+
+  await classifyMessage({
+    text: "get me my usual",
+    apiKey: "test-key",
+    baseUrl: "https://example.test/v1",
+    model: "test-model",
+    hasActiveCart: true,
+    fetchImpl,
+  });
+
+  const body = JSON.parse(requests[0].body);
+  const toolNames = body.tools.map((tool) => tool.function.name);
+  assert.deepEqual(toolNames, ["search_food"]);
+});
+
 test("classifyMessage uses a cart-aware system prompt when hasActiveCart is true", async () => {
   const requests = [];
   const fetchImpl = async (url, options) => {
