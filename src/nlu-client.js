@@ -159,7 +159,19 @@ async function requestToolCalls({ text, systemPrompt, tools, apiKey, baseUrl, mo
     });
 
     if (!response.ok) {
-      console.error("NVIDIA NIM classification request failed.", { status: response.status });
+      // Body text included (truncated) - NVIDIA's error responses are
+      // just a status/title/detail object, never a secret, and knowing
+      // *why* a request was rejected (bad model/param vs. auth vs. rate
+      // limit) is the difference between guessing and fixing the right
+      // thing. Read as text, not .json(), since an error body might not
+      // even be valid JSON.
+      let bodyText;
+      try {
+        bodyText = (await response.text()).slice(0, 500);
+      } catch {
+        bodyText = undefined;
+      }
+      console.error("NVIDIA NIM classification request failed.", { status: response.status, body: bodyText });
       return undefined;
     }
 
