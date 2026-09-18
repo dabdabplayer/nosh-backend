@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "swiggy-food": {
+      "type": "http",
+      "url": "https://mcp.swiggy.com/food"
+    },
+    "swiggy-im": {
+      "type": "http",
+      "url": "https://mcp.swiggy.com/im"
+    },
+    "swiggy-dineout": {
+      "type": "http",
+      "url": "https://mcp.swiggy.com/dineout"
+    },
+    "graphify": {
+      "type": "http",
+      "url": "https://api.graphify.com/mcp"
+    }
+  }
+}

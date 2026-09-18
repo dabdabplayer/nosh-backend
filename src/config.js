@@ -12,7 +12,7 @@ const DEFAULT_SWIGGY_OAUTH_CLIENT_ID = "swiggy-mcp";
 const DEFAULT_SWIGGY_OAUTH_REDIRECT_URI = "https://whatsapp-test-webhook-low-latency.onrender.com/oauth/swiggy/callback";
 const DEFAULT_SWIGGY_TOKEN_STORE_PATH = "data/swiggy-tokens.json";
 const DEFAULT_NVIDIA_NIM_BASE_URL = "https://integrate.api.nvidia.com/v1";
-const DEFAULT_NVIDIA_NIM_MODEL = "openai/gpt-oss-20b";
+const DEFAULT_NVIDIA_NIM_MODEL = "nvidia/riva-translate-4b-instruct-v2";
 // NVIDIA NIM's hosted inference has real, sometimes multi-second latency -
 // confirmed live (an 8s timeout was aborting almost every classification
 // call in production). 25s gives it real room without hanging a reply
