@@ -40,6 +40,7 @@
 
 import { randomUUID } from "node:crypto";
 import http from "node:http";
+import { pathToFileURL } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
@@ -709,14 +710,15 @@ function sendJsonRpcError(response, statusCode, message) {
   response.end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32000, message }, id: null }));
 }
 
-const httpServer = http.createServer(async (request, response) => {
-  const url = new URL(request.url, `http://localhost:${PORT}`);
+// Exported so src/server.js can mount this MCP server as one more route on
+// its own listener (see SWIGGY_TEST_MODE in src/config.js) instead of
+// standing up a second process/port - real WhatsApp round-trip testing
+// without ever contacting real Swiggy. Operates generically on whatever
+// request/response pair it's given; the only thing callers must not do is
+// read the request body themselves first (readJsonBody below needs to).
+export const MOCK_FOOD_PATH = PATH;
 
-  if (url.pathname !== PATH) {
-    response.writeHead(404).end();
-    return;
-  }
-
+export async function handleMockSwiggyFoodRequest(request, response) {
   if (request.method === "GET" || request.method === "DELETE") {
     response.writeHead(405, { allow: "POST" }).end("Method Not Allowed (mock server: stateless GET/DELETE unsupported)");
     return;
@@ -772,13 +774,30 @@ const httpServer = http.createServer(async (request, response) => {
       sendJsonRpcError(response, 500, "Internal mock server error.");
     }
   }
-});
+}
 
-httpServer.listen(PORT, () => {
-  console.log(`Mock Swiggy Food MCP server listening on http://localhost:${PORT}${PATH}`);
-  console.log(`Point Nosh at it with: SWIGGY_FOOD_MCP_URL=http://localhost:${PORT}${PATH}`);
-});
+// Only runs the file as a standalone server when executed directly (`node
+// scripts/mock-swiggy-food-server.js`) - importing it for the exports above
+// (from src/server.js in SWIGGY_TEST_MODE) must never also open this
+// second listener.
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const httpServer = http.createServer(async (request, response) => {
+    const url = new URL(request.url, `http://localhost:${PORT}`);
 
-process.on("SIGINT", () => {
-  httpServer.close(() => process.exit(0));
-});
+    if (url.pathname !== PATH) {
+      response.writeHead(404).end();
+      return;
+    }
+
+    await handleMockSwiggyFoodRequest(request, response);
+  });
+
+  httpServer.listen(PORT, () => {
+    console.log(`Mock Swiggy Food MCP server listening on http://localhost:${PORT}${PATH}`);
+    console.log(`Point Nosh at it with: SWIGGY_FOOD_MCP_URL=http://localhost:${PORT}${PATH}`);
+  });
+
+  process.on("SIGINT", () => {
+    httpServer.close(() => process.exit(0));
+  });
+}

@@ -17,6 +17,11 @@ import { PendingPostAuthActions } from "./pending-post-auth-actions.js";
 import { PRIVACY_POLICY_HTML } from "./privacy-policy.js";
 import { isSenderInRollout } from "./rollout.js";
 import { createSwiggyFoodClient } from "./swiggy-food-client.js";
+// Not a typo: this dev/test-only mock lives under scripts/, not src/ - see
+// SWIGGY_TEST_MODE in config.js. Importing it never starts its own listener
+// (see the "run as main module" guard at its bottom); it's only ever
+// invoked here, mounted as a route on this file's own server.
+import { handleMockSwiggyFoodRequest, MOCK_FOOD_PATH } from "../scripts/mock-swiggy-food-server.js";
 import { buildConnectReplyText, resolveSwiggyAccessToken } from "./swiggy-auth-flow.js";
 import {
   buildAuthorizeUrl,
@@ -49,6 +54,38 @@ const swiggyTokenStore = new SwiggyTokenStore(
   config.swiggyOAuth.tokenStorePath,
   config.swiggyOAuth.tokenEncryptionKey,
 );
+
+if (config.swiggyFood.testModeEnabled) {
+  console.warn(
+    "SWIGGY_TEST_MODE is ON - real Swiggy OAuth and Food MCP calls are bypassed. " +
+      "Every sender is treated as connected, and all Food calls go to an in-process mock. " +
+      "Never leave this on for real traffic.",
+  );
+}
+
+// Loopback, not the public hostname: this request goes right back into the
+// same process (see the MOCK_FOOD_PATH route below), so there's no reason
+// to round-trip it through TLS/the load balancer.
+const effectiveSwiggyFoodMcpUrl = config.swiggyFood.testModeEnabled
+  ? `http://127.0.0.1:${config.port}${MOCK_FOOD_PATH}`
+  : config.swiggyFood.mcpUrl;
+
+// Single choke point for resolving a usable Swiggy Food auth result -
+// SWIGGY_TEST_MODE short-circuits here so both call sites below (inside
+// withSwiggyFoodClient and buildReplyText's search/reorder path) honor the
+// bypass identically. Never returns "unauthenticated" while test mode is
+// on, since there's no real per-sender connection to be missing.
+async function resolveSwiggyFoodAuth(senderId) {
+  if (config.swiggyFood.testModeEnabled) {
+    return { status: "ok", accessToken: config.swiggyFood.testToken ?? "test-mode-bypass-token" };
+  }
+
+  return resolveSwiggyAccessToken({
+    senderId,
+    tokenStore: swiggyTokenStore,
+    authBaseUrl: config.swiggyOAuth.authBaseUrl,
+  });
+}
 
 // Fallback reply for messages that don't trigger a Swiggy Food search (no
 // NLU/intent layer yet) and for when Swiggy Food isn't configured at all.
@@ -94,18 +131,14 @@ function acknowledgeIncomingTextMessages(messages) {
 // main search path below which has its own connect-link handling on
 // "unauthenticated". Always closes the per-request MCP connection.
 async function withSwiggyFoodClient(senderId, fn) {
-  const authResult = await resolveSwiggyAccessToken({
-    senderId,
-    tokenStore: swiggyTokenStore,
-    authBaseUrl: config.swiggyOAuth.authBaseUrl,
-  });
+  const authResult = await resolveSwiggyFoodAuth(senderId);
 
   if (authResult.status === "unauthenticated") {
     return { authenticated: false };
   }
 
   const swiggyFoodClient = createSwiggyFoodClient({
-    mcpUrl: config.swiggyFood.mcpUrl,
+    mcpUrl: effectiveSwiggyFoodMcpUrl,
     token: authResult.accessToken,
   });
 
@@ -244,11 +277,7 @@ async function buildReplyText(message) {
     pendingAddressSelections.clear(message.from);
   }
 
-  const authResult = await resolveSwiggyAccessToken({
-    senderId: message.from,
-    tokenStore: swiggyTokenStore,
-    authBaseUrl: config.swiggyOAuth.authBaseUrl,
-  });
+  const authResult = await resolveSwiggyFoodAuth(message.from);
 
   if (authResult.status === "unauthenticated") {
     pendingPostAuthActions.set(
@@ -263,7 +292,7 @@ async function buildReplyText(message) {
   }
 
   const swiggyFoodClient = createSwiggyFoodClient({
-    mcpUrl: config.swiggyFood.mcpUrl,
+    mcpUrl: effectiveSwiggyFoodMcpUrl,
     token: authResult.accessToken,
   });
 
@@ -357,6 +386,11 @@ async function replyToIncomingTextMessages(messages) {
 // issued to (see pending-connect-links.js for why this isn't a raw
 // ?sender= param).
 function handleSwiggyOAuthStart(request, response, url) {
+  if (config.swiggyFood.testModeEnabled) {
+    sendText(response, 200, "Test mode is on - Swiggy connection is disabled while testing against the mock server.");
+    return;
+  }
+
   const connectToken = url.searchParams.get("token");
   const pendingLink = connectToken ? pendingConnectLinks.take(connectToken) : undefined;
 
@@ -382,6 +416,11 @@ function handleSwiggyOAuthStart(request, response, url) {
 }
 
 async function handleSwiggyOAuthCallback(request, response, url) {
+  if (config.swiggyFood.testModeEnabled) {
+    sendText(response, 200, "Test mode is on - Swiggy connection is disabled while testing against the mock server.");
+    return;
+  }
+
   const state = url.searchParams.get("state");
   const oauthError = url.searchParams.get("error");
   const pending = state ? pendingOAuthExchanges.take(state) : undefined;
@@ -530,6 +569,11 @@ const server = http.createServer(async (request, response) => {
       service: serviceName,
       message: "Nosh backend is running.",
     });
+    return;
+  }
+
+  if (config.swiggyFood.testModeEnabled && url.pathname === MOCK_FOOD_PATH) {
+    await handleMockSwiggyFoodRequest(request, response);
     return;
   }
 

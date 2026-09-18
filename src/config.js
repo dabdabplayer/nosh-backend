@@ -9,7 +9,7 @@ const DEFAULT_SWIGGY_OAUTH_BASE_URL = "https://mcp.swiggy.com/auth";
 // There is no real per-app client identity yet, so this is just the value
 // their server hands back; it is not a secret.
 const DEFAULT_SWIGGY_OAUTH_CLIENT_ID = "swiggy-mcp";
-const DEFAULT_SWIGGY_OAUTH_REDIRECT_URI = "http://localhost:3000/oauth/swiggy/callback";
+const DEFAULT_SWIGGY_OAUTH_REDIRECT_URI = "https://whatsapp-test-webhook-low-latency.onrender.com/oauth/swiggy/callback";
 const DEFAULT_SWIGGY_TOKEN_STORE_PATH = "data/swiggy-tokens.json";
 const DEFAULT_NVIDIA_NIM_BASE_URL = "https://integrate.api.nvidia.com/v1";
 const DEFAULT_NVIDIA_NIM_MODEL = "openai/gpt-oss-20b";
@@ -96,13 +96,34 @@ const swiggyFoodMcpUrl = readOptionalSecret(
   "SWIGGY_FOOD_MCP_URL",
 );
 // SWIGGY_FOOD_TEST_TOKEN is a dev-only stand-in for a real per-user OAuth
-// token (see src/swiggy-oauth.js), used only by scripts/food-search-check.js.
-// The live conversation flow in server.js resolves a per-sender token via
-// swiggy-auth-flow.js instead and never reads this value.
+// token (see src/swiggy-oauth.js), used by scripts/food-search-check.js and
+// friends, AND by server.js's own SWIGGY_TEST_MODE bypass below - it's no
+// longer true that the live conversation flow never reads this value.
 const swiggyFoodTestToken = readOptionalSecret(
   process.env.SWIGGY_FOOD_TEST_TOKEN,
   "SWIGGY_FOOD_TEST_TOKEN",
 );
+
+// Deliberately strict (like readRolloutPercent above): a stray "0" or
+// "false" throws at boot instead of silently doing nothing, so turning this
+// off is unambiguous - delete the var. When on, server.js skips real
+// per-sender Swiggy OAuth entirely and force-routes every Food MCP call to
+// an in-process mock (see scripts/mock-swiggy-food-server.js) - real
+// WhatsApp messages get real replies, but nothing ever reaches Swiggy.
+// NEVER set this on a service carrying real user traffic.
+function readTestModeFlag(value) {
+  if (value === undefined || value === "") {
+    return false;
+  }
+
+  if (value === "1" || value === "true") {
+    return true;
+  }
+
+  throw new Error('SWIGGY_TEST_MODE must be "1", "true", or unset.');
+}
+
+const swiggyTestModeEnabled = readTestModeFlag(process.env.SWIGGY_TEST_MODE);
 
 const nvidiaNimApiKey = readOptionalSecret(process.env.NVIDIA_API_KEY, "NVIDIA_API_KEY");
 const nvidiaNimBaseUrl =
@@ -184,9 +205,12 @@ export const config = Object.freeze({
     webhookPath: readWebhookPath(process.env.WHATSAPP_WEBHOOK_PATH),
   }),
   swiggyFood: Object.freeze({
-    enabled: Boolean(swiggyFoodMcpUrl),
+    // Test mode enables the flow even with SWIGGY_FOOD_MCP_URL unset -
+    // server.js force-routes to the in-process mock instead in that case.
+    enabled: swiggyTestModeEnabled || Boolean(swiggyFoodMcpUrl),
     mcpUrl: swiggyFoodMcpUrl,
     testToken: swiggyFoodTestToken,
+    testModeEnabled: swiggyTestModeEnabled,
   }),
   nvidiaNim: Object.freeze({
     apiKey: nvidiaNimApiKey,
