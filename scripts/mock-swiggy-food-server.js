@@ -126,6 +126,23 @@ const MENU_ITEMS = {
     inStock: 1,
     hasVariants: false,
     hasAddons: false,
+    isBestseller: true,
+    restaurant_id: "mock-rest-2",
+    restaurant_name: "Fake Pizza Co (Mock)",
+  },
+  // A second pizza item at the SAME restaurant as mock-item-margherita, so a
+  // "pizza" search that resolves to Fake Pizza Co actually shows more than
+  // one matching item to choose from (see findMatchingMenuItems /
+  // formatItemSelectionReply in src/food-order-orchestrator.js) instead of a
+  // trivial one-item list.
+  "mock-item-pepperoni": {
+    menu_item_id: "mock-item-pepperoni",
+    name: "Pepperoni Pizza (Mock)",
+    price: 269,
+    isVeg: false,
+    inStock: 1,
+    hasVariants: false,
+    hasAddons: false,
     isBestseller: false,
     restaurant_id: "mock-rest-2",
     restaurant_name: "Fake Pizza Co (Mock)",

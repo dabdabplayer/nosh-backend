@@ -4,6 +4,7 @@ import { parseStructuredPayload } from "./swiggy-food-client.js";
 
 const MAX_COUPONS = 5;
 const MIN_USUAL_ORDER_COUNT = 2;
+const MAX_ITEM_RESULTS = 5;
 
 const CONFIRM_REPLY_PATTERN = /^(yes|y|confirm|confirmed|place( it)?|proceed)$/i;
 const CANCEL_REPLY_PATTERN = /^(no|n|cancel|cancelled|canceled|stop)$/i;
@@ -424,6 +425,87 @@ async function resolveMenuItem({ swiggyFoodClient, query, addressId, restaurantI
   return menuItem ? { menuItem, restaurantId: scopedRestaurantId, restaurantName: scopedRestaurantName } : undefined;
 }
 
+// Once the user has picked a specific restaurant off a shown list, this
+// finds what's actually available there matching their original search term
+// (e.g. "pizza") - per search_menu's own documented guidance: "Present all
+// matching results; let the user choose before calling update_food_cart."
+// Scoping via restaurantIdOfAddedItem also gets the full variantsV2/addon
+// detail update_food_cart needs, the same as resolveMenuItem's second call
+// above - no extra request required to add whichever one they pick. Never
+// throws; an empty array means "nothing matched" or "the lookup failed",
+// either way the caller falls back to asking freeform.
+async function findMatchingMenuItems({ swiggyFoodClient, query, addressId, restaurantId }) {
+  if (!query) {
+    return [];
+  }
+
+  let result;
+  try {
+    result = await swiggyFoodClient.searchMenu({ query, addressId, restaurantIdOfAddedItem: restaurantId });
+  } catch {
+    return [];
+  }
+
+  const items = parseStructuredPayload(result)?.items;
+  return Array.isArray(items) ? items.filter((item) => item?.inStock !== 0).slice(0, MAX_ITEM_RESULTS) : [];
+}
+
+function formatItemSelectionReply(searchTerm, restaurantName, items) {
+  const lines = items.map((item, index) => {
+    const price = typeof item.price === "number" ? ` — ₹${item.price}` : "";
+    return `${index + 1}. ${item.name}${price}`;
+  });
+
+  return [
+    `Here's what I found for "${searchTerm}" at ${restaurantName}:`,
+    ...lines,
+    "Reply with the number, or tell me what else you'd like.",
+  ].join("\n");
+}
+
+// Shared by handleAddToCart (a freshly resolved dish) and the numbered
+// item-selection reply below (a dish already picked off a shown list) -
+// both end the same way: call update_food_cart, record the session, and
+// show the updated cart.
+async function addResolvedItemToCart({
+  senderId,
+  swiggyFoodClient,
+  pendingCartSessions,
+  addressId,
+  restaurantId,
+  restaurantName,
+  menuItem,
+  quantity,
+}) {
+  let cartResult;
+  try {
+    cartResult = await swiggyFoodClient.updateFoodCart({
+      restaurantId,
+      restaurantName,
+      addressId,
+      cartItems: [
+        {
+          menu_item_id: menuItem.menu_item_id,
+          quantity: quantity ?? 1,
+          variantsV2: selectDefaultVariants(menuItem),
+        },
+      ],
+    });
+  } catch {
+    return GENERIC_FALLBACK_REPLY;
+  }
+
+  const cartData = unwrapCartPayload(cartResult);
+
+  if (!cartData) {
+    return GENERIC_FALLBACK_REPLY;
+  }
+
+  pendingCartSessions.set(senderId, { restaurantId, restaurantName, addressId });
+
+  return [`Added ${menuItem.name} to your cart.`, formatCartReply(cartData)].join("\n\n");
+}
+
 async function handleAddToCart({
   senderId,
   query,
@@ -468,33 +550,16 @@ async function handleAddToCart({
   const { menuItem, restaurantId, restaurantName } = resolved;
   const resolvedRestaurantName = restaurantName ?? targetRestaurantName;
 
-  let cartResult;
-  try {
-    cartResult = await swiggyFoodClient.updateFoodCart({
-      restaurantId,
-      restaurantName: resolvedRestaurantName,
-      addressId,
-      cartItems: [
-        {
-          menu_item_id: menuItem.menu_item_id,
-          quantity: quantity ?? 1,
-          variantsV2: selectDefaultVariants(menuItem),
-        },
-      ],
-    });
-  } catch {
-    return GENERIC_FALLBACK_REPLY;
-  }
-
-  const cartData = unwrapCartPayload(cartResult);
-
-  if (!cartData) {
-    return GENERIC_FALLBACK_REPLY;
-  }
-
-  pendingCartSessions.set(senderId, { restaurantId, restaurantName: resolvedRestaurantName, addressId });
-
-  return [`Added ${menuItem.name} to your cart.`, formatCartReply(cartData)].join("\n\n");
+  return addResolvedItemToCart({
+    senderId,
+    swiggyFoodClient,
+    pendingCartSessions,
+    addressId,
+    restaurantId,
+    restaurantName: resolvedRestaurantName,
+    menuItem,
+    quantity,
+  });
 }
 
 async function handleViewCart({ swiggyFoodClient, addressId, restaurantName }) {
@@ -753,17 +818,65 @@ export async function getFoodOrderReply({
 }) {
   const session = pendingCartSessions.peek(message.from);
 
+  // A bare number reply to the item list just shown (see the
+  // restaurant-selection branch right below) picks straight off it - same
+  // deterministic, no-NLU-needed pattern as every other numbered prompt in
+  // this app (restaurant selection, address selection, order confirmation).
+  if (session?.itemCandidates) {
+    const selectedIndex = parseAddressSelectionReply(message.text, session.itemCandidates.length);
+
+    if (selectedIndex !== undefined) {
+      const menuItem = session.itemCandidates[selectedIndex];
+      return addResolvedItemToCart({
+        senderId: message.from,
+        swiggyFoodClient,
+        pendingCartSessions,
+        addressId: session.addressId,
+        restaurantId: session.restaurantId,
+        restaurantName: session.restaurantName,
+        menuItem,
+      });
+    }
+  }
+
   // A bare number reply to the restaurant list just shown (see
   // runRestaurantSearch in food-search-orchestrator.js) is resolved
   // deterministically here, the same way parseOrderConfirmationReply gates
   // order placement - no NLU call needed, and it still works if NIM is
   // down. Falls through to classifyOrderIntent below for anything that
   // isn't a valid selection number (e.g. naming the restaurant instead).
+  // itemCandidates is checked above and restaurantCandidates never carries
+  // over onto the session it replaces, so at most one of these two blocks
+  // can ever match the same numbered reply.
   if (session?.restaurantCandidates) {
     const selectedIndex = parseAddressSelectionReply(message.text, session.restaurantCandidates.length);
 
     if (selectedIndex !== undefined) {
       const restaurant = session.restaurantCandidates[selectedIndex];
+
+      // Per search_menu's own documented guidance ("Present all matching
+      // results; let the user choose before calling update_food_cart") -
+      // look up what's actually available at this restaurant matching the
+      // original search term (e.g. "pizza"), rather than making the user
+      // restate what they want freeform. Falls back to the old open-ended
+      // prompt if nothing matched or the lookup failed - never a dead end.
+      const items = await findMatchingMenuItems({
+        swiggyFoodClient,
+        query: session.searchTerm,
+        addressId: session.addressId,
+        restaurantId: restaurant.id,
+      });
+
+      if (items.length > 0) {
+        pendingCartSessions.set(message.from, {
+          addressId: session.addressId,
+          restaurantId: restaurant.id,
+          restaurantName: restaurant.name,
+          itemCandidates: items,
+        });
+        return formatItemSelectionReply(session.searchTerm, restaurant.name, items);
+      }
+
       pendingCartSessions.set(message.from, { addressId: session.addressId, restaurantId: restaurant.id, restaurantName: restaurant.name });
       return `Got it — what would you like from ${restaurant.name}?`;
     }

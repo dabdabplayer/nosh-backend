@@ -352,6 +352,7 @@ test("getFoodSearchReply records the shown restaurant list as selectable candida
   // food-order-orchestrator.js's getFoodOrderReply, which reads this field.
   assert.deepEqual(pendingCartSessions.peek("sender-1"), {
     addressId: "addr-1",
+    searchTerm: "chicken wings",
     restaurantCandidates: [
       { id: "r-1", name: "Louis Burger" },
       { id: "r-2", name: "KFC" },

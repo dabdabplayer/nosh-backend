@@ -182,6 +182,137 @@ test("getFoodOrderReply: a bare number picks the restaurant off the shown list, 
   });
 });
 
+test("getFoodOrderReply: picking a restaurant looks up items matching the original search term and lists them instead of asking freeform", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", {
+    addressId: "addr-1",
+    searchTerm: "pizza",
+    restaurantCandidates: [{ id: "r-kfc", name: "KFC" }, { id: "r-pizza", name: "Fake Pizza Co" }],
+  });
+  const pendingOrderConfirmations = new PendingOrderConfirmations();
+
+  const menuSearchCalls = [];
+  const client = fakeClient({
+    searchMenu: async (params) => {
+      menuSearchCalls.push(params);
+      return payload({ items: [menuItem({ name: "Margherita Pizza", price: 219 })] });
+    },
+  });
+
+  const reply = await getFoodOrderReply({
+    message: message("2"),
+    swiggyFoodClient: client,
+    pendingCartSessions,
+    pendingOrderConfirmations,
+    classifyOrderIntent: async () => undefined,
+    nvidiaNim,
+  });
+
+  assert.deepEqual(menuSearchCalls, [{ query: "pizza", addressId: "addr-1", restaurantIdOfAddedItem: "r-pizza" }]);
+  assert.match(reply, /"pizza" at Fake Pizza Co/);
+  assert.match(reply, /1\. Margherita Pizza — ₹219/);
+  assert.match(reply, /Reply with the number/);
+
+  const session = pendingCartSessions.peek("sender-1");
+  assert.equal(session.restaurantId, "r-pizza");
+  assert.equal(session.restaurantCandidates, undefined);
+  assert.equal(session.itemCandidates.length, 1);
+});
+
+test("getFoodOrderReply: a bare number then picks the item straight off that list and adds it to the cart, deterministically", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  const item = menuItem({ name: "Margherita Pizza", menu_item_id: "item-margherita" });
+  pendingCartSessions.set("sender-1", {
+    addressId: "addr-1",
+    restaurantId: "r-pizza",
+    restaurantName: "Fake Pizza Co",
+    itemCandidates: [item],
+  });
+  const pendingOrderConfirmations = new PendingOrderConfirmations();
+
+  const updateFoodCartCalls = [];
+  let classifyOrderIntentCalled = false;
+  const client = fakeClient({
+    updateFoodCart: async (params) => {
+      updateFoodCartCalls.push(params);
+      return cartPayload(cartData());
+    },
+  });
+
+  const reply = await getFoodOrderReply({
+    message: message("1"),
+    swiggyFoodClient: client,
+    pendingCartSessions,
+    pendingOrderConfirmations,
+    classifyOrderIntent: async () => {
+      classifyOrderIntentCalled = true;
+      return undefined;
+    },
+    nvidiaNim,
+  });
+
+  assert.equal(classifyOrderIntentCalled, false);
+  assert.equal(updateFoodCartCalls.length, 1);
+  assert.equal(updateFoodCartCalls[0].cartItems[0].menu_item_id, "item-margherita");
+  assert.match(reply, /Added Margherita Pizza to your cart/);
+  assert.deepEqual(pendingCartSessions.peek("sender-1"), {
+    restaurantId: "r-pizza",
+    restaurantName: "Fake Pizza Co",
+    addressId: "addr-1",
+  });
+});
+
+test("getFoodOrderReply: falls back to the freeform prompt when nothing matches the search term at the chosen restaurant", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", {
+    addressId: "addr-1",
+    searchTerm: "sushi",
+    restaurantCandidates: [{ id: "r-kfc", name: "KFC" }],
+  });
+  const pendingOrderConfirmations = new PendingOrderConfirmations();
+
+  const client = fakeClient({ searchMenu: async () => payload({ items: [] }) });
+
+  const reply = await getFoodOrderReply({
+    message: message("1"),
+    swiggyFoodClient: client,
+    pendingCartSessions,
+    pendingOrderConfirmations,
+    classifyOrderIntent: async () => undefined,
+    nvidiaNim,
+  });
+
+  assert.equal(reply, "Got it — what would you like from KFC?");
+  assert.equal(pendingCartSessions.peek("sender-1").itemCandidates, undefined);
+});
+
+test("getFoodOrderReply: falls back to the freeform prompt when the menu lookup for the chosen restaurant throws", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", {
+    addressId: "addr-1",
+    searchTerm: "pizza",
+    restaurantCandidates: [{ id: "r-kfc", name: "KFC" }],
+  });
+  const pendingOrderConfirmations = new PendingOrderConfirmations();
+
+  const client = fakeClient({
+    searchMenu: async () => {
+      throw new Error("boom");
+    },
+  });
+
+  const reply = await getFoodOrderReply({
+    message: message("1"),
+    swiggyFoodClient: client,
+    pendingCartSessions,
+    pendingOrderConfirmations,
+    classifyOrderIntent: async () => undefined,
+    nvidiaNim,
+  });
+
+  assert.equal(reply, "Got it — what would you like from KFC?");
+});
+
 test("getFoodOrderReply: an out-of-range or non-numeric reply falls through to normal intent classification", async () => {
   const pendingCartSessions = new PendingCartSessions();
   pendingCartSessions.set("sender-1", {

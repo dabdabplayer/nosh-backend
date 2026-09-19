@@ -147,7 +147,9 @@ function formatRestaurantReply(searchTerm, restaurants) {
     return `${index + 1}. ${restaurant.name}${parts.length > 0 ? ` — ${parts.join(", ")}` : ""}`;
   });
 
-  return [`Here's what I found for "${searchTerm}":`, ...lines].join("\n");
+  return [`Here's what I found for "${searchTerm}":`, ...lines, "Which one would you like? Reply with the number."].join(
+    "\n",
+  );
 }
 
 // Records the resolved delivery address as a lightweight cart session (no
@@ -187,10 +189,14 @@ async function runRestaurantSearch(swiggyFoodClient, searchTerm, addressId, send
   // address prompt is, but only "add X from <name>" actually worked
   // (confirmed live). getFoodOrderReply resolves this deterministically,
   // no NLU call needed, since food-order-orchestrator.js runs first
-  // whenever a cart session exists (see server.js).
+  // whenever a cart session exists (see server.js). searchTerm rides along
+  // so that once a restaurant is picked, getFoodOrderReply can look up what
+  // matches the user's original request (e.g. "pizza") at that restaurant
+  // instead of asking them to repeat themselves.
   if (senderId && pendingCartSessions) {
     pendingCartSessions.set(senderId, {
       addressId,
+      searchTerm,
       restaurantCandidates: openRestaurants.map((restaurant) => ({ id: restaurant.id, name: restaurant.name })),
     });
   }
