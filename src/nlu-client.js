@@ -169,9 +169,14 @@ const ORDER_TOOLS = Object.freeze([
   CHECKOUT_TOOL,
 ]);
 
-// Sends one chat-completions request with the given tool schemas and returns
-// the raw tool_calls array, or undefined on any failure (non-2xx, timeout,
-// network error, malformed body). Never throws.
+// Sends one chat-completions request with the given tool schemas. Returns
+// { ok: true, toolCalls } on any completed response (toolCalls is [] when
+// the model chose not to call anything - that's a real answer, not a
+// failure), or { ok: false } on non-2xx, timeout, network error, or
+// malformed body. Never throws. Callers that offer a deterministic fallback
+// (see food-search-orchestrator.js's resolveIntent) need this ok/not-ok
+// distinction to fall back only when NIM itself is unavailable, not every
+// time it decides a message doesn't match any tool.
 async function requestToolCalls({ text, systemPrompt, tools, apiKey, baseUrl, model, fetchImpl, timeoutMs }) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -209,15 +214,15 @@ async function requestToolCalls({ text, systemPrompt, tools, apiKey, baseUrl, mo
         bodyText = undefined;
       }
       console.error("NVIDIA NIM classification request failed.", { status: response.status, body: bodyText });
-      return undefined;
+      return { ok: false };
     }
 
     const body = await response.json();
     const toolCalls = body?.choices?.[0]?.message?.tool_calls;
-    return Array.isArray(toolCalls) ? toolCalls : undefined;
+    return { ok: true, toolCalls: Array.isArray(toolCalls) ? toolCalls : [] };
   } catch (error) {
     console.error("NVIDIA NIM classification request errored.", { name: error.name });
-    return undefined;
+    return { ok: false };
   } finally {
     clearTimeout(timeout);
   }
@@ -231,12 +236,19 @@ function parseToolCallArgs(toolCall) {
   }
 }
 
+// Returned instead of undefined when the NIM request itself failed (bad
+// auth, timeout, network error, non-2xx) - distinct from the model
+// completing normally and simply not calling any tool. resolveIntent (in
+// food-search-orchestrator.js) uses this to fall back to the literal
+// find/search trigger only on a genuine NIM outage, not every time the model
+// decides a message isn't a search/reorder/recommend request.
+export const NIM_UNAVAILABLE = Symbol("nim-unavailable");
+
 // Classifies one inbound message via NVIDIA NIM's OpenAI-compatible chat
 // completions endpoint, using function calling for a structured result
-// instead of parsing prose. Never throws: any request failure, timeout, or
-// unparseable response resolves to undefined so callers fall back to the
-// existing literal find/search trigger - an AI outage degrades the bot, it
-// never breaks it.
+// instead of parsing prose. Never throws: returns NIM_UNAVAILABLE if the
+// request itself failed, or undefined if NIM responded but didn't recognize
+// a search/reorder/recommend intent in the message.
 export async function classifyMessage({
   text,
   apiKey,
@@ -250,7 +262,7 @@ export async function classifyMessage({
   // cart - they're both ways to START an order (like search_food), not
   // cart-manipulation intents, and aren't part of the scope the cart-aware
   // prompt/tool set covers.
-  const toolCalls = await requestToolCalls({
+  const result = await requestToolCalls({
     text,
     systemPrompt: hasActiveCart ? SEARCH_WITH_ACTIVE_CART_SYSTEM_PROMPT : SEARCH_SYSTEM_PROMPT,
     tools: hasActiveCart ? [SEARCH_FOOD_TOOL] : [SEARCH_FOOD_TOOL, REORDER_USUAL_TOOL, RECOMMEND_TOOL],
@@ -261,11 +273,11 @@ export async function classifyMessage({
     timeoutMs,
   });
 
-  if (!toolCalls) {
-    return undefined;
+  if (!result.ok) {
+    return NIM_UNAVAILABLE;
   }
 
-  for (const toolCall of toolCalls) {
+  for (const toolCall of result.toolCalls) {
     const name = toolCall?.function?.name;
 
     if (name === "reorder_usual") {
@@ -302,7 +314,7 @@ export async function classifyOrderIntent({
   fetchImpl = fetch,
   timeoutMs = DEFAULT_TIMEOUT_MS,
 }) {
-  const toolCalls = await requestToolCalls({
+  const result = await requestToolCalls({
     text,
     systemPrompt: ORDER_SYSTEM_PROMPT,
     tools: ORDER_TOOLS,
@@ -313,11 +325,11 @@ export async function classifyOrderIntent({
     timeoutMs,
   });
 
-  if (!toolCalls) {
+  if (!result.ok) {
     return undefined;
   }
 
-  for (const toolCall of toolCalls) {
+  for (const toolCall of result.toolCalls) {
     const name = toolCall?.function?.name;
     const args = parseToolCallArgs(toolCall);
 

@@ -6,6 +6,7 @@ import {
   matchFoodSearchTrigger,
   parseAddressSelectionReply,
 } from "../src/food-search-orchestrator.js";
+import { NIM_UNAVAILABLE } from "../src/nlu-client.js";
 import { PendingAddressSelections } from "../src/pending-address-selection.js";
 import { PendingCartSessions } from "../src/pending-cart-sessions.js";
 
@@ -161,12 +162,12 @@ test("classifyIncomingMessage: falls back to NIM classification when there's no 
   ]);
 });
 
-test("classifyIncomingMessage: does not call NIM when the literal trigger already matched", async () => {
+test("classifyIncomingMessage: calls NIM even for a literal find/search trigger - the LLM decides, not the regex", async () => {
   const pending = new PendingAddressSelections();
   let called = false;
   const classifyMessage = async () => {
     called = true;
-    return { type: "search_food", query: "should not be used" };
+    return { type: "search_food", query: "biryani" };
   };
 
   const result = await classifyIncomingMessage(message("find biryani"), pending, {
@@ -174,13 +175,54 @@ test("classifyIncomingMessage: does not call NIM when the literal trigger alread
     classifyMessage,
   });
 
+  assert.equal(called, true);
+  assert.deepEqual(result, { type: "new_search", searchTerm: "biryani" });
+});
+
+test("classifyIncomingMessage: literal find/search trigger still works when NIM is disabled", async () => {
+  const pending = new PendingAddressSelections();
+  let called = false;
+  const classifyMessage = async () => {
+    called = true;
+    return { type: "recommend" };
+  };
+
+  const result = await classifyIncomingMessage(message("find biryani"), pending, {
+    nvidiaNim: { enabled: false },
+    classifyMessage,
+  });
+
   assert.equal(called, false);
   assert.deepEqual(result, { type: "new_search", searchTerm: "biryani" });
 });
 
-test("classifyIncomingMessage: NIM classification failure falls back to no_trigger", async () => {
+test("classifyIncomingMessage: NIM answering with no recognized intent is trusted as-is, even for free text", async () => {
   const pending = new PendingAddressSelections();
   const classifyMessage = async () => undefined;
+
+  const result = await classifyIncomingMessage(message("I want biryani"), pending, {
+    nvidiaNim: { enabled: true, apiKey: "key", baseUrl: "https://example.test", model: "test-model" },
+    classifyMessage,
+  });
+
+  assert.deepEqual(result, { type: "no_trigger" });
+});
+
+test("classifyIncomingMessage: a genuine NIM outage (not just 'no intent') falls back to the literal trigger", async () => {
+  const pending = new PendingAddressSelections();
+  const classifyMessage = async () => NIM_UNAVAILABLE;
+
+  const result = await classifyIncomingMessage(message("find biryani"), pending, {
+    nvidiaNim: { enabled: true, apiKey: "key", baseUrl: "https://example.test", model: "test-model" },
+    classifyMessage,
+  });
+
+  assert.deepEqual(result, { type: "new_search", searchTerm: "biryani" });
+});
+
+test("classifyIncomingMessage: a genuine NIM outage with no literal trigger falls back to no_trigger", async () => {
+  const pending = new PendingAddressSelections();
+  const classifyMessage = async () => NIM_UNAVAILABLE;
 
   const result = await classifyIncomingMessage(message("I want biryani"), pending, {
     nvidiaNim: { enabled: true, apiKey: "key", baseUrl: "https://example.test", model: "test-model" },
@@ -297,38 +339,32 @@ test("classifyIncomingMessage: recommend overrides a stale pending address promp
   assert.deepEqual(result, { type: "recommend" });
 });
 
-test("classifyIncomingMessage: a literal find/search trigger is never read as recommend", async () => {
+test("classifyIncomingMessage: trusts the LLM's recommend classification even for text starting with 'find'/'search'", async () => {
+  // With NIM enabled, the model is the sole interpreter of intent - it's not
+  // the regex's job to second-guess it. (In practice the ORDER_SYSTEM_PROMPT
+  // steers a real model away from this, but this test pins that the code
+  // itself no longer overrides the model's answer.)
   const pending = new PendingAddressSelections();
-  let called = false;
-  const classifyMessage = async () => {
-    called = true;
-    return { type: "recommend" };
-  };
+  const classifyMessage = async () => ({ type: "recommend" });
 
   const result = await classifyIncomingMessage(message("find biryani"), pending, {
     nvidiaNim: { enabled: true, apiKey: "key", baseUrl: "https://example.test", model: "test-model" },
     classifyMessage,
   });
 
-  assert.equal(called, false);
-  assert.deepEqual(result, { type: "new_search", searchTerm: "biryani" });
+  assert.deepEqual(result, { type: "recommend" });
 });
 
-test("classifyIncomingMessage: a literal find/search trigger is never read as reorder_usual", async () => {
+test("classifyIncomingMessage: trusts the LLM's reorder_usual classification even for text starting with 'find'/'search'", async () => {
   const pending = new PendingAddressSelections();
-  let called = false;
-  const classifyMessage = async () => {
-    called = true;
-    return { type: "reorder_usual" };
-  };
+  const classifyMessage = async () => ({ type: "reorder_usual" });
 
   const result = await classifyIncomingMessage(message("find biryani"), pending, {
     nvidiaNim: { enabled: true, apiKey: "key", baseUrl: "https://example.test", model: "test-model" },
     classifyMessage,
   });
 
-  assert.equal(called, false);
-  assert.deepEqual(result, { type: "new_search", searchTerm: "biryani" });
+  assert.deepEqual(result, { type: "reorder_usual" });
 });
 
 // --- getFoodSearchReply ---

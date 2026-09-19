@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { classifyMessage, classifyOrderIntent } from "../src/nlu-client.js";
+import { classifyMessage, classifyOrderIntent, NIM_UNAVAILABLE } from "../src/nlu-client.js";
 
 function toolCallResponse(toolCalls) {
   return {
@@ -190,7 +190,7 @@ test("classifyMessage returns undefined for an empty query", async () => {
   assert.equal(result, undefined);
 });
 
-test("classifyMessage returns undefined on a non-2xx response instead of throwing", async () => {
+test("classifyMessage returns NIM_UNAVAILABLE on a non-2xx response instead of throwing", async () => {
   const fetchImpl = async () => ({ ok: false, status: 500, json: async () => ({}) });
 
   const result = await classifyMessage({
@@ -201,10 +201,10 @@ test("classifyMessage returns undefined on a non-2xx response instead of throwin
     fetchImpl,
   });
 
-  assert.equal(result, undefined);
+  assert.equal(result, NIM_UNAVAILABLE);
 });
 
-test("classifyMessage returns undefined when the request throws instead of propagating", async () => {
+test("classifyMessage returns NIM_UNAVAILABLE when the request throws instead of propagating", async () => {
   const fetchImpl = async () => {
     throw new Error("network down");
   };
@@ -217,7 +217,7 @@ test("classifyMessage returns undefined when the request throws instead of propa
     fetchImpl,
   });
 
-  assert.equal(result, undefined);
+  assert.equal(result, NIM_UNAVAILABLE);
 });
 
 function orderToolCall(name, args) {
@@ -360,7 +360,7 @@ test("classifyOrderIntent returns undefined on a non-2xx response instead of thr
   assert.equal(result, undefined);
 });
 
-test("classifyMessage aborts and returns undefined on timeout", async () => {
+test("classifyMessage aborts and returns NIM_UNAVAILABLE on timeout", async () => {
   const fetchImpl = (url, options) =>
     new Promise((resolve, reject) => {
       options.signal.addEventListener("abort", () => {
@@ -379,5 +379,5 @@ test("classifyMessage aborts and returns undefined on timeout", async () => {
     timeoutMs: 10,
   });
 
-  assert.equal(result, undefined);
+  assert.equal(result, NIM_UNAVAILABLE);
 });

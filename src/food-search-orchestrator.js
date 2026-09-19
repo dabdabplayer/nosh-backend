@@ -1,4 +1,4 @@
-import { classifyMessage as defaultClassifyMessage } from "./nlu-client.js";
+import { classifyMessage as defaultClassifyMessage, NIM_UNAVAILABLE } from "./nlu-client.js";
 import { parseStructuredPayload } from "./swiggy-food-client.js";
 
 const MAX_ADDRESS_CANDIDATES = 5;
@@ -13,8 +13,10 @@ function noOpenRestaurantsReply(searchTerm) {
   return `I couldn't find any open restaurants for "${searchTerm}" right now.`;
 }
 
-// Matches an explicit "find X" / "search X" trigger. There's no NLU/intent
-// layer yet — this is deliberately a literal prefix match.
+// Matches an explicit "find X" / "search X" trigger. Only used as the
+// deterministic fallback in resolveIntent below when NVIDIA NIM isn't
+// configured - with NIM enabled, the LLM is the one deciding whether this is
+// a search, not this regex (see resolveIntent's comment).
 export function matchFoodSearchTrigger(text) {
   const match = /^(?:find|search)\s+(.+)$/i.exec(text.trim());
   const searchTerm = match?.[1]?.trim();
@@ -34,10 +36,18 @@ export function parseAddressSelectionReply(text, candidateCount) {
   return index >= 0 && index < candidateCount ? index : undefined;
 }
 
-// Falls back to NVIDIA NIM intent classification only when the literal
-// find/search prefix doesn't match, so free-form messages like "I want
-// biryani" still trigger a search. Never throws - classifyMessage itself
-// fails closed, so a NIM outage just means no match here.
+// The LLM (NVIDIA NIM) is the primary interpreter of what the user wants,
+// the same way classifyOrderIntent already is for everything that happens
+// once a cart exists (food-order-orchestrator.js) - it's the model's job to
+// recognize "I want biryani", "find biryani", and "get me my usual biryani
+// place" all correctly, not a regex's. The literal find/search prefix match
+// is only a fallback for when NIM itself is unreachable (disabled entirely,
+// or the request failed/timed out - see NIM_UNAVAILABLE in nlu-client.js),
+// so the bot still does something useful rather than going fully silent. It
+// is NOT a fallback for "NIM ran and decided this isn't a search" - trusting
+// that answer, rather than second-guessing it with the regex, is the whole
+// point of this change; overriding it would just reintroduce the
+// trigger-word dependence this is meant to remove.
 //
 // Passes hasActiveCart so the classifier can tell a genuine new search apart
 // from a cart-related message like "from Pizza Hut add a margherita pizza" -
@@ -47,21 +57,19 @@ export function parseAddressSelectionReply(text, candidateCount) {
 //
 // Returns the raw { type: "search_food", query } / { type: "reorder_usual" }
 // / { type: "recommend" } intent (not just a search term) so
-// classifyIncomingMessage below can tell them apart - a literal find/search
-// match is always treated as search_food, never reorder_usual or recommend.
+// classifyIncomingMessage below can tell them apart.
 async function resolveIntent(
   trimmedText,
   senderId,
   { nvidiaNim, pendingCartSessions, classifyMessage = defaultClassifyMessage } = {},
 ) {
-  const regexSearchTerm = matchFoodSearchTrigger(trimmedText);
-
-  if (regexSearchTerm) {
-    return { type: "search_food", query: regexSearchTerm };
-  }
+  const fallbackToRegex = () => {
+    const regexSearchTerm = matchFoodSearchTrigger(trimmedText);
+    return regexSearchTerm ? { type: "search_food", query: regexSearchTerm } : undefined;
+  };
 
   if (!nvidiaNim?.enabled) {
-    return undefined;
+    return fallbackToRegex();
   }
 
   const hasActiveCart = Boolean(pendingCartSessions?.peek(senderId));
@@ -74,6 +82,10 @@ async function resolveIntent(
     timeoutMs: nvidiaNim.timeoutMs,
     hasActiveCart,
   });
+
+  if (intent === NIM_UNAVAILABLE) {
+    return fallbackToRegex();
+  }
 
   return intent?.type === "search_food" || intent?.type === "reorder_usual" || intent?.type === "recommend"
     ? intent
