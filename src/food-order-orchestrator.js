@@ -292,10 +292,15 @@ export async function buildReorderUsualReply({ senderId, swiggyFoodClient, pendi
     return GENERIC_FALLBACK_REPLY;
   }
 
+  // cartRestaurantId is set here too (not just restaurantId/restaurantName)
+  // since the flush+rebuild above already confirmed the live cart matches
+  // this restaurant - without it, the next add-to-cart call would see no
+  // cartRestaurantId and flush again, wiping the cart just rebuilt here.
   pendingCartSessions.set(senderId, {
     restaurantId: order.restaurant_id,
     restaurantName: order.restaurant_name,
     addressId,
+    cartRestaurantId: order.restaurant_id,
   });
 
   return [`Reordering your usual from ${order.restaurant_name}:`, formatCartReply(cartData)].join("\n\n");
@@ -571,6 +576,21 @@ function formatItemSelectionReply(searchTerm, restaurantName, items) {
 // item-selection reply below (a dish already picked off a shown list) -
 // both end the same way: call update_food_cart, record the session, and
 // show the updated cart.
+//
+// knownCartRestaurantId is this session's own record of which restaurant
+// the LIVE Swiggy cart is already confirmed to hold (set below, only after
+// a successful add) - not the same thing as restaurantId/restaurantName,
+// which just describe where THIS add is going and get set as soon as a
+// restaurant is chosen, ahead of any actual cart write (see the restaurant
+// numbered-list branch in getFoodOrderReply). Observed in manual testing
+// against the mock server (not confirmed against real Swiggy) without this
+// check: picking a different restaurant than whatever was already in the
+// cart (a prior abandoned session, a restaurant switch, items added
+// outside Nosh entirely) silently merged the new item onto the old cart's
+// leftover items AND its already-applied coupon, instead of starting
+// clean. Flushing whenever the two don't match - including the very first
+// add of a fresh session, when knownCartRestaurantId is simply unset -
+// means a new order never inherits stale contents it didn't ask for.
 async function addResolvedItemToCart({
   senderId,
   swiggyFoodClient,
@@ -580,7 +600,16 @@ async function addResolvedItemToCart({
   restaurantName,
   menuItem,
   quantity,
+  knownCartRestaurantId,
 }) {
+  if (knownCartRestaurantId !== restaurantId) {
+    try {
+      await swiggyFoodClient.flushFoodCart({});
+    } catch {
+      return GENERIC_FALLBACK_REPLY;
+    }
+  }
+
   let cartResult;
   try {
     cartResult = await swiggyFoodClient.updateFoodCart({
@@ -605,7 +634,7 @@ async function addResolvedItemToCart({
     return GENERIC_FALLBACK_REPLY;
   }
 
-  pendingCartSessions.set(senderId, { restaurantId, restaurantName, addressId });
+  pendingCartSessions.set(senderId, { restaurantId, restaurantName, addressId, cartRestaurantId: restaurantId });
 
   return [`Added ${menuItem.name} to your cart.`, formatCartReply(cartData)].join("\n\n");
 }
@@ -620,6 +649,7 @@ async function handleAddToCart({
   addressId,
   restaurantId: existingRestaurantId,
   restaurantName: existingRestaurantName,
+  cartRestaurantId,
 }) {
   let targetRestaurantId = existingRestaurantId;
   let targetRestaurantName = existingRestaurantName;
@@ -663,6 +693,7 @@ async function handleAddToCart({
     restaurantName: resolvedRestaurantName,
     menuItem,
     quantity,
+    knownCartRestaurantId: cartRestaurantId,
   });
 }
 
@@ -939,6 +970,7 @@ export async function getFoodOrderReply({
         restaurantId: session.restaurantId,
         restaurantName: session.restaurantName,
         menuItem,
+        knownCartRestaurantId: session.cartRestaurantId,
       });
     }
   }
@@ -1014,6 +1046,7 @@ export async function getFoodOrderReply({
         addressId: session?.addressId,
         restaurantId: session?.restaurantId,
         restaurantName: session?.restaurantName,
+        cartRestaurantId: session?.cartRestaurantId,
       });
     }
 
@@ -1044,6 +1077,19 @@ export async function getFoodOrderReply({
         });
 
       case "checkout":
+        // Same stale-cart concern addResolvedItemToCart guards against on
+        // add-to-cart: if nothing in THIS session has actually put anything
+        // in the live cart yet, get_food_cart could still return leftover
+        // items from an earlier session/restaurant. The deterministic
+        // YES/NO confirmation still shows the real cart contents before
+        // anything irreversible happens, so this isn't a safety gap, but
+        // treating it as "no active order" here is more honest than
+        // building an order summary around a cart this session never
+        // actually built.
+        if (!session.cartRestaurantId) {
+          return NO_ACTIVE_ORDER_REPLY;
+        }
+
         return await handleCheckout({
           senderId: message.from,
           swiggyFoodClient,

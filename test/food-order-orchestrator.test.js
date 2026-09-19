@@ -232,8 +232,13 @@ test("getFoodOrderReply: a bare number then picks the item straight off that lis
   const pendingOrderConfirmations = new PendingOrderConfirmations();
 
   const updateFoodCartCalls = [];
+  let flushCalled = false;
   let classifyOrderIntentCalled = false;
   const client = fakeClient({
+    flushFoodCart: async () => {
+      flushCalled = true;
+      return payload({ success: true });
+    },
     updateFoodCart: async (params) => {
       updateFoodCartCalls.push(params);
       return cartPayload(cartData());
@@ -253,6 +258,13 @@ test("getFoodOrderReply: a bare number then picks the item straight off that lis
   });
 
   assert.equal(classifyOrderIntentCalled, false);
+  // Regression coverage for a real bug found in manual testing: the cart
+  // may already hold leftover items (and an already-applied coupon) from
+  // an earlier restaurant, since nothing had touched the live cart yet at
+  // restaurant-selection time (see the restaurantCandidates branch above) -
+  // this must flush before adding, not merge onto whatever was already
+  // there.
+  assert.equal(flushCalled, true);
   assert.equal(updateFoodCartCalls.length, 1);
   assert.equal(updateFoodCartCalls[0].cartItems[0].menu_item_id, "item-margherita");
   assert.match(reply, /Added Margherita Pizza to your cart/);
@@ -260,6 +272,7 @@ test("getFoodOrderReply: a bare number then picks the item straight off that lis
     restaurantId: "r-pizza",
     restaurantName: "Fake Pizza Co",
     addressId: "addr-1",
+    cartRestaurantId: "r-pizza",
   });
 });
 
@@ -392,21 +405,35 @@ test("getFoodOrderReply: add_to_cart bootstraps a session via cross-restaurant s
     restaurantId: "r-1",
     restaurantName: "Test Restaurant",
     addressId: "addr-1",
+    cartRestaurantId: "r-1",
   });
 });
 
-test("getFoodOrderReply: add_to_cart reuses the existing restaurant and skips cross-restaurant search", async () => {
+test("getFoodOrderReply: add_to_cart reuses the existing restaurant, skips cross-restaurant search, and doesn't re-flush an already-correct cart", async () => {
   const pendingCartSessions = new PendingCartSessions();
-  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", restaurantName: "Test Restaurant" });
+  // cartRestaurantId already matches restaurantId - this session's own
+  // prior add already confirmed the live cart is scoped to r-1, so this
+  // second add must not flush it away.
+  pendingCartSessions.set("sender-1", {
+    addressId: "addr-1",
+    restaurantId: "r-1",
+    restaurantName: "Test Restaurant",
+    cartRestaurantId: "r-1",
+  });
   const pendingOrderConfirmations = new PendingOrderConfirmations();
 
   const searchCalls = [];
+  let flushCalled = false;
   const client = fakeClient({
     searchMenu: async (params) => {
       searchCalls.push(params);
       return payload({ items: [menuItem()] });
     },
     updateFoodCart: async () => cartPayload(cartData()),
+    flushFoodCart: async () => {
+      flushCalled = true;
+      return payload({ success: true });
+    },
   });
 
   const classifyOrderIntent = async () => ({ type: "add_to_cart", query: "margherita pizza", quantity: 1 });
@@ -422,6 +449,41 @@ test("getFoodOrderReply: add_to_cart reuses the existing restaurant and skips cr
 
   assert.equal(searchCalls.length, 1);
   assert.equal(searchCalls[0].restaurantIdOfAddedItem, "r-1");
+  assert.equal(flushCalled, false);
+});
+
+test("getFoodOrderReply: add_to_cart flushes the cart first when it's not yet confirmed to match this restaurant (fresh session)", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", restaurantName: "Test Restaurant" });
+  const pendingOrderConfirmations = new PendingOrderConfirmations();
+
+  const calls = [];
+  const client = fakeClient({
+    searchMenu: async () => payload({ items: [menuItem()] }),
+    flushFoodCart: async () => {
+      calls.push("flush");
+      return payload({ success: true });
+    },
+    updateFoodCart: async () => {
+      calls.push("update");
+      return cartPayload(cartData());
+    },
+  });
+
+  const classifyOrderIntent = async () => ({ type: "add_to_cart", query: "margherita pizza", quantity: 1 });
+
+  await getFoodOrderReply({
+    message: message("add a margherita pizza"),
+    swiggyFoodClient: client,
+    pendingCartSessions,
+    pendingOrderConfirmations,
+    classifyOrderIntent,
+    nvidiaNim,
+  });
+
+  // Flush must happen BEFORE the add, not after - otherwise it would wipe
+  // out the item this same call just added.
+  assert.deepEqual(calls, ["flush", "update"]);
 });
 
 test("getFoodOrderReply: add_to_cart honors an explicit restaurant name instead of the cross-restaurant search result", async () => {
@@ -471,6 +533,7 @@ test("getFoodOrderReply: add_to_cart honors an explicit restaurant name instead 
     restaurantId: "r-pizzahut",
     restaurantName: "Pizza Hut",
     addressId: "addr-1",
+    cartRestaurantId: "r-pizzahut",
   });
 });
 
@@ -527,6 +590,7 @@ test("getFoodOrderReply: add_to_cart skips a sponsored ad ranked ahead of the ac
     restaurantId: "r-kfc",
     restaurantName: "KFC",
     addressId: "addr-1",
+    cartRestaurantId: "r-kfc",
   });
 });
 
@@ -891,7 +955,12 @@ test("getFoodOrderReply: apply_coupon degrades gracefully when the tool rejects 
 
 test("getFoodOrderReply: checkout builds a summary and stores a pending confirmation", async () => {
   const pendingCartSessions = new PendingCartSessions();
-  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", restaurantName: "Test Restaurant" });
+  pendingCartSessions.set("sender-1", {
+    addressId: "addr-1",
+    restaurantId: "r-1",
+    restaurantName: "Test Restaurant",
+    cartRestaurantId: "r-1",
+  });
   const pendingOrderConfirmations = new PendingOrderConfirmations();
 
   const getFoodCartCalls = [];
@@ -928,7 +997,7 @@ test("getFoodOrderReply: checkout builds a summary and stores a pending confirma
 
 test("getFoodOrderReply: checkout refuses an empty cart", async () => {
   const pendingCartSessions = new PendingCartSessions();
-  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
+  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", cartRestaurantId: "r-1" });
   const pendingOrderConfirmations = new PendingOrderConfirmations();
 
   const client = fakeClient({ getFoodCart: async () => cartPayload(cartData({ items: [] })) });
@@ -946,9 +1015,39 @@ test("getFoodOrderReply: checkout refuses an empty cart", async () => {
   assert.equal(pendingOrderConfirmations.peek("sender-1"), undefined);
 });
 
+test("getFoodOrderReply: checkout reports no active order rather than building a summary from a cart this session never established", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  // restaurantId is set (e.g. from a numbered restaurant pick) but nothing
+  // has actually been added yet, so cartRestaurantId is unset - the live
+  // cart could still hold leftover items from an earlier session/restaurant.
+  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", restaurantName: "Test Restaurant" });
+  const pendingOrderConfirmations = new PendingOrderConfirmations();
+
+  let getFoodCartCalled = false;
+  const client = fakeClient({
+    getFoodCart: async () => {
+      getFoodCartCalled = true;
+      return cartPayload(cartData());
+    },
+  });
+
+  const reply = await getFoodOrderReply({
+    message: message("checkout"),
+    swiggyFoodClient: client,
+    pendingCartSessions,
+    pendingOrderConfirmations,
+    classifyOrderIntent: async () => ({ type: "checkout" }),
+    nvidiaNim,
+  });
+
+  assert.equal(getFoodCartCalled, false);
+  assert.match(reply, /don't have an order in progress/);
+  assert.equal(pendingOrderConfirmations.peek("sender-1"), undefined);
+});
+
 test("getFoodOrderReply: checkout never guesses a payment method when COD isn't available", async () => {
   const pendingCartSessions = new PendingCartSessions();
-  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
+  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", cartRestaurantId: "r-1" });
   const pendingOrderConfirmations = new PendingOrderConfirmations();
 
   const client = fakeClient({
@@ -1248,6 +1347,7 @@ test("buildReorderUsualReply rebuilds the cart from the qualifying order and sho
     restaurantId: "rest-1",
     restaurantName: "Test Restaurant",
     addressId: "addr-1",
+    cartRestaurantId: "rest-1",
   });
 });
 
