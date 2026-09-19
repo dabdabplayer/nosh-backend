@@ -43,7 +43,6 @@ const singleAddress = {
     { id: "addr-1", addressLine: "123 Main St", addressTag: "Home", addressCategory: "Home" },
   ],
   total: 1,
-  resolution: { needsUserClarification: false, defaultAddressId: "addr-1" },
 };
 
 const ambiguousAddresses = {
@@ -52,10 +51,9 @@ const ambiguousAddresses = {
     { id: "addr-2", addressLine: "456 Other Rd", addressTag: "Other", addressCategory: "Other" },
   ],
   total: 2,
-  resolution: { needsUserClarification: true, defaultAddressId: "addr-1" },
 };
 
-const noAddresses = { addresses: [], total: 0, resolution: {} };
+const noAddresses = { addresses: [], total: 0 };
 
 // --- matchFoodSearchTrigger ---
 
@@ -487,7 +485,7 @@ test("getFoodSearchReply tells the user to add an address when they have none", 
   assert.match(reply, /add one in the Swiggy app/i);
 });
 
-test("getFoodSearchReply uses defaultAddressId directly when clarification isn't needed", async () => {
+test("getFoodSearchReply uses the address directly when there's only one saved", async () => {
   const pending = new PendingAddressSelections();
   const searchCalls = [];
   const client = fakeSwiggyFoodClient({
@@ -495,7 +493,6 @@ test("getFoodSearchReply uses defaultAddressId directly when clarification isn't
       payload({
         addresses: [{ id: "addr-9", addressLine: "9 Confirmed Ave" }],
         total: 1,
-        resolution: { needsUserClarification: false, defaultAddressId: "addr-9" },
       }),
     searchRestaurants: async (params) => {
       searchCalls.push(params);
@@ -632,12 +629,7 @@ test("getFoodSearchReply caps address candidates to the top 5", async () => {
     addressTag: `Tag${index}`,
   }));
   const client = fakeSwiggyFoodClient({
-    getAddresses: async () =>
-      payload({
-        addresses,
-        total: addresses.length,
-        resolution: { needsUserClarification: true, defaultAddressId: "addr-0" },
-      }),
+    getAddresses: async () => payload({ addresses, total: addresses.length }),
   });
 
   await getFoodSearchReply({

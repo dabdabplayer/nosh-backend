@@ -225,7 +225,17 @@ async function handleNewFoodSearch(
     return NO_SAVED_ADDRESS_REPLY;
   }
 
-  if (parsed?.resolution?.needsUserClarification === true) {
+  // get_addresses' documented response has no "which one is default" or
+  // "does this need clarification" field of its own (Swiggy's own docs for
+  // this tool instead say to always show the list and let the user pick) -
+  // an earlier version of this code read a `resolution.needsUserClarification`
+  // / `resolution.defaultAddressId` pair that was never part of the
+  // documented schema and never confirmed against a real response, which
+  // is why a sender with multiple saved addresses was never actually asked
+  // which one to use. With more than one saved address there's a genuine
+  // choice to make, so ask; with exactly one, there's nothing to choose
+  // between and asking would just be friction.
+  if (addresses.length > 1) {
     const candidates = addresses.slice(0, MAX_ADDRESS_CANDIDATES).map((address) => ({
       id: address.id,
       label: formatAddressLabel(address),
@@ -235,7 +245,7 @@ async function handleNewFoodSearch(
     return formatAddressPrompt(candidates);
   }
 
-  const addressId = parsed?.resolution?.defaultAddressId ?? addresses[0]?.id;
+  const addressId = addresses[0]?.id;
 
   if (!addressId) {
     return GENERIC_FALLBACK_REPLY;

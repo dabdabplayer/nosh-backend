@@ -422,10 +422,14 @@ function buildServer() {
       inputSchema: { page: z.number().optional(), pageSize: z.number().optional() },
     },
     async () => {
+      // Matches the documented response shape exactly - { addresses,
+      // pagination }, no "resolution" object. There are 2 mock addresses on
+      // purpose so this exercises the real "which address?" prompt (see
+      // handleNewFoodSearch in src/food-search-orchestrator.js) during
+      // manual testing, instead of silently defaulting.
       return structuredResult({
         addresses: ADDRESSES,
         total: ADDRESSES.length,
-        resolution: { needsUserClarification: false, defaultAddressId: ADDRESSES[0].id },
         pagination: { page: 1, pageSize: 10, total: ADDRESSES.length, totalPages: 1, hasMore: false },
       });
     },

@@ -56,7 +56,6 @@ function fakeClient(overrides = {}) {
         payload({
           addresses: [{ id: "addr-1", addressLine: "123 Main St" }],
           total: 1,
-          resolution: { needsUserClarification: false, defaultAddressId: "addr-1" },
         })),
     getFoodOrders: overrides.getFoodOrders ?? (async () => payload({ orders: [] })),
     getFoodOrderDetails: overrides.getFoodOrderDetails,

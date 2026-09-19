@@ -220,9 +220,10 @@ export async function buildReorderUsualReply({ senderId, swiggyFoodClient, pendi
   // Unlike food-search-orchestrator.js's handleNewFoodSearch, this doesn't
   // prompt to disambiguate between multiple saved addresses - reorder is
   // meant to be a one-message shortcut, and that prompt-and-wait flow isn't
-  // exported from that module. Falls back to the account's default address
-  // (or its first saved one) - a scoped simplification, not an oversight.
-  const addressId = parsedAddresses?.resolution?.defaultAddressId ?? addresses[0]?.id;
+  // exported from that module. Falls back to the first saved address - a
+  // scoped simplification, not an oversight. (get_addresses' documented
+  // response has no "default address" field to prefer instead.)
+  const addressId = addresses[0]?.id;
 
   if (!addressId) {
     return GENERIC_FALLBACK_REPLY;
