@@ -1378,6 +1378,9 @@ test("buildRecommendationReply recommends the most-ordered-from restaurant and m
   assert.match(reply, /Biryani House 2 times before/);
   assert.match(reply, /Last time you got: 1x Chicken Biryani/);
   assert.doesNotMatch(reply, /Pizza Place/);
+  // 2 qualifies as a "usual" (MIN_USUAL_ORDER_COUNT) - safe to point at the
+  // reorder shortcut since it won't immediately contradict itself.
+  assert.match(reply, /reorder my usual/);
 });
 
 test("buildRecommendationReply breaks a tie toward whichever restaurant was ordered from most recently", async () => {
@@ -1394,6 +1397,7 @@ test("buildRecommendationReply breaks a tie toward whichever restaurant was orde
   const reply = await buildRecommendationReply({ swiggyFoodClient: client });
 
   assert.match(reply, /Pizza Place before/);
+  assert.doesNotMatch(reply, /reorder my usual/);
 });
 
 test("buildRecommendationReply works off a single past order (no >=2 threshold, unlike reorder_usual)", async () => {
@@ -1405,6 +1409,9 @@ test("buildRecommendationReply works off a single past order (no >=2 threshold, 
   const reply = await buildRecommendationReply({ swiggyFoodClient: client });
 
   assert.match(reply, /Biryani House before/);
+  // A single order doesn't qualify as a "usual" - buildReorderUsualReply
+  // would answer NO_USUAL_REPLY, so this must not suggest that shortcut.
+  assert.doesNotMatch(reply, /reorder my usual/);
 });
 
 test("buildRecommendationReply ignores active (in-progress) orders", async () => {

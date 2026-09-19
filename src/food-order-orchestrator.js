@@ -389,9 +389,19 @@ export async function buildRecommendationReply({ swiggyFoodClient }) {
   const timesPhrase = timesOrdered === 1 ? "before" : `${timesOrdered} times before`;
   const lastOrderPhrase = topOrder.orderedItems ? ` Last time you got: ${topOrder.orderedItems}.` : "";
 
+  // Only point to "reorder my usual" once this restaurant would actually
+  // qualify as one - findUsualOrder/buildReorderUsualReply require
+  // MIN_USUAL_ORDER_COUNT non-active orders at the same restaurant, but
+  // this function deliberately has no such threshold (a single past order
+  // is still worth recommending). Suggesting the reorder shortcut below
+  // that threshold would have the bot immediately contradict itself with
+  // NO_USUAL_REPLY on the very next message.
+  const reorderSuggestion =
+    timesOrdered >= MIN_USUAL_ORDER_COUNT ? ` or say "reorder my usual" to get that again` : "";
+
   return (
     `You've ordered from ${topOrder.restaurantName} ${timesPhrase}.${lastOrderPhrase} ` +
-    `Want to see their menu for something new, or say "reorder my usual" to get that again?`
+    `Want to see their menu for something new${reorderSuggestion}?`
   );
 }
 
