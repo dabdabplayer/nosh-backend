@@ -708,6 +708,125 @@ async function handleViewCart({ swiggyFoodClient, addressId, restaurantName }) {
   return formatCartReply(unwrapCartPayload(cartResult));
 }
 
+// Matches a user-typed dish name (e.g. "the pizza") against every line in
+// the live cart - same case-insensitive, either-direction substring match
+// normalizeRestaurantName already uses to match a user-typed restaurant
+// name, since it's the same underlying problem (Swiggy's own name vs.
+// whatever the user actually typed). Returns every match rather than just
+// the first: a cart can hold more than one item matching a broad query
+// (e.g. "pizza" matching both Margherita and Pepperoni) - removing
+// whichever one happens to come first would silently delete the wrong
+// item, so the caller has to disambiguate instead of guessing.
+function findMatchingCartItems(cartData, query) {
+  const items = Array.isArray(cartData?.items) ? cartData.items : [];
+  const queryNormalized = normalizeRestaurantName(query);
+
+  return items.filter((item) => {
+    const nameNormalized = normalizeRestaurantName(item?.name);
+    return nameNormalized.includes(queryNormalized) || queryNormalized.includes(nameNormalized);
+  });
+}
+
+// Maps a cart item's existing variant selections (get_food_cart's
+// FoodCartItem.variants - group_id/variation_id pairs, per its documented
+// schema) back into the {group_id, variation_id} shape update_food_cart's
+// variantsV2 expects, so a quantity change on a customized item keeps its
+// existing customization instead of dropping it. Same field mapping
+// buildReorderCartItems above already does for reorder.
+function cartItemVariantsV2(cartItem) {
+  const variants = Array.isArray(cartItem?.variants) ? cartItem.variants : [];
+  const selections = variants
+    .filter((variant) => variant?.group_id !== undefined && variant?.variation_id !== undefined)
+    .map((variant) => ({ group_id: variant.group_id, variation_id: variant.variation_id }));
+
+  return selections.length > 0 ? selections : undefined;
+}
+
+// Swiggy's Food MCP has no dedicated remove/delete-cart-item tool (checked
+// against the full documented tool catalogue - AGENTS.md: never invent
+// one). update_food_cart's own docs confirm quantity CAN be changed for an
+// item already in the cart ("asks to change quantity of an item"), but
+// never say whether quantity: 0 removes the line entirely - this is the
+// same assumption the mock server already encodes (quantity <= 0 deletes
+// the item) and is close to universal for cart APIs, but it is NOT
+// confirmed against a real Swiggy account. Re-verify before trusting this
+// in production, the same way this file's other unconfirmed-live notes ask
+// for.
+async function handleRemoveFromCart({
+  swiggyFoodClient,
+  addressId,
+  restaurantId,
+  restaurantName,
+  query,
+  quantity,
+}) {
+  let cartResult;
+  try {
+    cartResult = await swiggyFoodClient.getFoodCart({ addressId, restaurantName });
+  } catch {
+    return GENERIC_FALLBACK_REPLY;
+  }
+
+  const cartData = unwrapCartPayload(cartResult);
+
+  if (!cartData || !Array.isArray(cartData.items) || cartData.items.length === 0) {
+    return EMPTY_CART_REPLY;
+  }
+
+  const matches = findMatchingCartItems(cartData, query);
+
+  if (matches.length === 0) {
+    return `Sorry, I couldn't find "${query}" in your cart.`;
+  }
+
+  if (matches.length > 1) {
+    const names = matches.map((item) => item.name).join(" and ");
+    return `You have a few things matching "${query}" in your cart: ${names}. Which one did you mean? Reply with the full name.`;
+  }
+
+  const cartItem = matches[0];
+  const currentQuantity = Number(cartItem.quantity) > 0 ? Number(cartItem.quantity) : 0;
+  // No count given ("remove the pizza") removes the whole line; a stated
+  // count ("remove 1 biryani") only reduces it, clamped so it can't go
+  // negative if they ask to remove more than there actually are.
+  const newQuantity = Number.isInteger(quantity) ? Math.max(0, currentQuantity - quantity) : 0;
+
+  // variantsV2 is only sent (and only reconstructed) when the line survives
+  // at a reduced quantity - it needs to keep its existing customization
+  // then, but on a full removal (quantity: 0) it's an unverified field
+  // mapping serving no purpose on a call whose entire point is to make the
+  // line disappear, so it's left out rather than risking the removal
+  // itself on it.
+  const cartItemPayload = { menu_item_id: cartItem.menu_item_id, quantity: newQuantity };
+
+  if (newQuantity > 0) {
+    cartItemPayload.variantsV2 = cartItemVariantsV2(cartItem);
+  }
+
+  let updateResult;
+  try {
+    updateResult = await swiggyFoodClient.updateFoodCart({
+      restaurantId,
+      restaurantName,
+      addressId,
+      cartItems: [cartItemPayload],
+    });
+  } catch {
+    return GENERIC_FALLBACK_REPLY;
+  }
+
+  const updatedCartData = unwrapCartPayload(updateResult);
+
+  if (!updatedCartData) {
+    return GENERIC_FALLBACK_REPLY;
+  }
+
+  const confirmationLine =
+    newQuantity === 0 ? `Removed ${cartItem.name} from your cart.` : `Updated ${cartItem.name} to ${newQuantity}x.`;
+
+  return [confirmationLine, formatCartReply(updatedCartData)].join("\n\n");
+}
+
 function formatCoupons(couponsPayload) {
   const sections = Array.isArray(couponsPayload?.coupon_sections) ? couponsPayload.coupon_sections : [];
   const coupons = sections.flatMap((section) => (Array.isArray(section?.coupons) ? section.coupons : []));
@@ -1060,6 +1179,16 @@ export async function getFoodOrderReply({
           swiggyFoodClient,
           addressId: session.addressId,
           restaurantName: session.restaurantName,
+        });
+
+      case "remove_from_cart":
+        return await handleRemoveFromCart({
+          swiggyFoodClient,
+          addressId: session.addressId,
+          restaurantId: session.restaurantId,
+          restaurantName: session.restaurantName,
+          query: intent.query,
+          quantity: intent.quantity,
         });
 
       case "find_coupons":

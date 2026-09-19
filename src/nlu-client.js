@@ -70,8 +70,9 @@ const ORDER_SYSTEM_PROMPT = [
   "You classify a single inbound WhatsApp message for a food-delivery bot named Nosh.",
   "The user already has an active order in progress with one restaurant.",
   "Call exactly one tool that matches what they're asking for right now: add_to_cart to add a dish,",
-  "view_cart to see what's in the cart, find_coupons to see available discounts, apply_coupon to use",
-  "a specific coupon code, or checkout when they want to place the order.",
+  "remove_from_cart to remove a dish already in the cart or reduce its quantity, view_cart to see what's",
+  "in the cart, find_coupons to see available discounts, apply_coupon to use a specific coupon code, or",
+  "checkout when they want to place the order.",
   "For anything else, do not call any tool.",
 ].join(" ");
 
@@ -88,6 +89,28 @@ const ADD_TO_CART_TOOL = Object.freeze({
         restaurantName: {
           type: "string",
           description: "The restaurant the user named, if they named one (e.g. \"from Pizza Hut\"). Omit if they didn't say.",
+        },
+      },
+      required: ["query"],
+    },
+  },
+});
+
+const REMOVE_FROM_CART_TOOL = Object.freeze({
+  type: "function",
+  function: {
+    name: "remove_from_cart",
+    description:
+      "The user wants to remove a dish already in their cart, or reduce its quantity - e.g. \"remove the biryani\", " +
+      "\"take off the pizza\", \"I don't want the coke anymore\", \"remove 1 biryani\".",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "The dish name to remove, as the user said it. Fix obvious typos." },
+        quantity: {
+          type: "integer",
+          description:
+            "How many to remove, only if the user gave a specific count (e.g. \"remove 1 biryani\"). Omit to remove the item entirely.",
         },
       },
       required: ["query"],
@@ -139,6 +162,7 @@ const CHECKOUT_TOOL = Object.freeze({
 
 const ORDER_TOOLS = Object.freeze([
   ADD_TO_CART_TOOL,
+  REMOVE_FROM_CART_TOOL,
   VIEW_CART_TOOL,
   FIND_COUPONS_TOOL,
   APPLY_COUPON_TOOL,
@@ -310,6 +334,15 @@ export async function classifyOrderIntent({
         quantity,
         restaurantName: restaurantName.length > 0 ? restaurantName : undefined,
       });
+    }
+
+    if (name === "remove_from_cart") {
+      const query = typeof args?.query === "string" ? args.query.trim() : "";
+      if (query.length === 0) {
+        continue;
+      }
+      const quantity = Number.isInteger(args?.quantity) && args.quantity > 0 ? args.quantity : undefined;
+      return Object.freeze({ type: "remove_from_cart", query, quantity });
     }
 
     if (name === "view_cart") {

@@ -273,6 +273,35 @@ test("classifyOrderIntent returns add_to_cart with a named restaurant", async ()
   });
 });
 
+test("classifyOrderIntent returns remove_from_cart with no quantity when the user didn't give a count", async () => {
+  const fetchImpl = async () => toolCallResponse(orderToolCall("remove_from_cart", { query: "margherita pizza" }));
+
+  const result = await classifyOrderIntent({
+    text: "remove the margherita pizza",
+    apiKey: "test-key",
+    baseUrl: "https://example.test/v1",
+    model: "test-model",
+    fetchImpl,
+  });
+
+  assert.deepEqual(result, { type: "remove_from_cart", query: "margherita pizza", quantity: undefined });
+});
+
+test("classifyOrderIntent returns remove_from_cart with an explicit quantity", async () => {
+  const fetchImpl = async () =>
+    toolCallResponse(orderToolCall("remove_from_cart", { query: "garlic bread", quantity: 1 }));
+
+  const result = await classifyOrderIntent({
+    text: "remove 1 garlic bread",
+    apiKey: "test-key",
+    baseUrl: "https://example.test/v1",
+    model: "test-model",
+    fetchImpl,
+  });
+
+  assert.deepEqual(result, { type: "remove_from_cart", query: "garlic bread", quantity: 1 });
+});
+
 test("classifyOrderIntent returns view_cart, find_coupons, and checkout with no args", async () => {
   for (const name of ["view_cart", "find_coupons", "checkout"]) {
     const fetchImpl = async () => toolCallResponse(orderToolCall(name, {}));

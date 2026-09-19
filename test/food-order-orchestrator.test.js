@@ -838,6 +838,231 @@ test("getFoodOrderReply: view_cart reports an empty cart", async () => {
   assert.match(reply, /cart is empty/);
 });
 
+// --- getFoodOrderReply: remove_from_cart ---
+
+test("getFoodOrderReply: remove_from_cart removes the item entirely when no count is given", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", restaurantName: "Test Restaurant" });
+  const pendingOrderConfirmations = new PendingOrderConfirmations();
+
+  const updateFoodCartCalls = [];
+  const client = fakeClient({
+    getFoodCart: async () =>
+      cartPayload(
+        cartData({
+          items: [
+            {
+              menu_item_id: "item-1",
+              name: "Margherita Pizza",
+              quantity: 2,
+              total: 238,
+              variants: [{ group_id: "g-crust", variation_id: "v-crust-default", name: "Hand Tossed" }],
+            },
+          ],
+        }),
+      ),
+    updateFoodCart: async (params) => {
+      updateFoodCartCalls.push(params);
+      return cartPayload(cartData({ items: [] }));
+    },
+  });
+
+  const reply = await getFoodOrderReply({
+    message: message("remove the pizza"),
+    swiggyFoodClient: client,
+    pendingCartSessions,
+    pendingOrderConfirmations,
+    classifyOrderIntent: async () => ({ type: "remove_from_cart", query: "pizza" }),
+    nvidiaNim,
+  });
+
+  assert.equal(updateFoodCartCalls.length, 1);
+  assert.equal(updateFoodCartCalls[0].cartItems[0].menu_item_id, "item-1");
+  assert.equal(updateFoodCartCalls[0].cartItems[0].quantity, 0);
+  // No variantsV2 on a full removal - that reconstructed field mapping is
+  // unverified and serves no purpose when the whole point of the call is
+  // to make the line disappear.
+  assert.equal(updateFoodCartCalls[0].cartItems[0].variantsV2, undefined);
+  assert.match(reply, /Removed Margherita Pizza from your cart/);
+});
+
+test("getFoodOrderReply: remove_from_cart reduces the quantity when a count is given, preserving existing customization", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", restaurantName: "Test Restaurant" });
+  const pendingOrderConfirmations = new PendingOrderConfirmations();
+
+  const updateFoodCartCalls = [];
+  const client = fakeClient({
+    getFoodCart: async () =>
+      cartPayload(
+        cartData({
+          items: [
+            {
+              menu_item_id: "item-1",
+              name: "Garlic Bread",
+              quantity: 3,
+              total: 150,
+              variants: [{ group_id: "g-size", variation_id: "v-large", name: "Large" }],
+            },
+          ],
+        }),
+      ),
+    updateFoodCart: async (params) => {
+      updateFoodCartCalls.push(params);
+      return cartPayload(cartData());
+    },
+  });
+
+  const reply = await getFoodOrderReply({
+    message: message("remove 1 garlic bread"),
+    swiggyFoodClient: client,
+    pendingCartSessions,
+    pendingOrderConfirmations,
+    classifyOrderIntent: async () => ({ type: "remove_from_cart", query: "garlic bread", quantity: 1 }),
+    nvidiaNim,
+  });
+
+  assert.equal(updateFoodCartCalls[0].cartItems[0].quantity, 2);
+  assert.deepEqual(updateFoodCartCalls[0].cartItems[0].variantsV2, [{ group_id: "g-size", variation_id: "v-large" }]);
+  assert.match(reply, /Updated Garlic Bread to 2x/);
+});
+
+test("getFoodOrderReply: remove_from_cart asks which item when the query matches more than one cart line, instead of guessing", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", restaurantName: "Fake Pizza Co" });
+  const pendingOrderConfirmations = new PendingOrderConfirmations();
+
+  let updateFoodCartCalled = false;
+  const client = fakeClient({
+    getFoodCart: async () =>
+      cartPayload(
+        cartData({
+          items: [
+            { menu_item_id: "item-margherita", name: "Margherita Pizza", quantity: 1, total: 219 },
+            { menu_item_id: "item-pepperoni", name: "Pepperoni Pizza", quantity: 1, total: 269 },
+          ],
+        }),
+      ),
+    updateFoodCart: async () => {
+      updateFoodCartCalled = true;
+      return cartPayload(cartData());
+    },
+  });
+
+  const reply = await getFoodOrderReply({
+    message: message("remove the pizza"),
+    swiggyFoodClient: client,
+    pendingCartSessions,
+    pendingOrderConfirmations,
+    classifyOrderIntent: async () => ({ type: "remove_from_cart", query: "pizza" }),
+    nvidiaNim,
+  });
+
+  assert.equal(updateFoodCartCalled, false);
+  assert.match(reply, /Margherita Pizza/);
+  assert.match(reply, /Pepperoni Pizza/);
+  assert.match(reply, /Which one did you mean/);
+});
+
+test("getFoodOrderReply: remove_from_cart clamps at zero rather than going negative", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", restaurantName: "Test Restaurant" });
+  const pendingOrderConfirmations = new PendingOrderConfirmations();
+
+  const updateFoodCartCalls = [];
+  const client = fakeClient({
+    getFoodCart: async () =>
+      cartPayload(cartData({ items: [{ menu_item_id: "item-1", name: "Garlic Bread", quantity: 1, total: 50 }] })),
+    updateFoodCart: async (params) => {
+      updateFoodCartCalls.push(params);
+      return cartPayload(cartData({ items: [] }));
+    },
+  });
+
+  await getFoodOrderReply({
+    message: message("remove 5 garlic bread"),
+    swiggyFoodClient: client,
+    pendingCartSessions,
+    pendingOrderConfirmations,
+    classifyOrderIntent: async () => ({ type: "remove_from_cart", query: "garlic bread", quantity: 5 }),
+    nvidiaNim,
+  });
+
+  assert.equal(updateFoodCartCalls[0].cartItems[0].quantity, 0);
+});
+
+test("getFoodOrderReply: remove_from_cart reports when the dish isn't in the cart", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", restaurantName: "Test Restaurant" });
+  const pendingOrderConfirmations = new PendingOrderConfirmations();
+
+  let updateFoodCartCalled = false;
+  const client = fakeClient({
+    getFoodCart: async () =>
+      cartPayload(cartData({ items: [{ menu_item_id: "item-1", name: "Margherita Pizza", quantity: 1, total: 119 }] })),
+    updateFoodCart: async () => {
+      updateFoodCartCalled = true;
+      return cartPayload(cartData());
+    },
+  });
+
+  const reply = await getFoodOrderReply({
+    message: message("remove the biryani"),
+    swiggyFoodClient: client,
+    pendingCartSessions,
+    pendingOrderConfirmations,
+    classifyOrderIntent: async () => ({ type: "remove_from_cart", query: "biryani" }),
+    nvidiaNim,
+  });
+
+  assert.equal(updateFoodCartCalled, false);
+  assert.match(reply, /couldn't find "biryani" in your cart/);
+});
+
+test("getFoodOrderReply: remove_from_cart reports an empty cart", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", restaurantName: "Test Restaurant" });
+  const pendingOrderConfirmations = new PendingOrderConfirmations();
+
+  const client = fakeClient({ getFoodCart: async () => cartPayload(cartData({ items: [] })) });
+
+  const reply = await getFoodOrderReply({
+    message: message("remove the pizza"),
+    swiggyFoodClient: client,
+    pendingCartSessions,
+    pendingOrderConfirmations,
+    classifyOrderIntent: async () => ({ type: "remove_from_cart", query: "pizza" }),
+    nvidiaNim,
+  });
+
+  assert.match(reply, /cart is empty/);
+});
+
+test("getFoodOrderReply: remove_from_cart falls back to a generic reply when update_food_cart throws", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", restaurantName: "Test Restaurant" });
+  const pendingOrderConfirmations = new PendingOrderConfirmations();
+
+  const client = fakeClient({
+    getFoodCart: async () =>
+      cartPayload(cartData({ items: [{ menu_item_id: "item-1", name: "Margherita Pizza", quantity: 1, total: 119 }] })),
+    updateFoodCart: async () => {
+      throw new Error("boom");
+    },
+  });
+
+  const reply = await getFoodOrderReply({
+    message: message("remove the pizza"),
+    swiggyFoodClient: client,
+    pendingCartSessions,
+    pendingOrderConfirmations,
+    classifyOrderIntent: async () => ({ type: "remove_from_cart", query: "pizza" }),
+    nvidiaNim,
+  });
+
+  assert.match(reply, /couldn't do that right now/);
+});
+
 // --- getFoodOrderReply: find_coupons / apply_coupon ---
 
 test("getFoodOrderReply: find_coupons lists each coupon's code as the title field", async () => {
