@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  buildRecommendationReply,
   buildReorderUsualReply,
   findUsualOrder,
   getFoodOrderReply,
@@ -1356,4 +1357,109 @@ test("buildReorderUsualReply falls back to a generic reply when updateFoodCart t
   });
 
   assert.match(reply, /couldn't do that right now/);
+});
+
+// --- buildRecommendationReply ---
+
+test("buildRecommendationReply recommends the most-ordered-from restaurant and mentions the last order", async () => {
+  const client = fakeClient({
+    getFoodOrders: async () =>
+      payload({
+        orders: [
+          orderSummary({ orderId: "o3", restaurantId: "rest-1", restaurantName: "Biryani House", orderedItems: "1x Chicken Biryani" }),
+          orderSummary({ orderId: "o2", restaurantId: "rest-2", restaurantName: "Pizza Place", orderedItems: "1x Margherita" }),
+          orderSummary({ orderId: "o1", restaurantId: "rest-1", restaurantName: "Biryani House", orderedItems: "1x Mutton Biryani" }),
+        ],
+      }),
+  });
+
+  const reply = await buildRecommendationReply({ swiggyFoodClient: client });
+
+  assert.match(reply, /Biryani House 2 times before/);
+  assert.match(reply, /Last time you got: 1x Chicken Biryani/);
+  assert.doesNotMatch(reply, /Pizza Place/);
+});
+
+test("buildRecommendationReply breaks a tie toward whichever restaurant was ordered from most recently", async () => {
+  const client = fakeClient({
+    getFoodOrders: async () =>
+      payload({
+        orders: [
+          orderSummary({ orderId: "o2", restaurantId: "rest-2", restaurantName: "Pizza Place", orderedItems: "1x Margherita" }),
+          orderSummary({ orderId: "o1", restaurantId: "rest-1", restaurantName: "Biryani House", orderedItems: "1x Biryani" }),
+        ],
+      }),
+  });
+
+  const reply = await buildRecommendationReply({ swiggyFoodClient: client });
+
+  assert.match(reply, /Pizza Place before/);
+});
+
+test("buildRecommendationReply works off a single past order (no >=2 threshold, unlike reorder_usual)", async () => {
+  const client = fakeClient({
+    getFoodOrders: async () =>
+      payload({ orders: [orderSummary({ orderId: "o1", restaurantId: "rest-1", restaurantName: "Biryani House" })] }),
+  });
+
+  const reply = await buildRecommendationReply({ swiggyFoodClient: client });
+
+  assert.match(reply, /Biryani House before/);
+});
+
+test("buildRecommendationReply ignores active (in-progress) orders", async () => {
+  const client = fakeClient({
+    getFoodOrders: async () =>
+      payload({
+        orders: [orderSummary({ orderId: "o1", restaurantId: "rest-1", restaurantName: "Biryani House", isActiveOrder: true })],
+      }),
+  });
+
+  const reply = await buildRecommendationReply({ swiggyFoodClient: client });
+
+  assert.match(reply, /don't have any past orders/);
+});
+
+test("buildRecommendationReply tells the user to add an address when they have none", async () => {
+  const client = fakeClient({ getAddresses: async () => payload({ addresses: [], total: 0 }) });
+
+  const reply = await buildRecommendationReply({ swiggyFoodClient: client });
+
+  assert.match(reply, /don't have a saved delivery address/);
+});
+
+test("buildRecommendationReply gives a plain reply when there's no order history at all", async () => {
+  const client = fakeClient({ getFoodOrders: async () => payload({ orders: [] }) });
+
+  const reply = await buildRecommendationReply({ swiggyFoodClient: client });
+
+  assert.match(reply, /don't have any past orders/);
+});
+
+test("buildRecommendationReply falls back to a generic reply when getFoodOrders throws", async () => {
+  const client = fakeClient({
+    getFoodOrders: async () => {
+      throw new Error("boom");
+    },
+  });
+
+  const reply = await buildRecommendationReply({ swiggyFoodClient: client });
+
+  assert.match(reply, /couldn't do that right now/);
+});
+
+test("buildRecommendationReply never mutates the cart", async () => {
+  let updateFoodCartCalled = false;
+  const client = fakeClient({
+    getFoodOrders: async () =>
+      payload({ orders: [orderSummary({ orderId: "o1", restaurantId: "rest-1" })] }),
+    updateFoodCart: async () => {
+      updateFoodCartCalled = true;
+      return cartPayload(cartData());
+    },
+  });
+
+  await buildRecommendationReply({ swiggyFoodClient: client });
+
+  assert.equal(updateFoodCartCalled, false);
 });

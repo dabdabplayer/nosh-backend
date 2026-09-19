@@ -2,6 +2,7 @@ import http from "node:http";
 import { config } from "./config.js";
 import { classifyIncomingMessage, getFoodSearchReply } from "./food-search-orchestrator.js";
 import {
+  buildRecommendationReply,
   buildReorderUsualReply,
   getFoodOrderReply,
   parseOrderConfirmationReply,
@@ -276,18 +277,24 @@ async function buildReplyText(message) {
   }
 
   const isReorderUsual = classification.type === "reorder_usual";
+  const isRecommend = classification.type === "recommend";
   const searchTerm = classification.searchTerm ?? classification.pending?.searchTerm;
 
-  if (isReorderUsual) {
-    // A reorder request supersedes any stale "which address?" prompt, the
-    // same way a genuine new search does inside getFoodSearchReply's own
-    // "new_search" case.
+  if (isReorderUsual || isRecommend) {
+    // A reorder or recommendation request supersedes any stale "which
+    // address?" prompt, the same way a genuine new search does inside
+    // getFoodSearchReply's own "new_search" case.
     pendingAddressSelections.clear(message.from);
   }
 
   const authResult = await resolveSwiggyFoodAuth(message.from);
 
   if (authResult.status === "unauthenticated") {
+    // No dedicated post-auth resume for "recommend" yet - it falls into the
+    // plain "search" kind below with no searchTerm, which resumePendingSearchAfterAuth
+    // already treats as a no-op resume. An unauthenticated sender just has
+    // to ask again once connected, same as any other NLU-only intent
+    // hitting an outage.
     pendingPostAuthActions.set(
       message.from,
       isReorderUsual
@@ -296,7 +303,7 @@ async function buildReplyText(message) {
     );
     const connectToken = pendingConnectLinks.create(message.from);
     const connectUrl = `${swiggyOAuthOrigin}/oauth/swiggy/start?token=${connectToken}`;
-    return buildConnectReplyText({ connectUrl, searchTerm: isReorderUsual ? undefined : searchTerm });
+    return buildConnectReplyText({ connectUrl, searchTerm: isReorderUsual || isRecommend ? undefined : searchTerm });
   }
 
   const swiggyFoodClient = createSwiggyFoodClient({
@@ -307,13 +314,15 @@ async function buildReplyText(message) {
   try {
     const reply = isReorderUsual
       ? await buildReorderUsualReply({ senderId: message.from, swiggyFoodClient, pendingCartSessions })
-      : await getFoodSearchReply({
-          message,
-          swiggyFoodClient,
-          pendingAddressSelections,
-          pendingCartSessions,
-          classification,
-        });
+      : isRecommend
+        ? await buildRecommendationReply({ swiggyFoodClient })
+        : await getFoodSearchReply({
+            message,
+            swiggyFoodClient,
+            pendingAddressSelections,
+            pendingCartSessions,
+            classification,
+          });
     return reply ?? PLACEHOLDER_REPLY_TEXT;
   } finally {
     swiggyFoodClient.close().catch((error) => {

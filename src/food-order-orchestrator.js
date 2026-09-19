@@ -301,6 +301,100 @@ export async function buildReorderUsualReply({ senderId, swiggyFoodClient, pendi
   return [`Reordering your usual from ${order.restaurant_name}:`, formatCartReply(cartData)].join("\n\n");
 }
 
+const NO_ORDER_HISTORY_REPLY =
+  "You don't have any past orders yet for me to base a recommendation on — search for a restaurant or dish instead.";
+
+// The single entry point for the "recommend me something" intent (see
+// src/nlu-client.js's recommend tool and food-search-orchestrator.js's
+// classifyIncomingMessage). Swiggy's Food MCP has no documented
+// recommendation, bestseller-ranking, or personalization tool (AGENTS.md:
+// never invent one), so this is built entirely from get_food_orders' own
+// documented fields (restaurantName, orderedItems) rather than fabricating
+// a suggestion - it recommends a RESTAURANT the user has actually ordered
+// from before, not a specific dish they've never tried. Text-only: unlike
+// buildReorderUsualReply, this never touches the cart.
+export async function buildRecommendationReply({ swiggyFoodClient }) {
+  let addressResult;
+  try {
+    addressResult = await swiggyFoodClient.getAddresses({});
+  } catch {
+    return GENERIC_FALLBACK_REPLY;
+  }
+
+  const parsedAddresses = parseStructuredPayload(addressResult);
+  const addresses = Array.isArray(parsedAddresses?.addresses) ? parsedAddresses.addresses : undefined;
+
+  if (addresses === undefined) {
+    return GENERIC_FALLBACK_REPLY;
+  }
+
+  if ((typeof parsedAddresses?.total === "number" ? parsedAddresses.total : addresses.length) === 0) {
+    return NO_SAVED_ADDRESS_REPLY;
+  }
+
+  // Same one-message-shortcut simplification as buildReorderUsualReply
+  // above - doesn't prompt to disambiguate multiple saved addresses.
+  const addressId = addresses[0]?.id;
+
+  if (!addressId) {
+    return GENERIC_FALLBACK_REPLY;
+  }
+
+  let ordersResult;
+  try {
+    ordersResult = await swiggyFoodClient.getFoodOrders({ addressId });
+  } catch {
+    return GENERIC_FALLBACK_REPLY;
+  }
+
+  const orders = parseStructuredPayload(ordersResult)?.orders;
+
+  if (!Array.isArray(orders)) {
+    return GENERIC_FALLBACK_REPLY;
+  }
+
+  // Unlike findUsualOrder above, there's no >=2 threshold here - even a
+  // single past order is enough to recommend going back, since this isn't
+  // claiming a "usual", just a suggestion. Active (in-progress) orders are
+  // excluded - recommending a restaurant the user is already mid-delivery
+  // with reads as broken, not helpful.
+  const pastOrders = orders.filter((order) => order?.restaurantId && order.isActiveOrder !== true);
+
+  if (pastOrders.length === 0) {
+    return NO_ORDER_HISTORY_REPLY;
+  }
+
+  // get_food_orders' own doc says results come back newest-first, so the
+  // first order seen for a given restaurant while scanning in that order is
+  // also the most recently ordered-from one there - used below to break a
+  // count tie toward whichever restaurant they ordered from most recently,
+  // with no timestamp parsing needed (orderedTime is a year-less,
+  // human-readable string elsewhere in this file - see
+  // findOrderPlacedSinceSnapshot - and can't be used for that directly).
+  const countsByRestaurant = new Map();
+  const firstOrderByRestaurant = new Map();
+
+  for (const order of pastOrders) {
+    countsByRestaurant.set(order.restaurantId, (countsByRestaurant.get(order.restaurantId) ?? 0) + 1);
+    if (!firstOrderByRestaurant.has(order.restaurantId)) {
+      firstOrderByRestaurant.set(order.restaurantId, order);
+    }
+  }
+
+  // Array.prototype.sort is stable, so restaurants tied on count keep their
+  // Map insertion order (i.e. most-recently-ordered-from first) rather than
+  // an arbitrary one.
+  const [topRestaurantId, timesOrdered] = [...countsByRestaurant.entries()].sort((a, b) => b[1] - a[1])[0];
+  const topOrder = firstOrderByRestaurant.get(topRestaurantId);
+  const timesPhrase = timesOrdered === 1 ? "before" : `${timesOrdered} times before`;
+  const lastOrderPhrase = topOrder.orderedItems ? ` Last time you got: ${topOrder.orderedItems}.` : "";
+
+  return (
+    `You've ordered from ${topOrder.restaurantName} ${timesPhrase}.${lastOrderPhrase} ` +
+    `Want to see their menu for something new, or say "reorder my usual" to get that again?`
+  );
+}
+
 // Auto-picks each variant group's Swiggy-marked default (falling back to the
 // first option) so a plain "add a margherita pizza" doesn't require
 // interrogating the user about crust/size first. Never invents a selection

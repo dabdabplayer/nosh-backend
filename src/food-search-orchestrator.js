@@ -46,9 +46,9 @@ export function parseAddressSelectionReply(text, candidateCount) {
 // (confirmed live).
 //
 // Returns the raw { type: "search_food", query } / { type: "reorder_usual" }
-// intent (not just a search term) so classifyIncomingMessage below can tell
-// the two apart - a literal find/search match is always treated as
-// search_food, never reorder_usual.
+// / { type: "recommend" } intent (not just a search term) so
+// classifyIncomingMessage below can tell them apart - a literal find/search
+// match is always treated as search_food, never reorder_usual or recommend.
 async function resolveIntent(
   trimmedText,
   senderId,
@@ -75,7 +75,9 @@ async function resolveIntent(
     hasActiveCart,
   });
 
-  return intent?.type === "search_food" || intent?.type === "reorder_usual" ? intent : undefined;
+  return intent?.type === "search_food" || intent?.type === "reorder_usual" || intent?.type === "recommend"
+    ? intent
+    : undefined;
 }
 
 export async function classifyIncomingMessage(message, pendingAddressSelections, nluOptions) {
@@ -96,12 +98,16 @@ export async function classifyIncomingMessage(message, pendingAddressSelections,
 
   const intent = await resolveIntent(trimmedText, message.from, nluOptions);
 
-  // A reorder request supersedes any stale "which address?" prompt the same
-  // way a genuine new search does below - the caller is expected to clear
-  // pendingAddressSelections, same as the new_search case in
-  // getFoodSearchReply.
+  // A reorder or recommendation request supersedes any stale "which
+  // address?" prompt the same way a genuine new search does below - the
+  // caller is expected to clear pendingAddressSelections, same as the
+  // new_search case in getFoodSearchReply.
   if (intent?.type === "reorder_usual") {
     return { type: "reorder_usual" };
+  }
+
+  if (intent?.type === "recommend") {
+    return { type: "recommend" };
   }
 
   const searchTerm = intent?.type === "search_food" ? intent.query : undefined;

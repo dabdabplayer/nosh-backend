@@ -76,6 +76,42 @@ test("classifyMessage does not offer reorder_usual when hasActiveCart is true", 
   assert.deepEqual(toolNames, ["search_food"]);
 });
 
+test("classifyMessage returns a recommend intent for a matching tool call", async () => {
+  const fetchImpl = async () =>
+    toolCallResponse([{ function: { name: "recommend", arguments: "{}" } }]);
+
+  const result = await classifyMessage({
+    text: "recommend me something",
+    apiKey: "test-key",
+    baseUrl: "https://example.test/v1",
+    model: "test-model",
+    fetchImpl,
+  });
+
+  assert.deepEqual(result, { type: "recommend" });
+});
+
+test("classifyMessage does not offer recommend when hasActiveCart is true", async () => {
+  const requests = [];
+  const fetchImpl = async (url, options) => {
+    requests.push(options);
+    return toolCallResponse(undefined);
+  };
+
+  await classifyMessage({
+    text: "recommend me something",
+    apiKey: "test-key",
+    baseUrl: "https://example.test/v1",
+    model: "test-model",
+    hasActiveCart: true,
+    fetchImpl,
+  });
+
+  const body = JSON.parse(requests[0].body);
+  const toolNames = body.tools.map((tool) => tool.function.name);
+  assert.deepEqual(toolNames, ["search_food"]);
+});
+
 test("classifyMessage uses a cart-aware system prompt when hasActiveCart is true", async () => {
   const requests = [];
   const fetchImpl = async (url, options) => {

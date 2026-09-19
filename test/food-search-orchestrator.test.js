@@ -272,6 +272,48 @@ test("classifyIncomingMessage: reorder_usual overrides a stale pending address p
   assert.deepEqual(result, { type: "reorder_usual" });
 });
 
+test("classifyIncomingMessage: a recommend tool call becomes a recommend classification", async () => {
+  const pending = new PendingAddressSelections();
+  const classifyMessage = async () => ({ type: "recommend" });
+
+  const result = await classifyIncomingMessage(message("recommend me something"), pending, {
+    nvidiaNim: { enabled: true, apiKey: "key", baseUrl: "https://example.test", model: "test-model" },
+    classifyMessage,
+  });
+
+  assert.deepEqual(result, { type: "recommend" });
+});
+
+test("classifyIncomingMessage: recommend overrides a stale pending address prompt", async () => {
+  const pending = new PendingAddressSelections();
+  pending.set("sender-1", { searchTerm: "pizza", candidates: [{ id: "addr-1", label: "Home" }] });
+  const classifyMessage = async () => ({ type: "recommend" });
+
+  const result = await classifyIncomingMessage(message("recommend me something"), pending, {
+    nvidiaNim: { enabled: true, apiKey: "key", baseUrl: "https://example.test", model: "test-model" },
+    classifyMessage,
+  });
+
+  assert.deepEqual(result, { type: "recommend" });
+});
+
+test("classifyIncomingMessage: a literal find/search trigger is never read as recommend", async () => {
+  const pending = new PendingAddressSelections();
+  let called = false;
+  const classifyMessage = async () => {
+    called = true;
+    return { type: "recommend" };
+  };
+
+  const result = await classifyIncomingMessage(message("find biryani"), pending, {
+    nvidiaNim: { enabled: true, apiKey: "key", baseUrl: "https://example.test", model: "test-model" },
+    classifyMessage,
+  });
+
+  assert.equal(called, false);
+  assert.deepEqual(result, { type: "new_search", searchTerm: "biryani" });
+});
+
 test("classifyIncomingMessage: a literal find/search trigger is never read as reorder_usual", async () => {
   const pending = new PendingAddressSelections();
   let called = false;
