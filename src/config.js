@@ -166,10 +166,11 @@ const swiggyTokenStorePath =
 // security review that the token VALUES, not just the lookup key, were
 // sitting on disk in plain JSON. A 32-byte key, base64-encoded. Generate one
 // with: node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
-function readSwiggyTokenEncryptionKey(value) {
+// Shared by CHAT_LOG_ENCRYPTION_KEY below - same shape, different secret.
+function read32ByteBase64Key(value, name) {
   if (!value) {
     throw new Error(
-      "SWIGGY_TOKEN_ENCRYPTION_KEY must be set (32 random bytes, base64-encoded). " +
+      `${name} must be set (32 random bytes, base64-encoded). ` +
         'Generate one with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'base64\'))"',
     );
   }
@@ -177,13 +178,36 @@ function readSwiggyTokenEncryptionKey(value) {
   const key = Buffer.from(value, "base64");
 
   if (key.length !== 32) {
-    throw new Error("SWIGGY_TOKEN_ENCRYPTION_KEY must decode (from base64) to exactly 32 bytes.");
+    throw new Error(`${name} must decode (from base64) to exactly 32 bytes.`);
   }
 
   return key;
 }
 
-const swiggyTokenEncryptionKey = readSwiggyTokenEncryptionKey(process.env.SWIGGY_TOKEN_ENCRYPTION_KEY);
+const swiggyTokenEncryptionKey = read32ByteBase64Key(
+  process.env.SWIGGY_TOKEN_ENCRYPTION_KEY,
+  "SWIGGY_TOKEN_ENCRYPTION_KEY",
+);
+
+// Both optional, but must be set together (same pattern as the WhatsApp
+// webhook verify token / app secret pair above): CHAT_LOG_REDIS_URL with no
+// encryption key would mean writing chat transcripts to a remote store in
+// plaintext, and a key with no URL does nothing. Unset entirely, chat
+// logging is simply off - see src/conversation-log.js and its "see who said
+// what when something goes wrong" use case in server.js. A separate key
+// from SWIGGY_TOKEN_ENCRYPTION_KEY on purpose: these protect different data
+// (OAuth bearer tokens vs. message content), so a compromise or rotation of
+// one doesn't affect the other.
+const chatLogRedisUrl = readOptionalSecret(process.env.CHAT_LOG_REDIS_URL, "CHAT_LOG_REDIS_URL");
+const chatLogEncryptionKeyRaw = readOptionalSecret(process.env.CHAT_LOG_ENCRYPTION_KEY, "CHAT_LOG_ENCRYPTION_KEY");
+
+if (Boolean(chatLogRedisUrl) !== Boolean(chatLogEncryptionKeyRaw)) {
+  throw new Error("CHAT_LOG_REDIS_URL and CHAT_LOG_ENCRYPTION_KEY must be set together.");
+}
+
+const chatLogEncryptionKey = chatLogEncryptionKeyRaw
+  ? read32ByteBase64Key(chatLogEncryptionKeyRaw, "CHAT_LOG_ENCRYPTION_KEY")
+  : undefined;
 
 export const config = Object.freeze({
   environment: process.env.NODE_ENV ?? "development",
@@ -225,5 +249,10 @@ export const config = Object.freeze({
     redirectUri: swiggyOAuthRedirectUri,
     tokenStorePath: swiggyTokenStorePath,
     tokenEncryptionKey: swiggyTokenEncryptionKey,
+  }),
+  chatLog: Object.freeze({
+    enabled: Boolean(chatLogRedisUrl),
+    redisUrl: chatLogRedisUrl,
+    encryptionKey: chatLogEncryptionKey,
   }),
 });

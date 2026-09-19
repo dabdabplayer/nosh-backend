@@ -53,6 +53,7 @@
 - Put newly discovered, reusable implementation gotchas here when they are specific enough to prevent a future mistake.
 - Prefer exact facts and commands over general principles.
 - Remove obsolete instructions when the implementation changes.
+- Chat conversation logging (src/conversation-log.js, for debugging reported issues - see scripts/view-chat-log.js) is a deliberate exception to "keep operational logs free of message content/identifiers" elsewhere in this codebase (see server.js's acknowledgeIncomingTextMessages). It requires CHAT_LOG_REDIS_URL + CHAT_LOG_ENCRYPTION_KEY (both or neither); if you add a new place that computes a user-facing reply, route it through server.js's buildReplyTextAndLog rather than calling buildReplyText directly, so it stays logged. Any change to what gets logged or how long it's kept must also update the privacy policy (src/privacy-policy.js) - it makes specific retention/encryption promises about this feature.
 
 ## Nosh Conversation Design
 - Nosh must behave as a conversational assistant, not an MCP/API interface.

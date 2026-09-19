@@ -24,7 +24,7 @@ export const PRIVACY_POLICY_HTML = `<!doctype html>
 </head>
 <body>
 <h1>Nosh Privacy Policy</h1>
-<p class="updated">Last updated: 15 September 2026</p>
+<p class="updated">Last updated: 19 September 2026</p>
 
 <p>Nosh Labs ("Nosh", "we", "us") operates Nosh, a WhatsApp-based conversational
 assistant that helps you search for restaurants, build a cart, and place
@@ -49,9 +49,15 @@ message Nosh on WhatsApp and how we handle it.</p>
   applying coupons, and placing orders you explicitly confirm.</li>
   <li>Message text is sent to a third-party AI service we use to interpret
   your requests (see "Third parties" below).</li>
+  <li><strong>Troubleshooting.</strong> We keep a short-lived, encrypted log
+  of your messages to Nosh and Nosh's replies, so that if you report
+  something went wrong, we can look at what actually happened in that
+  conversation and fix it. This log is only ever reviewed to investigate a
+  specific reported problem, not browsed or monitored routinely.</li>
   <li>We do not use your WhatsApp messages or your Swiggy account data to
   train AI models, for advertising, or for any purpose other than carrying
-  out your request in the conversation.</li>
+  out your request in the conversation or troubleshooting it, as described
+  above.</li>
 </ul>
 
 <h2>3. Third parties we share data with</h2>
@@ -79,6 +85,10 @@ party.</p>
   account every time you message us. You can disconnect your Swiggy account
   at any time through Swiggy; doing so removes Nosh's access to your Swiggy
   data.</li>
+  <li>The troubleshooting log described above is kept for 14 days after your
+  most recent message to Nosh, then automatically and permanently deleted.
+  An active conversation's log is retained on a rolling basis (14 days from
+  your last message, not your first) for as long as you keep messaging us.</li>
 </ul>
 
 <h2>5. Your rights</h2>
@@ -90,8 +100,10 @@ contact us using the details below.</p>
 
 <h2>6. Security</h2>
 <p>Data in transit between Nosh, WhatsApp, Swiggy, and our AI processor is
-encrypted. Access to stored connection tokens is limited to what Nosh's
-service needs to operate.</p>
+encrypted. Access to stored connection tokens and the troubleshooting log
+described above is limited to what Nosh's service needs to operate, and
+both are encrypted at rest, with your phone number stored only in
+irreversibly hashed form, never as plain text.</p>
 
 <h2>7. Children's privacy</h2>
 <p>Nosh is not directed at, and we do not knowingly collect data from,

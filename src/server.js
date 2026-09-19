@@ -1,5 +1,6 @@
 import http from "node:http";
 import { config } from "./config.js";
+import { ConversationLog } from "./conversation-log.js";
 import { classifyIncomingMessage, getFoodSearchReply } from "./food-search-orchestrator.js";
 import {
   buildRecommendationReply,
@@ -55,6 +56,12 @@ const swiggyTokenStore = new SwiggyTokenStore(
   config.swiggyOAuth.tokenStorePath,
   config.swiggyOAuth.tokenEncryptionKey,
 );
+// Undefined (not just disabled) when CHAT_LOG_REDIS_URL isn't set - every
+// call site below already guards on config.chatLog.enabled first, so this
+// is never touched unless it's a real, constructed instance.
+const conversationLog = config.chatLog.enabled
+  ? new ConversationLog({ url: config.chatLog.redisUrl, encryptionKey: config.chatLog.encryptionKey })
+  : undefined;
 
 if (config.swiggyFood.testModeEnabled) {
   console.warn(
@@ -331,6 +338,30 @@ async function buildReplyText(message) {
   }
 }
 
+// Single choke point for logging a conversation turn, wrapping
+// buildReplyText rather than modifying it - buildReplyText has many early
+// returns internally, so wrapping the one place both its callers already
+// invoke it from is simpler than threading a logging call through every
+// branch. isPlaceholder flags one of the cases most worth looking at when
+// debugging: Nosh disabled, not in this sender's rollout, or no intent was
+// recognized at all (see PLACEHOLDER_REPLY_TEXT above) - a real answer or
+// error message won't match it. Logging is skipped entirely (not just a
+// no-op append) when it's off, so there's zero Redis traffic either way.
+async function buildReplyTextAndLog(message) {
+  const replyText = await buildReplyText(message);
+
+  if (conversationLog) {
+    // Fire-and-forget: append() never throws (see conversation-log.js), and
+    // awaiting it here would add Redis round-trip latency (connect + rPush +
+    // lTrim + expire) to every user-visible reply. The reply goes out
+    // immediately; the log write lands a moment later.
+    const isPlaceholder = replyText === PLACEHOLDER_REPLY_TEXT;
+    void conversationLog.append(message.from, { inboundText: message.text, replyText, isPlaceholder });
+  }
+
+  return replyText;
+}
+
 // After a sender finishes connecting their Swiggy account, automatically
 // resume whatever search (or reorder) prompted the connection instead of
 // making them repeat themselves.
@@ -369,7 +400,7 @@ async function resumePendingSearchAfterAuth(senderId) {
       apiVersion: config.whatsapp.apiVersion,
       phoneNumberId: pendingAction.phoneNumberId,
       to: senderId,
-      text: await buildReplyText(syntheticMessage),
+      text: await buildReplyTextAndLog(syntheticMessage),
     });
   } catch (error) {
     console.error("Failed to resume search after Swiggy auth.", { name: error.name });
@@ -389,7 +420,7 @@ async function replyToIncomingTextMessages(messages) {
           apiVersion: config.whatsapp.apiVersion,
           phoneNumberId: message.phoneNumberId,
           to: message.from,
-          text: await buildReplyText(message),
+          text: await buildReplyTextAndLog(message),
         });
       } catch (error) {
         console.error("Failed to send WhatsApp reply.", { name: error.name });
@@ -611,6 +642,9 @@ function shutdown(signal) {
       console.error("Server shutdown failed.", error);
       process.exitCode = 1;
     }
+  });
+  conversationLog?.close().catch((error) => {
+    console.error("Failed to close conversation log connection.", { name: error?.name });
   });
 }
 
