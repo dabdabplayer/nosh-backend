@@ -715,6 +715,18 @@ export async function placeConfirmedOrder({ swiggyFoodClient, confirmation }) {
     };
   }
 
+  // Swiggy's docs don't document the cart being emptied as a side effect of
+  // confirm_order, so flush explicitly rather than assume it. Best-effort
+  // only, and never re-thrown: the order is already confirmed, so a failed
+  // flush must not turn into a false "your Swiggy connection expired"
+  // reply (server.js's withSwiggyFoodClient treats a thrown
+  // SwiggyAuthFailureError as reason to report the order as not placed).
+  try {
+    await swiggyFoodClient.flushFoodCart({});
+  } catch (error) {
+    console.error("Failed to flush Swiggy Food cart after a confirmed order.", { name: error?.name });
+  }
+
   return { status: "confirmed", replyText: "Your order has been placed! You'll get delivery updates from Swiggy." };
 }
 

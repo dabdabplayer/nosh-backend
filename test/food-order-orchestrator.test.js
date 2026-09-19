@@ -885,6 +885,10 @@ test("placeConfirmedOrder places and confirms on the happy path", async () => {
       calls.push(["confirm", params]);
       return payload({ result: "success" });
     },
+    flushFoodCart: async (params) => {
+      calls.push(["flush", params]);
+      return payload({ success: true });
+    },
   };
 
   const result = await placeConfirmedOrder({
@@ -893,9 +897,27 @@ test("placeConfirmedOrder places and confirms on the happy path", async () => {
   });
 
   assert.deepEqual(result, { status: "confirmed", replyText: "Your order has been placed! You'll get delivery updates from Swiggy." });
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 3);
   assert.equal(calls[0][0], "place");
   assert.deepEqual(calls[1][1], { orderId: "order-1", addressId: "addr-1", cartId: 1, lat: 1.1, lng: 2.2 });
+  assert.equal(calls[2][0], "flush");
+});
+
+test("placeConfirmedOrder still reports confirmed when flushFoodCart fails after a successful confirm", async () => {
+  const client = {
+    placeFoodOrder: async () => payload({ orderId: "order-1", lat: 1.1, lng: 2.2 }),
+    confirmOrder: async () => payload({ result: "success" }),
+    flushFoodCart: async () => {
+      throw new Error("boom");
+    },
+  };
+
+  const result = await placeConfirmedOrder({
+    swiggyFoodClient: client,
+    confirmation: { addressId: "addr-1", cartId: 1, paymentMethod: "Cash" },
+  });
+
+  assert.deepEqual(result, { status: "confirmed", replyText: "Your order has been placed! You'll get delivery updates from Swiggy." });
 });
 
 test("placeConfirmedOrder reports failure without throwing when placeFoodOrder rejects", async () => {

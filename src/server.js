@@ -194,6 +194,14 @@ async function buildOrderConfirmationReply(message, pendingConfirmation) {
     pendingOrderConfirmations.clear(message.from);
   }
 
+  // Only on a genuinely confirmed order - a "failed" order must leave the
+  // active-cart session alone so the earlier cancel-path promise ("Your
+  // cart is still there") stays true, and "placed_not_confirmed" is still
+  // in flight until a retried YES resolves it one way or the other.
+  if (status === "confirmed") {
+    pendingCartSessions.clear(message.from);
+  }
+
   return replyText;
 }
 
