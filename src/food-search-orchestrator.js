@@ -1,4 +1,3 @@
-import { classifyMessage as defaultClassifyMessage, NLU_UNAVAILABLE } from "./nlu-client.js";
 import { parseStructuredPayload } from "./swiggy-food-client.js";
 
 const MAX_ADDRESS_CANDIDATES = 5;
@@ -13,16 +12,6 @@ function noOpenRestaurantsReply(searchTerm) {
   return `I couldn't find any open restaurants for "${searchTerm}" right now.`;
 }
 
-// Matches an explicit "find X" / "search X" trigger. Only used as the
-// deterministic fallback in resolveIntent below when the NLU provider isn't
-// configured - with it enabled, the LLM is the one deciding whether this is
-// a search, not this regex (see resolveIntent's comment).
-export function matchFoodSearchTrigger(text) {
-  const match = /^(?:find|search)\s+(.+)$/i.exec(text.trim());
-  const searchTerm = match?.[1]?.trim();
-  return searchTerm ? searchTerm : undefined;
-}
-
 // A reply to a pending "which address?" prompt is just the 1-based number of
 // the chosen candidate.
 export function parseAddressSelectionReply(text, candidateCount) {
@@ -34,110 +23,6 @@ export function parseAddressSelectionReply(text, candidateCount) {
 
   const index = Number(trimmed) - 1;
   return index >= 0 && index < candidateCount ? index : undefined;
-}
-
-// The LLM (Sarvam by default - see src/config.js's nlu block) is the primary
-// interpreter of what the user wants, the same way classifyOrderIntent
-// already is for everything that happens once a cart exists
-// (food-order-orchestrator.js) - it's the model's job to recognize "I want
-// biryani", "find biryani", and "get me my usual biryani place" all
-// correctly, not a regex's. The literal find/search prefix match is only a
-// fallback for when the NLU provider itself is unreachable (disabled
-// entirely, or the request failed/timed out - see NLU_UNAVAILABLE in
-// nlu-client.js), so the bot still does something useful rather than going
-// fully silent. It is NOT a fallback for "the model ran and decided this
-// isn't a search" - trusting that answer, rather than second-guessing it
-// with the regex, is the whole point of this change; overriding it would
-// just reintroduce the trigger-word dependence this is meant to remove.
-//
-// Passes hasActiveCart so the classifier can tell a genuine new search apart
-// from a cart-related message like "from Pizza Hut add a margherita pizza" -
-// without that context, the search classifier can't tell the two apart and
-// swallows cart messages before classifyOrderIntent ever sees them
-// (confirmed live).
-//
-// Returns the raw { type: "search_food", query } / { type: "reorder_usual" }
-// / { type: "recommend" } intent (not just a search term) so
-// classifyIncomingMessage below can tell them apart.
-async function resolveIntent(
-  trimmedText,
-  senderId,
-  { nlu, pendingCartSessions, classifyMessage = defaultClassifyMessage } = {},
-) {
-  const fallbackToRegex = () => {
-    const regexSearchTerm = matchFoodSearchTrigger(trimmedText);
-    return regexSearchTerm ? { type: "search_food", query: regexSearchTerm } : undefined;
-  };
-
-  if (!nlu?.enabled) {
-    return fallbackToRegex();
-  }
-
-  const hasActiveCart = Boolean(pendingCartSessions?.peek(senderId));
-
-  const intent = await classifyMessage({
-    text: trimmedText,
-    apiKey: nlu.apiKey,
-    baseUrl: nlu.baseUrl,
-    model: nlu.model,
-    timeoutMs: nlu.timeoutMs,
-    hasActiveCart,
-  });
-
-  if (intent === NLU_UNAVAILABLE) {
-    return fallbackToRegex();
-  }
-
-  return intent?.type === "search_food" || intent?.type === "reorder_usual" || intent?.type === "recommend"
-    ? intent
-    : undefined;
-}
-
-export async function classifyIncomingMessage(message, pendingAddressSelections, nluOptions) {
-  const trimmedText = message.text.trim();
-  const pending = pendingAddressSelections.peek(message.from);
-
-  if (pending) {
-    const selectedIndex = parseAddressSelectionReply(trimmedText, pending.candidates.length);
-
-    if (selectedIndex !== undefined) {
-      return {
-        type: "address_selection_answer",
-        pending,
-        selectedCandidate: pending.candidates[selectedIndex],
-      };
-    }
-  }
-
-  const intent = await resolveIntent(trimmedText, message.from, nluOptions);
-
-  // A reorder or recommendation request supersedes any stale "which
-  // address?" prompt the same way a genuine new search does below - the
-  // caller is expected to clear pendingAddressSelections, same as the
-  // new_search case in getFoodSearchReply.
-  if (intent?.type === "reorder_usual") {
-    return { type: "reorder_usual" };
-  }
-
-  if (intent?.type === "recommend") {
-    return { type: "recommend" };
-  }
-
-  const searchTerm = intent?.type === "search_food" ? intent.query : undefined;
-
-  if (pending) {
-    if (searchTerm) {
-      return { type: "new_search", searchTerm };
-    }
-
-    return { type: "unrecognized_pending_reply", pending };
-  }
-
-  if (searchTerm) {
-    return { type: "new_search", searchTerm };
-  }
-
-  return { type: "no_trigger" };
 }
 
 function formatAddressLabel(address) {
@@ -206,12 +91,12 @@ async function runRestaurantSearch(swiggyFoodClient, searchTerm, addressId, send
   // numbered list, the same way a bare number already picks an address
   // above - without this, the list looked selectable the same way the
   // address prompt is, but only "add X from <name>" actually worked
-  // (confirmed live). getFoodOrderReply resolves this deterministically,
-  // no NLU call needed, since food-order-orchestrator.js runs first
-  // whenever a cart session exists (see server.js). searchTerm rides along
-  // so that once a restaurant is picked, getFoodOrderReply can look up what
-  // matches the user's original request (e.g. "pizza") at that restaurant
-  // instead of asking them to repeat themselves.
+  // (confirmed live). food-order-orchestrator.js's
+  // resolvePendingCartCandidateReply resolves this deterministically, no
+  // agent call needed, checked before the agent ever runs (see server.js).
+  // searchTerm rides along so that once a restaurant is picked, it can look
+  // up what matches the user's original request (e.g. "pizza") at that
+  // restaurant instead of asking them to repeat themselves.
   if (senderId && pendingCartSessions) {
     pendingCartSessions.set(senderId, {
       addressId,
@@ -223,7 +108,15 @@ async function runRestaurantSearch(swiggyFoodClient, searchTerm, addressId, send
   return formatRestaurantReply(searchTerm, openRestaurants);
 }
 
-async function handleNewFoodSearch(
+// Tool implementation for the agent's `search_food` tool (see
+// src/sarvam-agent.js) - the agent calls this whenever it decides the user
+// wants to find/order a dish, cuisine, or restaurant, with no keyword
+// trigger involved; it's the model's judgment call, not a regex's. Resolves
+// the delivery address (asking which one, if more than one is saved) and
+// then searches restaurants, returning already-good English text that the
+// agent is expected to relay/translate into the user's own language rather
+// than repeat verbatim - see the system prompt in sarvam-agent.js.
+export async function searchFood(
   senderId,
   searchTerm,
   swiggyFoodClient,
@@ -279,64 +172,54 @@ async function handleNewFoodSearch(
   return runRestaurantSearch(swiggyFoodClient, searchTerm, addressId, senderId, pendingCartSessions);
 }
 
-// The single entry point server.js calls. Never throws: any Swiggy tool
-// failure or unparseable response is caught and replaced with a generic,
-// non-technical reply, per AGENTS.md's rule against exposing raw MCP errors.
-// Returns undefined for ordinary messages so the caller falls back to its
-// own static placeholder reply.
-//
-// Accepts an already-computed `classification` when the caller ran one
-// already (server.js and the dev scripts do, to decide auth/routing before
-// calling this). Reusing it avoids a second NLU call for the same message -
-// classifying twice doubles exposure to NLU latency/timeouts for no benefit,
-// and previously could silently discard an already-correct classification
-// if only the second call happened to time out.
-export async function getFoodSearchReply({
+// Deterministic pre-agent short-circuit: if this sender already has a
+// pending "which saved address?" prompt outstanding, a bare number reply
+// resolves it without ever invoking the agent - zero extra Sarvam calls, and
+// it works in any language since it's just a digit, not a keyword match.
+// Returns { handled: false } when there's no pending address selection at
+// all, OR when there is one but the reply isn't a valid number - in that
+// second case the stale prompt is cleared and the message is handed to the
+// agent fresh, the same way a genuinely new request used to override a
+// stale address prompt under the old NLU-classifier dispatch (confirmed via
+// a dropped test: unconditionally re-prompting here instead would trap a
+// sender who changes their mind - e.g. "actually, find pizza instead" -
+// forever behind "which address?" with no way out except picking a number
+// for the OLD search). This is NOT a "trigger word" in the sense AGENTS.md's
+// no-trigger-word rule is about (free-text intent detection) - it's picking
+// an option off a numbered list the bot itself just showed, or noticing the
+// reply isn't that and stepping aside.
+export async function resolvePendingAddressReply({
   message,
   swiggyFoodClient,
   pendingAddressSelections,
   pendingCartSessions,
-  nlu,
-  classifyMessage,
-  classification: precomputedClassification,
 }) {
-  const classification =
-    precomputedClassification ??
-    (await classifyIncomingMessage(message, pendingAddressSelections, { nlu, classifyMessage }));
+  const pending = pendingAddressSelections.peek(message.from);
+
+  if (!pending) {
+    return { handled: false };
+  }
+
+  const selectedIndex = parseAddressSelectionReply(message.text.trim(), pending.candidates.length);
+
+  if (selectedIndex === undefined) {
+    pendingAddressSelections.clear(message.from);
+    return { handled: false };
+  }
+
+  pendingAddressSelections.clear(message.from);
 
   try {
-    switch (classification.type) {
-      case "no_trigger":
-        return undefined;
-
-      case "new_search":
-        pendingAddressSelections.clear(message.from);
-        return await handleNewFoodSearch(
-          message.from,
-          classification.searchTerm,
-          swiggyFoodClient,
-          pendingAddressSelections,
-          pendingCartSessions,
-        );
-
-      case "address_selection_answer":
-        pendingAddressSelections.clear(message.from);
-        return await runRestaurantSearch(
-          swiggyFoodClient,
-          classification.pending.searchTerm,
-          classification.selectedCandidate.id,
-          message.from,
-          pendingCartSessions,
-        );
-
-      case "unrecognized_pending_reply":
-        return formatAddressPrompt(classification.pending.candidates);
-
-      default:
-        return undefined;
-    }
+    const replyText = await runRestaurantSearch(
+      swiggyFoodClient,
+      pending.searchTerm,
+      pending.candidates[selectedIndex].id,
+      message.from,
+      pendingCartSessions,
+    );
+    return { handled: true, replyText };
   } catch (error) {
     console.error("Food search orchestration failed unexpectedly.", { name: error.name });
-    return GENERIC_FALLBACK_REPLY;
+    return { handled: true, replyText: GENERIC_FALLBACK_REPLY };
   }
 }

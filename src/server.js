@@ -1,23 +1,23 @@
 import http from "node:http";
 import { config } from "./config.js";
 import { ConversationLog } from "./conversation-log.js";
-import { classifyIncomingMessage, getFoodSearchReply } from "./food-search-orchestrator.js";
+import { resolvePendingAddressReply } from "./food-search-orchestrator.js";
 import {
-  buildRecommendationReply,
-  buildReorderUsualReply,
-  getFoodOrderReply,
   parseOrderConfirmationReply,
   placeConfirmedOrder,
+  resolvePendingCartCandidateReply,
 } from "./food-order-orchestrator.js";
 import { InProcessMessageIdempotency } from "./message-idempotency.js";
 import { PendingAddressSelections } from "./pending-address-selection.js";
 import { PendingCartSessions } from "./pending-cart-sessions.js";
 import { PendingConnectLinks } from "./pending-connect-links.js";
+import { PendingConversationHistory } from "./pending-conversation-history.js";
 import { PendingOAuthExchanges } from "./pending-oauth-exchanges.js";
 import { PendingOrderConfirmations } from "./pending-order-confirmations.js";
 import { PendingPostAuthActions } from "./pending-post-auth-actions.js";
 import { PRIVACY_POLICY_HTML } from "./privacy-policy.js";
 import { isSenderInRollout } from "./rollout.js";
+import { runAgentTurn } from "./sarvam-agent.js";
 import { createSwiggyFoodClient } from "./swiggy-food-client.js";
 // Not a typo: this dev/test-only mock lives under scripts/, not src/ - see
 // SWIGGY_TEST_MODE in config.js. Importing it never starts its own listener
@@ -52,6 +52,7 @@ const pendingConnectLinks = new PendingConnectLinks();
 const pendingPostAuthActions = new PendingPostAuthActions();
 const pendingCartSessions = new PendingCartSessions();
 const pendingOrderConfirmations = new PendingOrderConfirmations();
+const pendingConversationHistory = new PendingConversationHistory();
 const swiggyTokenStore = new SwiggyTokenStore(
   config.swiggyOAuth.tokenStorePath,
   config.swiggyOAuth.tokenEncryptionKey,
@@ -206,8 +207,13 @@ async function buildOrderConfirmationReply(message, pendingConfirmation) {
   // active-cart session alone so the earlier cancel-path promise ("Your
   // cart is still there") stays true, and "placed_not_confirmed" is still
   // in flight until a retried YES resolves it one way or the other.
+  // pendingConversationHistory is cleared in lockstep with pendingCartSessions
+  // (not on a plain "NO"/cancel, which keeps the cart around too) - "context
+  // until the order is complete" means exactly this moment, not every time a
+  // confirmation prompt is dismissed.
   if (status === "confirmed") {
     pendingCartSessions.clear(message.from);
+    pendingConversationHistory.clear(message.from);
   }
 
   return replyText;
@@ -228,89 +234,21 @@ async function buildReplyText(message) {
     return buildOrderConfirmationReply(message, pendingConfirmation);
   }
 
-  // An active cart gets first crack at the message via classifyOrderIntent,
-  // ahead of the search classifier. Previously the search classifier ran
-  // first and had to be trusted to defer on cart-related messages via its
-  // "cart-aware" prompt - confirmed live, a message like "add chicken wings
-  // from KFC" (naming a restaurant, which the cart-aware prompt treats as a
-  // possible "different restaurant" search) still got misread as a brand
-  // new search, re-prompting for an address and showing a restaurant list
-  // instead of adding to the cart. Trying the order classifier first removes
-  // that race: only if it finds no order intent do we fall through to
-  // search, so a genuinely new search still works while a cart is active.
-  const hasPendingAddressSelection = Boolean(pendingAddressSelections.peek(message.from));
-  const activeCartSession = pendingCartSessions.peek(message.from);
-
-  if (activeCartSession && !hasPendingAddressSelection) {
-    const outcome = await withSwiggyFoodClient(message.from, (swiggyFoodClient) =>
-      getFoodOrderReply({
-        message,
-        swiggyFoodClient,
-        pendingCartSessions,
-        pendingOrderConfirmations,
-        nlu: config.nlu,
-      }),
-    );
-
-    if (!outcome.authenticated) {
-      return PLACEHOLDER_REPLY_TEXT;
-    }
-
-    if (outcome.result !== undefined) {
-      return outcome.result;
-    }
-  }
-
-  const classification = await classifyIncomingMessage(message, pendingAddressSelections, {
-    nlu: config.nlu,
-    pendingCartSessions,
-  });
-
-  if (classification.type === "no_trigger") {
+  if (!config.nlu.enabled) {
     return PLACEHOLDER_REPLY_TEXT;
   }
 
-  // Doesn't need a Swiggy call at all - just re-prompts the existing
-  // address choice, so it never needs to be gated on auth.
-  if (classification.type === "unrecognized_pending_reply") {
-    const reply = await getFoodSearchReply({
-      message,
-      swiggyFoodClient: undefined,
-      pendingAddressSelections,
-      pendingCartSessions,
-      classification,
-    });
-    return reply ?? PLACEHOLDER_REPLY_TEXT;
-  }
-
-  const isReorderUsual = classification.type === "reorder_usual";
-  const isRecommend = classification.type === "recommend";
-  const searchTerm = classification.searchTerm ?? classification.pending?.searchTerm;
-
-  if (isReorderUsual || isRecommend) {
-    // A reorder or recommendation request supersedes any stale "which
-    // address?" prompt, the same way a genuine new search does inside
-    // getFoodSearchReply's own "new_search" case.
-    pendingAddressSelections.clear(message.from);
-  }
-
+  // Auth is resolved once for the whole turn now (rather than separately
+  // per intent, as the old classifier-driven dispatch did) - everything
+  // below, deterministic short-circuits and the agent alike, shares one
+  // authenticated Swiggy Food connection.
   const authResult = await resolveSwiggyFoodAuth(message.from);
 
   if (authResult.status === "unauthenticated") {
-    // No dedicated post-auth resume for "recommend" yet - it falls into the
-    // plain "search" kind below with no searchTerm, which resumePendingSearchAfterAuth
-    // already treats as a no-op resume. An unauthenticated sender just has
-    // to ask again once connected, same as any other NLU-only intent
-    // hitting an outage.
-    pendingPostAuthActions.set(
-      message.from,
-      isReorderUsual
-        ? { kind: "reorder_usual", phoneNumberId: message.phoneNumberId }
-        : { kind: "search", searchTerm, phoneNumberId: message.phoneNumberId },
-    );
+    pendingPostAuthActions.set(message.from, { text: message.text, phoneNumberId: message.phoneNumberId });
     const connectToken = pendingConnectLinks.create(message.from);
     const connectUrl = `${swiggyOAuthOrigin}/oauth/swiggy/start?token=${connectToken}`;
-    return buildConnectReplyText({ connectUrl, searchTerm: isReorderUsual || isRecommend ? undefined : searchTerm });
+    return buildConnectReplyText({ connectUrl, searchTerm: undefined });
   }
 
   const swiggyFoodClient = createSwiggyFoodClient({
@@ -319,18 +257,48 @@ async function buildReplyText(message) {
   });
 
   try {
-    const reply = isReorderUsual
-      ? await buildReorderUsualReply({ senderId: message.from, swiggyFoodClient, pendingCartSessions })
-      : isRecommend
-        ? await buildRecommendationReply({ swiggyFoodClient })
-        : await getFoodSearchReply({
-            message,
-            swiggyFoodClient,
-            pendingAddressSelections,
-            pendingCartSessions,
-            classification,
-          });
+    // Deterministic pre-agent short-circuits, in the same priority a
+    // pending address prompt used to take over an active cart session in
+    // the old classifier-driven dispatch: a bare number reply to a list
+    // this bot already showed is resolved with zero agent calls, in any
+    // language, before the agent ever sees the message.
+    const addressOutcome = await resolvePendingAddressReply({
+      message,
+      swiggyFoodClient,
+      pendingAddressSelections,
+      pendingCartSessions,
+    });
+
+    if (addressOutcome.handled) {
+      return addressOutcome.replyText ?? PLACEHOLDER_REPLY_TEXT;
+    }
+
+    const candidateOutcome = await resolvePendingCartCandidateReply({ message, swiggyFoodClient, pendingCartSessions });
+
+    if (candidateOutcome.handled) {
+      return candidateOutcome.replyText ?? PLACEHOLDER_REPLY_TEXT;
+    }
+
+    const reply = await runAgentTurn({
+      message,
+      swiggyFoodClient,
+      pendingCartSessions,
+      pendingOrderConfirmations,
+      pendingAddressSelections,
+      pendingConversationHistory,
+      nlu: config.nlu,
+    });
+
     return reply ?? PLACEHOLDER_REPLY_TEXT;
+  } catch (error) {
+    if (error instanceof SwiggyAuthFailureError) {
+      // Swiggy rejected the token mid-conversation even though our locally
+      // tracked expiry said it was still good - drop it so the next
+      // message goes through the normal reconnect flow.
+      swiggyTokenStore.delete(message.from);
+      return PLACEHOLDER_REPLY_TEXT;
+    }
+    throw error;
   } finally {
     swiggyFoodClient.close().catch((error) => {
       console.error("Failed to close per-request Swiggy Food MCP connection.", { name: error.name });
@@ -363,16 +331,13 @@ async function buildReplyTextAndLog(message) {
 }
 
 // After a sender finishes connecting their Swiggy account, automatically
-// resume whatever search (or reorder) prompted the connection instead of
-// making them repeat themselves.
-//
-// The reorder_usual resume text isn't a deterministic trigger like "find X"
-// is - it goes back through NLU classification (resolveIntent doesn't
-// special-case it the way it does the find/search prefix), so this is
-// best-effort: if the NLU provider happens to be disabled or misclassifies right
-// at this moment, the resume silently falls through to the normal
-// placeholder instead of resuming, same as any other NLU outage elsewhere
-// in this app.
+// resume whatever they originally asked for instead of making them repeat
+// themselves - replays their own original message text verbatim through
+// buildReplyTextAndLog (the agent interprets it the same way it would have
+// the first time). Best-effort: if the agent is disabled or something goes
+// wrong at this moment, the resume silently falls through to the normal
+// placeholder instead of resuming, same as any other agent outage
+// elsewhere in this app.
 async function resumePendingSearchAfterAuth(senderId) {
   const pendingAction = pendingPostAuthActions.take(senderId);
 
@@ -380,18 +345,11 @@ async function resumePendingSearchAfterAuth(senderId) {
     return;
   }
 
-  const resumeText =
-    pendingAction.kind === "reorder_usual" ? "reorder my usual" : `find ${pendingAction.searchTerm}`;
-
-  if (pendingAction.kind !== "reorder_usual" && !pendingAction.searchTerm) {
-    return;
-  }
-
   const syntheticMessage = {
     from: senderId,
     id: `post-auth-resume-${Date.now()}`,
     phoneNumberId: pendingAction.phoneNumberId,
-    text: resumeText,
+    text: pendingAction.text,
   };
 
   try {

@@ -24,6 +24,14 @@ const DEFAULT_NLU_MODEL = "sarvam-105b";
 // that hangs indefinitely is worse than one that fails closed and falls
 // back to the regex trigger.
 const DEFAULT_NLU_TIMEOUT_MS = 25_000;
+// The prior NVIDIA NIM classifier disabled reasoning entirely (single-shot
+// intent classification gained nothing from it). The Sarvam agent
+// (src/sarvam-agent.js) does real multi-step reasoning - tool sequencing,
+// judging what's "similar but not identical" for a recommendation - so it
+// needs some, but "low" balances that against per-turn latency and Sarvam's
+// 40 req/min Starter-tier rate limit for sarvam-105b.
+const DEFAULT_NLU_REASONING_EFFORT = "low";
+const VALID_REASONING_EFFORTS = new Set(["low", "medium", "high"]);
 
 function readPort(value) {
   if (value === undefined || value === "") {
@@ -151,6 +159,20 @@ function readNluTimeoutMs(value) {
 
 const nluTimeoutMs = readNluTimeoutMs(process.env.NLU_TIMEOUT_MS);
 
+function readReasoningEffort(value) {
+  if (value === undefined || value === "") {
+    return DEFAULT_NLU_REASONING_EFFORT;
+  }
+
+  if (!VALID_REASONING_EFFORTS.has(value)) {
+    throw new Error('NLU_REASONING_EFFORT must be "low", "medium", or "high".');
+  }
+
+  return value;
+}
+
+const nluReasoningEffort = readReasoningEffort(process.env.NLU_REASONING_EFFORT);
+
 const swiggyOAuthClientId =
   readOptionalSecret(process.env.SWIGGY_OAUTH_CLIENT_ID, "SWIGGY_OAUTH_CLIENT_ID") ??
   DEFAULT_SWIGGY_OAUTH_CLIENT_ID;
@@ -245,6 +267,7 @@ export const config = Object.freeze({
     enabled: Boolean(nluApiKey),
     model: nluModel,
     timeoutMs: nluTimeoutMs,
+    reasoningEffort: nluReasoningEffort,
   }),
   swiggyOAuth: Object.freeze({
     authBaseUrl: swiggyOAuthBaseUrl,

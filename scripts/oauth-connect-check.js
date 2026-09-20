@@ -9,7 +9,7 @@
 // Usage:
 //   SWIGGY_FOOD_MCP_URL=https://mcp.swiggy.com/food node scripts/oauth-connect-check.js
 //
-// Then type things like "find biryani" and, once prompted, "1" to pick an
+// Then type things like "I want biryani" and, once prompted, "1" to pick an
 // address - exactly as you would over WhatsApp. Ctrl+C to quit.
 //
 // If a token is already saved from a previous run (see
@@ -19,14 +19,20 @@
 import http from "node:http";
 import readline from "node:readline/promises";
 import { config } from "../src/config.js";
-import { classifyIncomingMessage, getFoodSearchReply } from "../src/food-search-orchestrator.js";
-import { getFoodOrderReply, parseOrderConfirmationReply, placeConfirmedOrder } from "../src/food-order-orchestrator.js";
+import { resolvePendingAddressReply } from "../src/food-search-orchestrator.js";
+import {
+  parseOrderConfirmationReply,
+  placeConfirmedOrder,
+  resolvePendingCartCandidateReply,
+} from "../src/food-order-orchestrator.js";
 import { PendingAddressSelections } from "../src/pending-address-selection.js";
 import { PendingCartSessions } from "../src/pending-cart-sessions.js";
 import { PendingConnectLinks } from "../src/pending-connect-links.js";
+import { PendingConversationHistory } from "../src/pending-conversation-history.js";
 import { PendingOAuthExchanges } from "../src/pending-oauth-exchanges.js";
 import { PendingOrderConfirmations } from "../src/pending-order-confirmations.js";
 import { PendingPostAuthActions } from "../src/pending-post-auth-actions.js";
+import { runAgentTurn } from "../src/sarvam-agent.js";
 import { createSwiggyFoodClient } from "../src/swiggy-food-client.js";
 import { buildConnectReplyText, resolveSwiggyAccessToken } from "../src/swiggy-auth-flow.js";
 import {
@@ -52,6 +58,7 @@ if (!config.swiggyFood.enabled) {
   const pendingPostAuthActions = new PendingPostAuthActions();
   const pendingCartSessions = new PendingCartSessions();
   const pendingOrderConfirmations = new PendingOrderConfirmations();
+  const pendingConversationHistory = new PendingConversationHistory();
   const swiggyTokenStore = new SwiggyTokenStore(
     config.swiggyOAuth.tokenStorePath,
     config.swiggyOAuth.tokenEncryptionKey,
@@ -118,6 +125,11 @@ if (!config.swiggyFood.enabled) {
       pendingOrderConfirmations.clear(message.from);
     }
 
+    if (status === "confirmed") {
+      pendingCartSessions.clear(message.from);
+      pendingConversationHistory.clear(message.from);
+    }
+
     return replyText;
   }
 
@@ -129,55 +141,6 @@ if (!config.swiggyFood.enabled) {
       return buildOrderConfirmationReply(message, pendingConfirmation);
     }
 
-    // Same order-first-when-cart-active fix as server.js's buildReplyText:
-    // trying the search classifier first let it misread cart-continuation
-    // messages like "add chicken wings from KFC" as a brand new search
-    // (confirmed live) since deferring on cart-related messages was only a
-    // probabilistic prompt instruction, not a deterministic check.
-    const hasPendingAddressSelection = Boolean(pendingAddressSelections.peek(message.from));
-    const activeCartSession = pendingCartSessions.peek(message.from);
-
-    if (activeCartSession && !hasPendingAddressSelection) {
-      const outcome = await withSwiggyFoodClient(message.from, (swiggyFoodClient) =>
-        getFoodOrderReply({
-          message,
-          swiggyFoodClient,
-          pendingCartSessions,
-          pendingOrderConfirmations,
-          nlu: config.nlu,
-        }),
-      );
-
-      if (!outcome.authenticated) {
-        return "(no trigger matched - try \"find <something>\")";
-      }
-
-      if (outcome.result !== undefined) {
-        return outcome.result;
-      }
-    }
-
-    const classification = await classifyIncomingMessage(message, pendingAddressSelections, {
-      nlu: config.nlu,
-      pendingCartSessions,
-    });
-
-    if (classification.type === "no_trigger") {
-      return "(no trigger matched - try \"find <something>\")";
-    }
-
-    if (classification.type === "unrecognized_pending_reply") {
-      const reply = await getFoodSearchReply({
-        message,
-        swiggyFoodClient: undefined,
-        pendingAddressSelections,
-        pendingCartSessions,
-        classification,
-      });
-      return reply ?? "(fallthrough)";
-    }
-
-    const searchTerm = classification.searchTerm ?? classification.pending?.searchTerm;
     const authResult = await resolveSwiggyAccessToken({
       senderId: message.from,
       tokenStore: swiggyTokenStore,
@@ -185,10 +148,10 @@ if (!config.swiggyFood.enabled) {
     });
 
     if (authResult.status === "unauthenticated") {
-      pendingPostAuthActions.set(message.from, { searchTerm, phoneNumberId: "manual-test" });
+      pendingPostAuthActions.set(message.from, { text: message.text, phoneNumberId: "manual-test" });
       const connectToken = pendingConnectLinks.create(message.from);
       const connectUrl = `${swiggyOAuthOrigin}/oauth/swiggy/start?token=${connectToken}`;
-      return buildConnectReplyText({ connectUrl, searchTerm });
+      return buildConnectReplyText({ connectUrl, searchTerm: undefined });
     }
 
     const swiggyFoodClient = createSwiggyFoodClient({
@@ -197,14 +160,33 @@ if (!config.swiggyFood.enabled) {
     });
 
     try {
-      const reply = await getFoodSearchReply({
+      const addressOutcome = await resolvePendingAddressReply({
         message,
         swiggyFoodClient,
         pendingAddressSelections,
         pendingCartSessions,
-        classification,
       });
-      return reply ?? "(getFoodSearchReply returned undefined)";
+
+      if (addressOutcome.handled) {
+        return addressOutcome.replyText ?? "(no reply)";
+      }
+
+      const candidateOutcome = await resolvePendingCartCandidateReply({ message, swiggyFoodClient, pendingCartSessions });
+
+      if (candidateOutcome.handled) {
+        return candidateOutcome.replyText ?? "(no reply)";
+      }
+
+      const reply = await runAgentTurn({
+        message,
+        swiggyFoodClient,
+        pendingCartSessions,
+        pendingOrderConfirmations,
+        pendingAddressSelections,
+        pendingConversationHistory,
+        nlu: config.nlu,
+      });
+      return reply ?? "(no reply — placeholder would be used)";
     } finally {
       await swiggyFoodClient.close().catch(() => {});
     }
@@ -220,16 +202,16 @@ if (!config.swiggyFood.enabled) {
     console.log(`\n${reply}\n`);
   }
 
-  // Fired from the real /oauth/swiggy/callback once login succeeds, so the
-  // search that prompted the connect link resumes without you retyping it.
+  // Fired from the real /oauth/swiggy/callback once login succeeds, so
+  // whatever prompted the connect link resumes without you retyping it.
   async function resumePendingSearchAfterAuth(senderId) {
     const pendingAction = pendingPostAuthActions.take(senderId);
-    if (!pendingAction?.searchTerm) {
+    if (!pendingAction?.text) {
       return;
     }
 
-    console.log(`\n[auto-resuming search for "${pendingAction.searchTerm}"]`);
-    await sendAsTestSender(`find ${pendingAction.searchTerm}`);
+    console.log(`\n[auto-resuming: "${pendingAction.text}"]`);
+    await sendAsTestSender(pendingAction.text);
   }
 
   function handleStart(request, response, url) {
@@ -318,7 +300,7 @@ if (!config.swiggyFood.enabled) {
 
   server.listen(port, async () => {
     console.log(`Listening on ${swiggyOAuthOrigin}`);
-    console.log('Type a message as this test sender, e.g. "find biryani". Ctrl+C to quit.\n');
+    console.log('Type a message as this test sender, e.g. "I want biryani". Ctrl+C to quit.\n');
 
     try {
       for (;;) {

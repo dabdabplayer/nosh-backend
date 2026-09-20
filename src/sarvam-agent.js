@@ -1,0 +1,341 @@
+import { SarvamAIClient } from "sarvamai";
+import { searchFood } from "./food-search-orchestrator.js";
+import {
+  addToCart,
+  applyCoupon,
+  buildReorderUsualReply,
+  checkout,
+  describePastOrders,
+  findCoupons,
+  removeFromCart,
+  viewCart,
+} from "./food-order-orchestrator.js";
+
+const MAX_TOOL_ROUNDS = 4;
+
+// Sarvam's default max_tokens is 2048, and with reasoning_effort enabled,
+// reasoning tokens are billed against that SAME budget as completion tokens
+// (docs.sarvam.ai/api/api-guides-tutorials/chat-completion/overview) - a low
+// budget can be consumed entirely by reasoning, leaving finish_reason:
+// "length" with empty content and only reasoning_content populated. This app
+// sends a system prompt + tool schemas + up to 20 turns of history on every
+// call, so the default budget is not generous enough to reliably leave room
+// for both reasoning and a full cart/restaurant-list reply. Set explicitly,
+// generously, rather than silently inheriting the default.
+const MAX_TOKENS = 4096;
+
+// The custom Sarvam agent's role. Per the user's own instruction ("tell it
+// it's role"): a real e-commerce assistant for deciding what to eat via
+// Swiggy, never guessing - only ever stating facts a tool actually
+// returned. Every rule below maps to a specific requirement/safety
+// constraint from AGENTS.md or an explicit user ask; none of it is
+// decorative.
+const SYSTEM_PROMPT = [
+  "You are Nosh, an e-commerce agent that helps a WhatsApp user decide what to eat and order it through real Swiggy tools.",
+  "You decide on your own which tool (if any) to call based on what the user actually wants - never rely on keyword/trigger-word matching, and never call a tool the user's message doesn't call for.",
+  "Do not guess. Never state a price, availability, ETA, restaurant name, dish name, order status, or any other fact unless it came from a tool result in this conversation. If you don't know, call a tool to find out, or say you don't know.",
+  "Mirror the user's language and register: reply in Hindi if they wrote in Hindi, in Hinglish if they wrote in Hinglish (Latin-script, code-mixed Hindi/English), and in English otherwise. Match their tone, not just their vocabulary.",
+  "Vary your phrasing turn to turn - do not reuse the same sentence structure or stock phrases repeatedly; this should read like a real conversation, not a form letter.",
+  "When a tool's result already contains a numbered list, a cart summary, a coupon list, or an order summary, translate/adapt it into the user's language and tone, but keep every number, name, quantity, and price EXACTLY as given, in the exact same order - never renumber, reorder, merge, or drop an item.",
+  "The checkout tool's result is an order summary awaiting confirmation, not a placed order. Relay it faithfully and always end by telling the user to reply with the literal English word \"YES\" to confirm or \"NO\" to cancel, even if the rest of your reply is in another language - that exact wording is what a separate, deterministic part of this app checks for, so do not paraphrase it into another language or a synonym.",
+  "You can never place or confirm an order yourself, under any circumstance - there is no tool available to you that does that. Only the user replying literally \"YES\" to an order summary already shown can do that, through a separate part of this app. Never say or imply that an order has been placed or confirmed unless a tool result explicitly told you so.",
+  "When asked to recommend something (\"I want to eat something good\", \"what should I get\"), do not repeat their literal last order. Use their real order history to judge what they tend to like, then search for something concrete in a similar cuisine/category they have not just had.",
+].join(" ");
+
+const SEARCH_FOOD_TOOL = Object.freeze({
+  type: "function",
+  function: {
+    name: "search_food",
+    description:
+      "Find restaurants for a dish, cuisine, or restaurant name the user wants to order. Resolves the delivery address (asking which saved address to use, if more than one) and returns a numbered restaurant list.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "The dish, cuisine, or restaurant name, as the user said it." },
+      },
+      required: ["query"],
+    },
+  },
+});
+
+const ADD_TO_CART_TOOL = Object.freeze({
+  type: "function",
+  function: {
+    name: "add_to_cart",
+    description: "Add a dish to the user's cart, at the restaurant already established in this conversation.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "The dish name, as the user said it. Fix obvious typos." },
+        quantity: { type: "integer", description: "How many, if stated. Defaults to 1." },
+        restaurantName: {
+          type: "string",
+          description: "The restaurant the user explicitly named, if they named one. Omit if they didn't say.",
+        },
+      },
+      required: ["query"],
+    },
+  },
+});
+
+const REMOVE_FROM_CART_TOOL = Object.freeze({
+  type: "function",
+  function: {
+    name: "remove_from_cart",
+    description: "Remove a dish already in the user's cart, or reduce its quantity.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "The dish name to remove, as the user said it. Fix obvious typos." },
+        quantity: {
+          type: "integer",
+          description: "How many to remove, only if the user gave a specific count. Omit to remove the item entirely.",
+        },
+      },
+      required: ["query"],
+    },
+  },
+});
+
+const VIEW_CART_TOOL = Object.freeze({
+  type: "function",
+  function: { name: "view_cart", description: "Show what's currently in the user's cart.", parameters: { type: "object", properties: {} } },
+});
+
+const FIND_COUPONS_TOOL = Object.freeze({
+  type: "function",
+  function: {
+    name: "find_coupons",
+    description: "List available coupons/discounts for the user's current order.",
+    parameters: { type: "object", properties: {} },
+  },
+});
+
+const APPLY_COUPON_TOOL = Object.freeze({
+  type: "function",
+  function: {
+    name: "apply_coupon",
+    description: "Apply a specific coupon code to the user's current order.",
+    parameters: {
+      type: "object",
+      properties: { couponCode: { type: "string", description: "The coupon code, as the user said it." } },
+      required: ["couponCode"],
+    },
+  },
+});
+
+// Deliberately the ONLY checkout-adjacent tool. There is no tool for
+// placing or confirming an order - see placeConfirmedOrder in
+// food-order-orchestrator.js, reachable only via server.js's deterministic
+// YES/NO gate on parseOrderConfirmationReply, never from here.
+const CHECKOUT_TOOL = Object.freeze({
+  type: "function",
+  function: {
+    name: "checkout",
+    description:
+      "Get the order summary (items, pricing, payment method) for the user's current cart, ready for them to confirm. Does NOT place the order.",
+    parameters: { type: "object", properties: {} },
+  },
+});
+
+const REORDER_USUAL_TOOL = Object.freeze({
+  type: "function",
+  function: {
+    name: "reorder_usual",
+    description: "Repeat the user's usual/regular order, without them naming a specific dish, cuisine, or restaurant.",
+    parameters: { type: "object", properties: {} },
+  },
+});
+
+const RECOMMEND_SIMILAR_TOOL = Object.freeze({
+  type: "function",
+  function: {
+    name: "recommend_similar",
+    description:
+      "Get the user's real past-order history so you can reason about what to suggest next - something similar to what they tend to like, but not the exact same order again. After calling this, call search_food to find a concrete, real option before replying.",
+    parameters: { type: "object", properties: {} },
+  },
+});
+
+const TOOLS = Object.freeze([
+  SEARCH_FOOD_TOOL,
+  ADD_TO_CART_TOOL,
+  REMOVE_FROM_CART_TOOL,
+  VIEW_CART_TOOL,
+  FIND_COUPONS_TOOL,
+  APPLY_COUPON_TOOL,
+  CHECKOUT_TOOL,
+  REORDER_USUAL_TOOL,
+  RECOMMEND_SIMILAR_TOOL,
+]);
+
+// Exported so a test can assert, structurally, that no tool here ever
+// reaches place_food_order/confirm_order - see the comment on CHECKOUT_TOOL
+// above and AGENTS.md's Commerce Safety rule.
+export { TOOLS };
+
+// Every tool call is executed here, never left to the model to reach
+// Swiggy directly. Never throws - a failure inside a tool becomes a tool
+// RESULT the agent can react to gracefully, distinct from a failure of the
+// Sarvam API call itself (which propagates up out of runAgentTurn
+// unchanged, since that's the "NLU provider is down" case the caller
+// already knows how to handle).
+async function executeTool(name, args, ctx) {
+  const { senderId, swiggyFoodClient, pendingCartSessions, pendingAddressSelections, pendingOrderConfirmations } = ctx;
+
+  try {
+    switch (name) {
+      case "search_food":
+        return await searchFood(senderId, args.query, swiggyFoodClient, pendingAddressSelections, pendingCartSessions);
+
+      case "add_to_cart":
+        return await addToCart({
+          senderId,
+          query: args.query,
+          quantity: Number.isInteger(args.quantity) && args.quantity > 0 ? args.quantity : undefined,
+          restaurantNameHint: typeof args.restaurantName === "string" ? args.restaurantName : undefined,
+          swiggyFoodClient,
+          pendingCartSessions,
+        });
+
+      case "remove_from_cart":
+        return await removeFromCart({
+          senderId,
+          query: args.query,
+          quantity: Number.isInteger(args.quantity) && args.quantity > 0 ? args.quantity : undefined,
+          swiggyFoodClient,
+          pendingCartSessions,
+        });
+
+      case "view_cart":
+        return await viewCart({ senderId, swiggyFoodClient, pendingCartSessions });
+
+      case "find_coupons":
+        return await findCoupons({ senderId, swiggyFoodClient, pendingCartSessions });
+
+      case "apply_coupon":
+        return await applyCoupon({ senderId, couponCode: args.couponCode, swiggyFoodClient, pendingCartSessions });
+
+      case "checkout":
+        return await checkout({ senderId, swiggyFoodClient, pendingCartSessions, pendingOrderConfirmations });
+
+      case "reorder_usual":
+        return await buildReorderUsualReply({ senderId, swiggyFoodClient, pendingCartSessions });
+
+      case "recommend_similar":
+        return await describePastOrders({ swiggyFoodClient });
+
+      default:
+        return "That action isn't available.";
+    }
+  } catch (error) {
+    console.error("Sarvam agent tool execution failed.", { tool: name, name: error?.name });
+    return "Something went wrong doing that just now. Let the user know and suggest trying again in a bit.";
+  }
+}
+
+function parseToolArgs(toolCall) {
+  try {
+    return JSON.parse(toolCall.function.arguments ?? "{}");
+  } catch {
+    return {};
+  }
+}
+
+let cachedClient;
+function getClient(nlu) {
+  // Cached across calls (same apiKey/baseUrl for the process lifetime, per
+  // config.js) rather than constructed per turn - matches the SDK's own
+  // intended usage (one client per app).
+  if (!cachedClient) {
+    cachedClient = new SarvamAIClient({
+      apiSubscriptionKey: nlu.apiKey,
+      baseUrl: nlu.baseUrl,
+      timeoutInSeconds: Math.ceil(nlu.timeoutMs / 1000),
+    });
+  }
+  return cachedClient;
+}
+
+// Runs one full agentic turn: the model decides which real Swiggy tools (if
+// any) to call, tool results are fed back, and it loops (capped at
+// MAX_TOOL_ROUNDS - see src/config.js's NLU rate-limit note) until it
+// returns a plain natural-language reply. That final reply IS the phrased,
+// language-mirrored response - no separate "translate this" call needed.
+//
+// Never catches a failure of the Sarvam API call itself - that propagates
+// up to the caller (server.js), same as any other unexpected error in the
+// reply-building path, so it's visible wherever failures are already being
+// watched. Returns undefined only when the model completes with empty
+// content and no tool calls (treated the same as "no trigger" was before -
+// caller falls back to its own placeholder).
+export async function runAgentTurn({
+  message,
+  swiggyFoodClient,
+  pendingCartSessions,
+  pendingOrderConfirmations,
+  pendingAddressSelections,
+  pendingConversationHistory,
+  nlu,
+  client = getClient(nlu),
+}) {
+  const senderId = message.from;
+  const history = pendingConversationHistory.peek(senderId);
+
+  const messages = [
+    { role: "system", content: SYSTEM_PROMPT },
+    ...history.map((turn) => ({ role: turn.role, content: turn.content })),
+    { role: "user", content: message.text },
+  ];
+
+  const toolCtx = { senderId, swiggyFoodClient, pendingCartSessions, pendingAddressSelections, pendingOrderConfirmations };
+
+  for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    const response = await client.chat.completions({
+      model: nlu.model,
+      messages,
+      tools: TOOLS,
+      tool_choice: "auto",
+      reasoning_effort: nlu.reasoningEffort,
+      temperature: 0.4,
+      max_tokens: MAX_TOKENS,
+    });
+
+    const responseMessage = response.choices?.[0]?.message;
+    const toolCalls = responseMessage?.tool_calls;
+
+    if (!Array.isArray(toolCalls) || toolCalls.length === 0) {
+      const finalText = responseMessage?.content?.trim();
+
+      if (!finalText) {
+        // Distinguishes "the reasoning/token budget got eaten" (see
+        // MAX_TOKENS above - finishReason "length" with reasoning_content
+        // populated but content empty) from "the model genuinely had
+        // nothing to say" - the two look identical to the caller
+        // (undefined), but only the first is a real problem worth grepping
+        // Render logs for.
+        console.error("Sarvam agent turn produced no usable final content.", {
+          finishReason: response.choices?.[0]?.finish_reason,
+          hadReasoningContent: Boolean(responseMessage?.reasoning_content),
+        });
+        return undefined;
+      }
+
+      pendingConversationHistory.append(senderId, { role: "user", content: message.text });
+      pendingConversationHistory.append(senderId, { role: "assistant", content: finalText });
+      return finalText;
+    }
+
+    messages.push({ role: "assistant", content: responseMessage.content ?? null, tool_calls: toolCalls });
+
+    for (const toolCall of toolCalls) {
+      const resultText = await executeTool(toolCall.function.name, parseToolArgs(toolCall), toolCtx);
+      messages.push({ role: "tool", tool_call_id: toolCall.id, content: resultText });
+    }
+  }
+
+  // Hit the round cap without a final answer - fail closed rather than loop
+  // forever or burn more of the 40 req/min Starter budget on one message.
+  console.error("Sarvam agent exceeded the tool-call round cap.", { rounds: MAX_TOOL_ROUNDS });
+  return undefined;
+}

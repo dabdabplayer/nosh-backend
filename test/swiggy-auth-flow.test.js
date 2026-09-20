@@ -129,6 +129,6 @@ test("buildConnectReplyText falls back to a generic action phrase without a sear
     connectUrl: "http://localhost:3000/oauth/swiggy/start?token=abc",
   });
 
-  assert.match(text, /reorder your usual/);
+  assert.match(text, /do that/);
   assert.match(text, /http:\/\/localhost:3000\/oauth\/swiggy\/start\?token=abc/);
 });

@@ -1,4 +1,3 @@
-import { classifyOrderIntent as defaultClassifyOrderIntent } from "./nlu-client.js";
 import { NO_SAVED_ADDRESS_REPLY, parseAddressSelectionReply } from "./food-search-orchestrator.js";
 import { parseStructuredPayload } from "./swiggy-food-client.js";
 
@@ -179,23 +178,22 @@ function buildReorderCartItems(orderItems) {
     });
 }
 
-// The single entry point for the "reorder my usual" intent (see
-// src/nlu-client.js's reorder_usual tool and
-// src/food-search-orchestrator.js's classifyIncomingMessage). Calls
+// Tool implementation for the agent's `reorder_usual` tool (see
+// src/sarvam-agent.js) - the agent calls this when the user wants to repeat
+// a past order without naming a specific dish/restaurant. Calls
 // get_food_orders live every time - no caching - per this feature's design.
 //
 // Requires >=2 non-active orders at the SAME restaurant to call it a
 // "usual" (a single past order isn't a pattern); otherwise returns
-// NO_USUAL_REPLY so the caller's normal message handling applies, same as
-// any other unmatched message - this deliberately does not guess at a
-// search term or invent a recommendation (out of scope per this feature's
-// spec: no ranking/scoring, no unsolicited suggestions).
+// NO_USUAL_REPLY as the tool result, which the agent is expected to relay
+// (see describePastOrders/recommend_similar below for the "something
+// similar, not identical" case instead).
 //
 // On a match: fetches that order's structured items via
 // get_food_order_details, clears the cart, rebuilds it item-for-item, and
 // hands off into the EXACT SAME pendingCartSessions/formatCartReply path
 // handleAddToCart uses - so the normal view-cart/checkout/YES-NO-confirm
-// flow (getFoodOrderReply, placeConfirmedOrder) picks it up unmodified.
+// flow (checkout, placeConfirmedOrder) picks it up unmodified.
 // Always shows the freshly-rebuilt cart's live total, never the old order's
 // orderTotal - Swiggy pricing/availability can differ since the order was
 // placed, and AGENTS.md forbids showing stale/fabricated pricing.
@@ -309,16 +307,22 @@ export async function buildReorderUsualReply({ senderId, swiggyFoodClient, pendi
 const NO_ORDER_HISTORY_REPLY =
   "You don't have any past orders yet for me to base a recommendation on — search for a restaurant or dish instead.";
 
-// The single entry point for the "recommend me something" intent (see
-// src/nlu-client.js's recommend tool and food-search-orchestrator.js's
-// classifyIncomingMessage). Swiggy's Food MCP has no documented
-// recommendation, bestseller-ranking, or personalization tool (AGENTS.md:
-// never invent one), so this is built entirely from get_food_orders' own
-// documented fields (restaurantName, orderedItems) rather than fabricating
-// a suggestion - it recommends a RESTAURANT the user has actually ordered
-// from before, not a specific dish they've never tried. Text-only: unlike
-// buildReorderUsualReply, this never touches the cart.
-export async function buildRecommendationReply({ swiggyFoodClient }) {
+// Tool implementation for the agent's `recommend_similar` tool (see
+// src/sarvam-agent.js) - "recommend something similar to what I like, not
+// the exact same thing again" needs real reasoning over the user's actual
+// order history, which this function does NOT do itself: Swiggy's Food MCP
+// has no documented recommendation/bestseller/personalization/similarity
+// tool (AGENTS.md: never invent one), so this only gathers and returns the
+// REAL facts - which restaurants/items this sender has actually ordered,
+// and how often - built entirely from get_food_orders' own documented
+// fields (restaurantName, orderedItems). The agent is the one that reasons
+// about what's "similar but different" from there, and it's instructed
+// (system prompt) to then call search_food/search_menu to find a concrete,
+// real, in-stock option rather than naming a dish out of thin air - the
+// facts in the final suggestion still all have to come from a real tool
+// result, only the similarity judgment is the model's. Text-only: this
+// never touches the cart.
+export async function describePastOrders({ swiggyFoodClient }) {
   let addressResult;
   try {
     addressResult = await swiggyFoodClient.getAddresses({});
@@ -358,56 +362,44 @@ export async function buildRecommendationReply({ swiggyFoodClient }) {
     return GENERIC_FALLBACK_REPLY;
   }
 
-  // Unlike findUsualOrder above, there's no >=2 threshold here - even a
-  // single past order is enough to recommend going back, since this isn't
-  // claiming a "usual", just a suggestion. Active (in-progress) orders are
-  // excluded - recommending a restaurant the user is already mid-delivery
-  // with reads as broken, not helpful.
+  // Active (in-progress) orders are excluded - they aren't "history" yet.
   const pastOrders = orders.filter((order) => order?.restaurantId && order.isActiveOrder !== true);
 
   if (pastOrders.length === 0) {
     return NO_ORDER_HISTORY_REPLY;
   }
 
-  // get_food_orders' own doc says results come back newest-first, so the
-  // first order seen for a given restaurant while scanning in that order is
-  // also the most recently ordered-from one there - used below to break a
-  // count tie toward whichever restaurant they ordered from most recently,
-  // with no timestamp parsing needed (orderedTime is a year-less,
-  // human-readable string elsewhere in this file - see
-  // findOrderPlacedSinceSnapshot - and can't be used for that directly).
+  // get_food_orders' own doc says results come back newest-first, so this
+  // preserves that order (most recent first) rather than re-sorting -
+  // recency is itself a real, useful signal for the agent's own reasoning,
+  // not something this function should collapse into a single "top" pick
+  // the way the old restaurant-recommendation version did.
   const countsByRestaurant = new Map();
-  const firstOrderByRestaurant = new Map();
-
   for (const order of pastOrders) {
     countsByRestaurant.set(order.restaurantId, (countsByRestaurant.get(order.restaurantId) ?? 0) + 1);
-    if (!firstOrderByRestaurant.has(order.restaurantId)) {
-      firstOrderByRestaurant.set(order.restaurantId, order);
-    }
   }
 
-  // Array.prototype.sort is stable, so restaurants tied on count keep their
-  // Map insertion order (i.e. most-recently-ordered-from first) rather than
-  // an arbitrary one.
-  const [topRestaurantId, timesOrdered] = [...countsByRestaurant.entries()].sort((a, b) => b[1] - a[1])[0];
-  const topOrder = firstOrderByRestaurant.get(topRestaurantId);
-  const timesPhrase = timesOrdered === 1 ? "before" : `${timesOrdered} times before`;
-  const lastOrderPhrase = topOrder.orderedItems ? ` Last time you got: ${topOrder.orderedItems}.` : "";
+  const seenRestaurantIds = new Set();
+  const lines = [];
+  for (const order of pastOrders) {
+    if (seenRestaurantIds.has(order.restaurantId)) {
+      continue;
+    }
+    seenRestaurantIds.add(order.restaurantId);
 
-  // Only point to "reorder my usual" once this restaurant would actually
-  // qualify as one - findUsualOrder/buildReorderUsualReply require
-  // MIN_USUAL_ORDER_COUNT non-active orders at the same restaurant, but
-  // this function deliberately has no such threshold (a single past order
-  // is still worth recommending). Suggesting the reorder shortcut below
-  // that threshold would have the bot immediately contradict itself with
-  // NO_USUAL_REPLY on the very next message.
-  const reorderSuggestion =
-    timesOrdered >= MIN_USUAL_ORDER_COUNT ? ` or say "reorder my usual" to get that again` : "";
+    const timesOrdered = countsByRestaurant.get(order.restaurantId);
+    const timesPhrase = timesOrdered === 1 ? "once" : `${timesOrdered} times`;
+    const itemsPhrase = order.orderedItems ? ` (ordered: ${order.orderedItems})` : "";
+    lines.push(`- ${order.restaurantName}, ordered ${timesPhrase}${itemsPhrase}`);
+  }
 
-  return (
-    `You've ordered from ${topOrder.restaurantName} ${timesPhrase}.${lastOrderPhrase} ` +
-    `Want to see their menu for something new${reorderSuggestion}?`
-  );
+  return [
+    "Real order history for this user, most recently ordered-from restaurant first:",
+    ...lines,
+    "Use this to judge what they tend to like, then find something in a similar cuisine/category " +
+      "they have NOT just had - call search_food or search_menu to find a concrete, real, in-stock option. " +
+      "Never invent a dish, restaurant, or price that didn't come back from a real tool result.",
+  ].join("\n");
 }
 
 // Auto-picks each variant group's Swiggy-marked default (falling back to the
@@ -582,7 +574,7 @@ function formatItemSelectionReply(searchTerm, restaurantName, items) {
 // a successful add) - not the same thing as restaurantId/restaurantName,
 // which just describe where THIS add is going and get set as soon as a
 // restaurant is chosen, ahead of any actual cart write (see the restaurant
-// numbered-list branch in getFoodOrderReply). Observed in manual testing
+// numbered-list branch in resolvePendingCartCandidateReply below). Observed in manual testing
 // against the mock server (not confirmed against real Swiggy) without this
 // check: picking a different restaurant than whatever was already in the
 // cart (a prior abandoned session, a restaurant switch, items added
@@ -1050,38 +1042,25 @@ export async function placeConfirmedOrder({ swiggyFoodClient, confirmation }) {
   return { status: "confirmed", replyText: "Your order has been placed! You'll get delivery updates from Swiggy." };
 }
 
-const NO_ACTIVE_ORDER_REPLY = "You don't have an order in progress yet — search for something first.";
+export const NO_ACTIVE_ORDER_REPLY = "You don't have an order in progress yet — search for something first.";
 
-// The single entry point server.js calls for cart/coupon/checkout intents,
-// mirroring getFoodSearchReply's contract: never throws, returns undefined
-// for messages that don't match any order intent so the caller falls back
-// to its own placeholder/search handling.
-//
-// add_to_cart works even with no prior session - food-search-orchestrator.js
-// records a lightweight {addressId} session as soon as a search resolves an
-// address, and handleAddToCart's cross-restaurant lookup fills in the
-// restaurant on the first add. The other intents need an actual restaurant
-// context, so they report NO_ACTIVE_ORDER_REPLY instead of guessing one.
-export async function getFoodOrderReply({
-  message,
-  swiggyFoodClient,
-  pendingCartSessions,
-  pendingOrderConfirmations,
-  classifyOrderIntent = defaultClassifyOrderIntent,
-  nlu,
-}) {
+// Deterministic pre-agent short-circuit, extracted unchanged from what used
+// to be the top of getFoodOrderReply: a bare number reply to an item or
+// restaurant list this bot just showed is resolved straight off it, no
+// agent call involved - same zero-cost, any-language numbered-list pattern
+// as resolvePendingAddressReply in food-search-orchestrator.js, and for the
+// same reason (not a "trigger word", just picking an option off a list).
+// Returns { handled: false } when neither candidate list applies, so the
+// caller (server.js) knows to hand the message to the agent instead.
+export async function resolvePendingCartCandidateReply({ message, swiggyFoodClient, pendingCartSessions }) {
   const session = pendingCartSessions.peek(message.from);
 
-  // A bare number reply to the item list just shown (see the
-  // restaurant-selection branch right below) picks straight off it - same
-  // deterministic, no-NLU-needed pattern as every other numbered prompt in
-  // this app (restaurant selection, address selection, order confirmation).
   if (session?.itemCandidates) {
     const selectedIndex = parseAddressSelectionReply(message.text, session.itemCandidates.length);
 
     if (selectedIndex !== undefined) {
       const menuItem = session.itemCandidates[selectedIndex];
-      return addResolvedItemToCart({
+      const replyText = await addResolvedItemToCart({
         senderId: message.from,
         swiggyFoodClient,
         pendingCartSessions,
@@ -1091,15 +1070,10 @@ export async function getFoodOrderReply({
         menuItem,
         knownCartRestaurantId: session.cartRestaurantId,
       });
+      return { handled: true, replyText };
     }
   }
 
-  // A bare number reply to the restaurant list just shown (see
-  // runRestaurantSearch in food-search-orchestrator.js) is resolved
-  // deterministically here, the same way parseOrderConfirmationReply gates
-  // order placement - no NLU call needed, and it still works if the NLU provider is
-  // down. Falls through to classifyOrderIntent below for anything that
-  // isn't a valid selection number (e.g. naming the restaurant instead).
   // itemCandidates is checked above and restaurantCandidates never carries
   // over onto the session it replaces, so at most one of these two blocks
   // can ever match the same numbered reply.
@@ -1129,109 +1103,110 @@ export async function getFoodOrderReply({
           restaurantName: restaurant.name,
           itemCandidates: items,
         });
-        return formatItemSelectionReply(session.searchTerm, restaurant.name, items);
+        return { handled: true, replyText: formatItemSelectionReply(session.searchTerm, restaurant.name, items) };
       }
 
       pendingCartSessions.set(message.from, { addressId: session.addressId, restaurantId: restaurant.id, restaurantName: restaurant.name });
-      return `Got it — what would you like from ${restaurant.name}?`;
+      return { handled: true, replyText: `Got it — what would you like from ${restaurant.name}?` };
     }
   }
 
-  if (!nlu?.enabled) {
-    return undefined;
-  }
+  return { handled: false };
+}
 
-  const intent = await classifyOrderIntent({
-    text: message.text.trim(),
-    apiKey: nlu.apiKey,
-    baseUrl: nlu.baseUrl,
-    model: nlu.model,
-    timeoutMs: nlu.timeoutMs,
+// Everything below is a thin tool-facing wrapper: pulls this sender's
+// current cart session (addressId/restaurantId/restaurantName/
+// cartRestaurantId) and delegates to the deterministic Swiggy-calling
+// helpers above, unchanged - the only difference from the old
+// classifyOrderIntent-driven dispatch is that the AGENT (src/sarvam-agent.js)
+// decides when to call these, not app-code branching on a pre-classified
+// intent. None of these ever call placeFoodOrder/confirmOrder - see
+// placeConfirmedOrder above, only reachable via server.js's deterministic
+// YES/NO gate.
+
+export async function addToCart({ senderId, query, quantity, restaurantNameHint, swiggyFoodClient, pendingCartSessions }) {
+  const session = pendingCartSessions.peek(senderId);
+  return handleAddToCart({
+    senderId,
+    query,
+    quantity,
+    restaurantNameHint,
+    swiggyFoodClient,
+    pendingCartSessions,
+    addressId: session?.addressId,
+    restaurantId: session?.restaurantId,
+    restaurantName: session?.restaurantName,
+    cartRestaurantId: session?.cartRestaurantId,
   });
+}
 
-  if (!intent) {
-    return undefined;
+export async function viewCart({ senderId, swiggyFoodClient, pendingCartSessions }) {
+  const session = pendingCartSessions.peek(senderId);
+
+  if (!session) {
+    return NO_ACTIVE_ORDER_REPLY;
   }
 
-  try {
-    if (intent.type === "add_to_cart") {
-      return await handleAddToCart({
-        senderId: message.from,
-        query: intent.query,
-        quantity: intent.quantity,
-        restaurantNameHint: intent.restaurantName,
-        swiggyFoodClient,
-        pendingCartSessions,
-        addressId: session?.addressId,
-        restaurantId: session?.restaurantId,
-        restaurantName: session?.restaurantName,
-        cartRestaurantId: session?.cartRestaurantId,
-      });
-    }
+  return handleViewCart({ swiggyFoodClient, addressId: session.addressId, restaurantName: session.restaurantName });
+}
 
-    if (!session) {
-      return NO_ACTIVE_ORDER_REPLY;
-    }
+export async function removeFromCart({ senderId, query, quantity, swiggyFoodClient, pendingCartSessions }) {
+  const session = pendingCartSessions.peek(senderId);
 
-    switch (intent.type) {
-      case "view_cart":
-        return await handleViewCart({
-          swiggyFoodClient,
-          addressId: session.addressId,
-          restaurantName: session.restaurantName,
-        });
-
-      case "remove_from_cart":
-        return await handleRemoveFromCart({
-          swiggyFoodClient,
-          addressId: session.addressId,
-          restaurantId: session.restaurantId,
-          restaurantName: session.restaurantName,
-          query: intent.query,
-          quantity: intent.quantity,
-        });
-
-      case "find_coupons":
-        return await handleFindCoupons({
-          swiggyFoodClient,
-          restaurantId: session.restaurantId,
-          addressId: session.addressId,
-        });
-
-      case "apply_coupon":
-        return await handleApplyCoupon({
-          swiggyFoodClient,
-          couponCode: intent.couponCode,
-          addressId: session.addressId,
-        });
-
-      case "checkout":
-        // Same stale-cart concern addResolvedItemToCart guards against on
-        // add-to-cart: if nothing in THIS session has actually put anything
-        // in the live cart yet, get_food_cart could still return leftover
-        // items from an earlier session/restaurant. The deterministic
-        // YES/NO confirmation still shows the real cart contents before
-        // anything irreversible happens, so this isn't a safety gap, but
-        // treating it as "no active order" here is more honest than
-        // building an order summary around a cart this session never
-        // actually built.
-        if (!session.cartRestaurantId) {
-          return NO_ACTIVE_ORDER_REPLY;
-        }
-
-        return await handleCheckout({
-          senderId: message.from,
-          swiggyFoodClient,
-          addressId: session.addressId,
-          restaurantName: session.restaurantName,
-          pendingOrderConfirmations,
-        });
-
-      default:
-        return undefined;
-    }
-  } catch (error) {
-    console.error("Food order orchestration failed unexpectedly.", { name: error.name });
-    return GENERIC_FALLBACK_REPLY;
+  if (!session) {
+    return NO_ACTIVE_ORDER_REPLY;
   }
+
+  return handleRemoveFromCart({
+    swiggyFoodClient,
+    addressId: session.addressId,
+    restaurantId: session.restaurantId,
+    restaurantName: session.restaurantName,
+    query,
+    quantity,
+  });
+}
+
+export async function findCoupons({ senderId, swiggyFoodClient, pendingCartSessions }) {
+  const session = pendingCartSessions.peek(senderId);
+
+  if (!session) {
+    return NO_ACTIVE_ORDER_REPLY;
+  }
+
+  return handleFindCoupons({ swiggyFoodClient, restaurantId: session.restaurantId, addressId: session.addressId });
+}
+
+export async function applyCoupon({ senderId, couponCode, swiggyFoodClient, pendingCartSessions }) {
+  const session = pendingCartSessions.peek(senderId);
+
+  if (!session) {
+    return NO_ACTIVE_ORDER_REPLY;
+  }
+
+  return handleApplyCoupon({ swiggyFoodClient, couponCode, addressId: session.addressId });
+}
+
+export async function checkout({ senderId, swiggyFoodClient, pendingCartSessions, pendingOrderConfirmations }) {
+  const session = pendingCartSessions.peek(senderId);
+
+  // Same stale-cart concern addResolvedItemToCart guards against on
+  // add-to-cart: if nothing in THIS session has actually put anything in
+  // the live cart yet, get_food_cart could still return leftover items from
+  // an earlier session/restaurant. The deterministic YES/NO confirmation
+  // still shows the real cart contents before anything irreversible
+  // happens, so this isn't a safety gap, but treating it as "no active
+  // order" here is more honest than building an order summary around a
+  // cart this session never actually built.
+  if (!session?.cartRestaurantId) {
+    return NO_ACTIVE_ORDER_REPLY;
+  }
+
+  return handleCheckout({
+    senderId,
+    swiggyFoodClient,
+    addressId: session.addressId,
+    restaurantName: session.restaurantName,
+    pendingOrderConfirmations,
+  });
 }

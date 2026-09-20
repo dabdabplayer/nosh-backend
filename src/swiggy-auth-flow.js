@@ -45,7 +45,7 @@ export async function resolveSwiggyAccessToken({
 // src/food-order-orchestrator.js's buildReorderUsualReply) uses a generic
 // action phrase instead, since there's no specific term to echo.
 export function buildConnectReplyText({ connectUrl, searchTerm }) {
-  const actionText = searchTerm ? `search for "${searchTerm}"` : "reorder your usual";
+  const actionText = searchTerm ? `search for "${searchTerm}"` : "do that";
 
   return [
     `To ${actionText}, please connect your Swiggy account first:`,

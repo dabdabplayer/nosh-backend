@@ -1,12 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  buildRecommendationReply,
+  addToCart,
+  applyCoupon,
   buildReorderUsualReply,
+  checkout,
+  describePastOrders,
+  findCoupons,
   findUsualOrder,
-  getFoodOrderReply,
+  NO_ACTIVE_ORDER_REPLY,
   parseOrderConfirmationReply,
   placeConfirmedOrder,
+  removeFromCart,
+  resolvePendingCartCandidateReply,
+  viewCart,
 } from "../src/food-order-orchestrator.js";
 import { PendingCartSessions } from "../src/pending-cart-sessions.js";
 import { PendingOrderConfirmations } from "../src/pending-order-confirmations.js";
@@ -29,13 +36,6 @@ function cartPayload(data) {
 function cartFailurePayload(data) {
   return payload({ statusCode: 1, statusMessage: "FAILED", data });
 }
-
-const nlu = Object.freeze({
-  enabled: true,
-  apiKey: "test-key",
-  baseUrl: "https://example.test",
-  model: "test-model",
-});
 
 function fakeClient(overrides = {}) {
   return {
@@ -148,9 +148,9 @@ test("parseOrderConfirmationReply returns undefined for anything else", () => {
   assert.equal(parseOrderConfirmationReply("maybe later"), undefined);
 });
 
-// --- getFoodOrderReply: restaurant selection by number ---
+// --- resolvePendingCartCandidateReply: restaurant/item selection by number ---
 
-test("getFoodOrderReply: a bare number picks the restaurant off the shown list, deterministically (no NLU call)", async () => {
+test("resolvePendingCartCandidateReply: a bare number picks the restaurant off the shown list, deterministically", async () => {
   const pendingCartSessions = new PendingCartSessions();
   pendingCartSessions.set("sender-1", {
     addressId: "addr-1",
@@ -159,23 +159,15 @@ test("getFoodOrderReply: a bare number picks the restaurant off the shown list, 
       { id: "r-kfc", name: "KFC (Ad)" },
     ],
   });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
 
-  let classifyOrderIntentCalled = false;
-  const reply = await getFoodOrderReply({
+  const outcome = await resolvePendingCartCandidateReply({
     message: message("2"),
     swiggyFoodClient: fakeClient(),
     pendingCartSessions,
-    pendingOrderConfirmations,
-    classifyOrderIntent: async () => {
-      classifyOrderIntentCalled = true;
-      return undefined;
-    },
-    nlu,
   });
 
-  assert.equal(classifyOrderIntentCalled, false);
-  assert.equal(reply, "Got it — what would you like from KFC (Ad)?");
+  assert.equal(outcome.handled, true);
+  assert.equal(outcome.replyText, "Got it — what would you like from KFC (Ad)?");
   assert.deepEqual(pendingCartSessions.peek("sender-1"), {
     addressId: "addr-1",
     restaurantId: "r-kfc",
@@ -183,14 +175,13 @@ test("getFoodOrderReply: a bare number picks the restaurant off the shown list, 
   });
 });
 
-test("getFoodOrderReply: picking a restaurant looks up items matching the original search term and lists them instead of asking freeform", async () => {
+test("resolvePendingCartCandidateReply: picking a restaurant looks up items matching the original search term and lists them instead of asking freeform", async () => {
   const pendingCartSessions = new PendingCartSessions();
   pendingCartSessions.set("sender-1", {
     addressId: "addr-1",
     searchTerm: "pizza",
     restaurantCandidates: [{ id: "r-kfc", name: "KFC" }, { id: "r-pizza", name: "Fake Pizza Co" }],
   });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
 
   const menuSearchCalls = [];
   const client = fakeClient({
@@ -200,19 +191,12 @@ test("getFoodOrderReply: picking a restaurant looks up items matching the origin
     },
   });
 
-  const reply = await getFoodOrderReply({
-    message: message("2"),
-    swiggyFoodClient: client,
-    pendingCartSessions,
-    pendingOrderConfirmations,
-    classifyOrderIntent: async () => undefined,
-    nlu,
-  });
+  const outcome = await resolvePendingCartCandidateReply({ message: message("2"), swiggyFoodClient: client, pendingCartSessions });
 
   assert.deepEqual(menuSearchCalls, [{ query: "pizza", addressId: "addr-1", restaurantIdOfAddedItem: "r-pizza" }]);
-  assert.match(reply, /"pizza" at Fake Pizza Co/);
-  assert.match(reply, /1\. Margherita Pizza — ₹219/);
-  assert.match(reply, /Reply with the number/);
+  assert.match(outcome.replyText, /"pizza" at Fake Pizza Co/);
+  assert.match(outcome.replyText, /1\. Margherita Pizza — ₹219/);
+  assert.match(outcome.replyText, /Reply with the number/);
 
   const session = pendingCartSessions.peek("sender-1");
   assert.equal(session.restaurantId, "r-pizza");
@@ -220,7 +204,7 @@ test("getFoodOrderReply: picking a restaurant looks up items matching the origin
   assert.equal(session.itemCandidates.length, 1);
 });
 
-test("getFoodOrderReply: a bare number then picks the item straight off that list and adds it to the cart, deterministically", async () => {
+test("resolvePendingCartCandidateReply: a bare number then picks the item straight off that list and adds it to the cart, deterministically", async () => {
   const pendingCartSessions = new PendingCartSessions();
   const item = menuItem({ name: "Margherita Pizza", menu_item_id: "item-margherita" });
   pendingCartSessions.set("sender-1", {
@@ -229,11 +213,9 @@ test("getFoodOrderReply: a bare number then picks the item straight off that lis
     restaurantName: "Fake Pizza Co",
     itemCandidates: [item],
   });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
 
   const updateFoodCartCalls = [];
   let flushCalled = false;
-  let classifyOrderIntentCalled = false;
   const client = fakeClient({
     flushFoodCart: async () => {
       flushCalled = true;
@@ -245,19 +227,8 @@ test("getFoodOrderReply: a bare number then picks the item straight off that lis
     },
   });
 
-  const reply = await getFoodOrderReply({
-    message: message("1"),
-    swiggyFoodClient: client,
-    pendingCartSessions,
-    pendingOrderConfirmations,
-    classifyOrderIntent: async () => {
-      classifyOrderIntentCalled = true;
-      return undefined;
-    },
-    nlu,
-  });
+  const outcome = await resolvePendingCartCandidateReply({ message: message("1"), swiggyFoodClient: client, pendingCartSessions });
 
-  assert.equal(classifyOrderIntentCalled, false);
   // Regression coverage for a real bug found in manual testing: the cart
   // may already hold leftover items (and an already-applied coupon) from
   // an earlier restaurant, since nothing had touched the live cart yet at
@@ -267,7 +238,7 @@ test("getFoodOrderReply: a bare number then picks the item straight off that lis
   assert.equal(flushCalled, true);
   assert.equal(updateFoodCartCalls.length, 1);
   assert.equal(updateFoodCartCalls[0].cartItems[0].menu_item_id, "item-margherita");
-  assert.match(reply, /Added Margherita Pizza to your cart/);
+  assert.match(outcome.replyText, /Added Margherita Pizza to your cart/);
   assert.deepEqual(pendingCartSessions.peek("sender-1"), {
     restaurantId: "r-pizza",
     restaurantName: "Fake Pizza Co",
@@ -276,38 +247,29 @@ test("getFoodOrderReply: a bare number then picks the item straight off that lis
   });
 });
 
-test("getFoodOrderReply: falls back to the freeform prompt when nothing matches the search term at the chosen restaurant", async () => {
+test("resolvePendingCartCandidateReply: falls back to the freeform prompt when nothing matches the search term at the chosen restaurant", async () => {
   const pendingCartSessions = new PendingCartSessions();
   pendingCartSessions.set("sender-1", {
     addressId: "addr-1",
     searchTerm: "sushi",
     restaurantCandidates: [{ id: "r-kfc", name: "KFC" }],
   });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
 
   const client = fakeClient({ searchMenu: async () => payload({ items: [] }) });
 
-  const reply = await getFoodOrderReply({
-    message: message("1"),
-    swiggyFoodClient: client,
-    pendingCartSessions,
-    pendingOrderConfirmations,
-    classifyOrderIntent: async () => undefined,
-    nlu,
-  });
+  const outcome = await resolvePendingCartCandidateReply({ message: message("1"), swiggyFoodClient: client, pendingCartSessions });
 
-  assert.equal(reply, "Got it — what would you like from KFC?");
+  assert.equal(outcome.replyText, "Got it — what would you like from KFC?");
   assert.equal(pendingCartSessions.peek("sender-1").itemCandidates, undefined);
 });
 
-test("getFoodOrderReply: falls back to the freeform prompt when the menu lookup for the chosen restaurant throws", async () => {
+test("resolvePendingCartCandidateReply: falls back to the freeform prompt when the menu lookup for the chosen restaurant throws", async () => {
   const pendingCartSessions = new PendingCartSessions();
   pendingCartSessions.set("sender-1", {
     addressId: "addr-1",
     searchTerm: "pizza",
     restaurantCandidates: [{ id: "r-kfc", name: "KFC" }],
   });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
 
   const client = fakeClient({
     searchMenu: async () => {
@@ -315,63 +277,42 @@ test("getFoodOrderReply: falls back to the freeform prompt when the menu lookup 
     },
   });
 
-  const reply = await getFoodOrderReply({
-    message: message("1"),
-    swiggyFoodClient: client,
-    pendingCartSessions,
-    pendingOrderConfirmations,
-    classifyOrderIntent: async () => undefined,
-    nlu,
-  });
+  const outcome = await resolvePendingCartCandidateReply({ message: message("1"), swiggyFoodClient: client, pendingCartSessions });
 
-  assert.equal(reply, "Got it — what would you like from KFC?");
+  assert.equal(outcome.replyText, "Got it — what would you like from KFC?");
 });
 
-test("getFoodOrderReply: an out-of-range or non-numeric reply falls through to normal intent classification", async () => {
+test("resolvePendingCartCandidateReply: an out-of-range or non-numeric reply reports unhandled, so the caller falls through to the agent", async () => {
   const pendingCartSessions = new PendingCartSessions();
   pendingCartSessions.set("sender-1", {
     addressId: "addr-1",
     restaurantCandidates: [{ id: "r-kfc", name: "KFC" }],
   });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
 
-  const reply = await getFoodOrderReply({
+  const outcome = await resolvePendingCartCandidateReply({
     message: message("from KFC add wings"),
     swiggyFoodClient: fakeClient(),
     pendingCartSessions,
-    pendingOrderConfirmations,
-    classifyOrderIntent: async () => undefined,
-    nlu,
   });
 
-  assert.equal(reply, undefined);
+  assert.deepEqual(outcome, { handled: false });
 });
 
-test("getFoodOrderReply: works even when the NLU provider is disabled, since restaurant selection is deterministic", async () => {
-  const pendingCartSessions = new PendingCartSessions();
-  pendingCartSessions.set("sender-1", {
-    addressId: "addr-1",
-    restaurantCandidates: [{ id: "r-kfc", name: "KFC" }],
-  });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
-
-  const reply = await getFoodOrderReply({
-    message: message("1"),
+test("resolvePendingCartCandidateReply: reports unhandled when there's no session at all", async () => {
+  const outcome = await resolvePendingCartCandidateReply({
+    message: message("2"),
     swiggyFoodClient: fakeClient(),
-    pendingCartSessions,
-    pendingOrderConfirmations,
-    nlu: { enabled: false },
+    pendingCartSessions: new PendingCartSessions(),
   });
 
-  assert.equal(reply, "Got it — what would you like from KFC?");
+  assert.deepEqual(outcome, { handled: false });
 });
 
-// --- getFoodOrderReply: add_to_cart ---
+// --- addToCart ---
 
-test("getFoodOrderReply: add_to_cart bootstraps a session via cross-restaurant search", async () => {
+test("addToCart bootstraps a session via cross-restaurant search", async () => {
   const pendingCartSessions = new PendingCartSessions();
   pendingCartSessions.set("sender-1", { addressId: "addr-1" });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
 
   const searchCalls = [];
   const item = menuItem();
@@ -386,15 +327,12 @@ test("getFoodOrderReply: add_to_cart bootstraps a session via cross-restaurant s
     updateFoodCart: async () => cartPayload(cartData()),
   });
 
-  const classifyOrderIntent = async () => ({ type: "add_to_cart", query: "margherita pizza", quantity: 1 });
-
-  const reply = await getFoodOrderReply({
-    message: message("add a margherita pizza"),
+  const reply = await addToCart({
+    senderId: "sender-1",
+    query: "margherita pizza",
+    quantity: 1,
     swiggyFoodClient: client,
     pendingCartSessions,
-    pendingOrderConfirmations,
-    classifyOrderIntent,
-    nlu,
   });
 
   assert.equal(searchCalls.length, 2);
@@ -409,7 +347,7 @@ test("getFoodOrderReply: add_to_cart bootstraps a session via cross-restaurant s
   });
 });
 
-test("getFoodOrderReply: add_to_cart reuses the existing restaurant, skips cross-restaurant search, and doesn't re-flush an already-correct cart", async () => {
+test("addToCart reuses the existing restaurant, skips cross-restaurant search, and doesn't re-flush an already-correct cart", async () => {
   const pendingCartSessions = new PendingCartSessions();
   // cartRestaurantId already matches restaurantId - this session's own
   // prior add already confirmed the live cart is scoped to r-1, so this
@@ -420,7 +358,6 @@ test("getFoodOrderReply: add_to_cart reuses the existing restaurant, skips cross
     restaurantName: "Test Restaurant",
     cartRestaurantId: "r-1",
   });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
 
   const searchCalls = [];
   let flushCalled = false;
@@ -436,26 +373,16 @@ test("getFoodOrderReply: add_to_cart reuses the existing restaurant, skips cross
     },
   });
 
-  const classifyOrderIntent = async () => ({ type: "add_to_cart", query: "margherita pizza", quantity: 1 });
-
-  await getFoodOrderReply({
-    message: message("add another margherita pizza"),
-    swiggyFoodClient: client,
-    pendingCartSessions,
-    pendingOrderConfirmations,
-    classifyOrderIntent,
-    nlu,
-  });
+  await addToCart({ senderId: "sender-1", query: "margherita pizza", quantity: 1, swiggyFoodClient: client, pendingCartSessions });
 
   assert.equal(searchCalls.length, 1);
   assert.equal(searchCalls[0].restaurantIdOfAddedItem, "r-1");
   assert.equal(flushCalled, false);
 });
 
-test("getFoodOrderReply: add_to_cart flushes the cart first when it's not yet confirmed to match this restaurant (fresh session)", async () => {
+test("addToCart flushes the cart first when it's not yet confirmed to match this restaurant (fresh session)", async () => {
   const pendingCartSessions = new PendingCartSessions();
   pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", restaurantName: "Test Restaurant" });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
 
   const calls = [];
   const client = fakeClient({
@@ -470,26 +397,16 @@ test("getFoodOrderReply: add_to_cart flushes the cart first when it's not yet co
     },
   });
 
-  const classifyOrderIntent = async () => ({ type: "add_to_cart", query: "margherita pizza", quantity: 1 });
-
-  await getFoodOrderReply({
-    message: message("add a margherita pizza"),
-    swiggyFoodClient: client,
-    pendingCartSessions,
-    pendingOrderConfirmations,
-    classifyOrderIntent,
-    nlu,
-  });
+  await addToCart({ senderId: "sender-1", query: "margherita pizza", quantity: 1, swiggyFoodClient: client, pendingCartSessions });
 
   // Flush must happen BEFORE the add, not after - otherwise it would wipe
   // out the item this same call just added.
   assert.deepEqual(calls, ["flush", "update"]);
 });
 
-test("getFoodOrderReply: add_to_cart honors an explicit restaurant name instead of the cross-restaurant search result", async () => {
+test("addToCart honors an explicit restaurant name instead of the cross-restaurant search result", async () => {
   const pendingCartSessions = new PendingCartSessions();
   pendingCartSessions.set("sender-1", { addressId: "addr-1" });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
 
   const restaurantSearchCalls = [];
   const menuSearchCalls = [];
@@ -507,20 +424,13 @@ test("getFoodOrderReply: add_to_cart honors an explicit restaurant name instead 
     updateFoodCart: async () => cartPayload(cartData({ restaurant: { name: "Pizza Hut" } })),
   });
 
-  const classifyOrderIntent = async () => ({
-    type: "add_to_cart",
+  const reply = await addToCart({
+    senderId: "sender-1",
     query: "margherita pizza",
     quantity: 1,
-    restaurantName: "Pizza Hut",
-  });
-
-  const reply = await getFoodOrderReply({
-    message: message("from Pizza Hut add a margherita pizza"),
+    restaurantNameHint: "Pizza Hut",
     swiggyFoodClient: client,
     pendingCartSessions,
-    pendingOrderConfirmations,
-    classifyOrderIntent,
-    nlu,
   });
 
   assert.deepEqual(restaurantSearchCalls, [{ query: "Pizza Hut", addressId: "addr-1" }]);
@@ -537,10 +447,9 @@ test("getFoodOrderReply: add_to_cart honors an explicit restaurant name instead 
   });
 });
 
-test("getFoodOrderReply: add_to_cart skips a sponsored ad ranked ahead of the actual named restaurant", async () => {
+test("addToCart skips a sponsored ad ranked ahead of the actual named restaurant", async () => {
   const pendingCartSessions = new PendingCartSessions();
   pendingCartSessions.set("sender-1", { addressId: "addr-1" });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
 
   const menuSearchCalls = [];
   const updateFoodCartCalls = [];
@@ -562,20 +471,13 @@ test("getFoodOrderReply: add_to_cart skips a sponsored ad ranked ahead of the ac
     },
   });
 
-  const classifyOrderIntent = async () => ({
-    type: "add_to_cart",
+  const reply = await addToCart({
+    senderId: "sender-1",
     query: "zinger burger",
     quantity: 1,
-    restaurantName: "KFC",
-  });
-
-  const reply = await getFoodOrderReply({
-    message: message("from KFC add a zinger burger"),
+    restaurantNameHint: "KFC",
     swiggyFoodClient: client,
     pendingCartSessions,
-    pendingOrderConfirmations,
-    classifyOrderIntent,
-    nlu,
   });
 
   assert.equal(menuSearchCalls.length, 1);
@@ -594,10 +496,9 @@ test("getFoodOrderReply: add_to_cart skips a sponsored ad ranked ahead of the ac
   });
 });
 
-test("getFoodOrderReply: add_to_cart reports a friendly message when the named restaurant can't be found", async () => {
+test("addToCart reports a friendly message when the named restaurant can't be found", async () => {
   const pendingCartSessions = new PendingCartSessions();
   pendingCartSessions.set("sender-1", { addressId: "addr-1" });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
 
   let updateCartCalled = false;
   const client = fakeClient({
@@ -608,30 +509,22 @@ test("getFoodOrderReply: add_to_cart reports a friendly message when the named r
     },
   });
 
-  const classifyOrderIntent = async () => ({
-    type: "add_to_cart",
+  const reply = await addToCart({
+    senderId: "sender-1",
     query: "margherita pizza",
     quantity: 1,
-    restaurantName: "Nonexistent Place",
-  });
-
-  const reply = await getFoodOrderReply({
-    message: message("from Nonexistent Place add a margherita pizza"),
+    restaurantNameHint: "Nonexistent Place",
     swiggyFoodClient: client,
     pendingCartSessions,
-    pendingOrderConfirmations,
-    classifyOrderIntent,
-    nlu,
   });
 
   assert.match(reply, /couldn't find a restaurant called "Nonexistent Place"/);
   assert.equal(updateCartCalled, false);
 });
 
-test("getFoodOrderReply: add_to_cart names the restaurant when the dish isn't on its menu", async () => {
+test("addToCart names the restaurant when the dish isn't on its menu", async () => {
   const pendingCartSessions = new PendingCartSessions();
   pendingCartSessions.set("sender-1", { addressId: "addr-1" });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
 
   const client = fakeClient({
     searchRestaurants: async () =>
@@ -639,29 +532,21 @@ test("getFoodOrderReply: add_to_cart names the restaurant when the dish isn't on
     searchMenu: async () => payload({ items: [] }),
   });
 
-  const classifyOrderIntent = async () => ({
-    type: "add_to_cart",
+  const reply = await addToCart({
+    senderId: "sender-1",
     query: "sushi",
     quantity: 1,
-    restaurantName: "Pizza Hut",
-  });
-
-  const reply = await getFoodOrderReply({
-    message: message("from Pizza Hut add sushi"),
+    restaurantNameHint: "Pizza Hut",
     swiggyFoodClient: client,
     pendingCartSessions,
-    pendingOrderConfirmations,
-    classifyOrderIntent,
-    nlu,
   });
 
   assert.match(reply, /couldn't find "sushi" at Pizza Hut/);
 });
 
-test("getFoodOrderReply: add_to_cart ignores a restaurant hint once a session restaurant already exists", async () => {
+test("addToCart ignores a restaurant hint once a session restaurant already exists", async () => {
   const pendingCartSessions = new PendingCartSessions();
   pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", restaurantName: "Existing Place" });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
 
   let restaurantSearchCalled = false;
   const client = fakeClient({
@@ -673,29 +558,21 @@ test("getFoodOrderReply: add_to_cart ignores a restaurant hint once a session re
     updateFoodCart: async () => cartPayload(cartData()),
   });
 
-  const classifyOrderIntent = async () => ({
-    type: "add_to_cart",
+  await addToCart({
+    senderId: "sender-1",
     query: "margherita pizza",
     quantity: 1,
-    restaurantName: "Pizza Hut",
-  });
-
-  await getFoodOrderReply({
-    message: message("from Pizza Hut add a margherita pizza"),
+    restaurantNameHint: "Pizza Hut",
     swiggyFoodClient: client,
     pendingCartSessions,
-    pendingOrderConfirmations,
-    classifyOrderIntent,
-    nlu,
   });
 
   assert.equal(restaurantSearchCalled, false);
 });
 
-test("getFoodOrderReply: add_to_cart sends the default variant selection, not an invented one", async () => {
+test("addToCart sends the default variant selection, not an invented one", async () => {
   const pendingCartSessions = new PendingCartSessions();
   pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
 
   let cartItemsSent;
   const client = fakeClient({
@@ -706,16 +583,7 @@ test("getFoodOrderReply: add_to_cart sends the default variant selection, not an
     },
   });
 
-  const classifyOrderIntent = async () => ({ type: "add_to_cart", query: "pizza", quantity: 2 });
-
-  await getFoodOrderReply({
-    message: message("add 2 pizzas"),
-    swiggyFoodClient: client,
-    pendingCartSessions,
-    pendingOrderConfirmations,
-    classifyOrderIntent,
-    nlu,
-  });
+  await addToCart({ senderId: "sender-1", query: "pizza", quantity: 2, swiggyFoodClient: client, pendingCartSessions });
 
   assert.deepEqual(cartItemsSent, [
     {
@@ -726,10 +594,9 @@ test("getFoodOrderReply: add_to_cart sends the default variant selection, not an
   ]);
 });
 
-test("getFoodOrderReply: add_to_cart does not report success when update_food_cart returns a non-zero statusCode", async () => {
+test("addToCart does not report success when update_food_cart returns a non-zero statusCode", async () => {
   const pendingCartSessions = new PendingCartSessions();
   pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
 
   const client = fakeClient({
     searchMenu: async () => payload({ items: [menuItem()] }),
@@ -738,15 +605,12 @@ test("getFoodOrderReply: add_to_cart does not report success when update_food_ca
     updateFoodCart: async () => cartFailurePayload(cartData()),
   });
 
-  const classifyOrderIntent = async () => ({ type: "add_to_cart", query: "margherita pizza", quantity: 1 });
-
-  const reply = await getFoodOrderReply({
-    message: message("add a margherita pizza"),
+  const reply = await addToCart({
+    senderId: "sender-1",
+    query: "margherita pizza",
+    quantity: 1,
     swiggyFoodClient: client,
     pendingCartSessions,
-    pendingOrderConfirmations,
-    classifyOrderIntent,
-    nlu,
   });
 
   assert.doesNotMatch(reply, /Added/);
@@ -755,95 +619,80 @@ test("getFoodOrderReply: add_to_cart does not report success when update_food_ca
   assert.deepEqual(pendingCartSessions.peek("sender-1"), { addressId: "addr-1", restaurantId: "r-1" });
 });
 
-test("getFoodOrderReply: add_to_cart reports a friendly message when nothing matches", async () => {
+test("addToCart reports a friendly message when nothing matches", async () => {
   const pendingCartSessions = new PendingCartSessions();
   pendingCartSessions.set("sender-1", { addressId: "addr-1" });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
 
   const client = fakeClient({ searchMenu: async () => payload({ items: [] }) });
-  const classifyOrderIntent = async () => ({ type: "add_to_cart", query: "unobtainium roll", quantity: 1 });
 
-  const reply = await getFoodOrderReply({
-    message: message("add unobtainium roll"),
+  const reply = await addToCart({
+    senderId: "sender-1",
+    query: "unobtainium roll",
+    quantity: 1,
     swiggyFoodClient: client,
     pendingCartSessions,
-    pendingOrderConfirmations,
-    classifyOrderIntent,
-    nlu,
   });
 
   assert.match(reply, /couldn't find "unobtainium roll"/);
 });
 
-// --- getFoodOrderReply: view_cart / find_coupons / apply_coupon / checkout without a session ---
+// --- viewCart / findCoupons / checkout without a session ---
 
-test("getFoodOrderReply: non-add intents without an active session report no active order", async () => {
+test("non-add tools without an active session report no active order", async () => {
   const pendingCartSessions = new PendingCartSessions();
   const pendingOrderConfirmations = new PendingOrderConfirmations();
   const client = fakeClient();
 
-  for (const type of ["view_cart", "find_coupons", "checkout"]) {
-    const reply = await getFoodOrderReply({
-      message: message("whatever"),
-      swiggyFoodClient: client,
-      pendingCartSessions,
-      pendingOrderConfirmations,
-      classifyOrderIntent: async () => ({ type }),
-      nlu,
-    });
-
-    assert.match(reply, /don't have an order in progress/);
-  }
+  assert.equal(await viewCart({ senderId: "sender-1", swiggyFoodClient: client, pendingCartSessions }), NO_ACTIVE_ORDER_REPLY);
+  assert.equal(await findCoupons({ senderId: "sender-1", swiggyFoodClient: client, pendingCartSessions }), NO_ACTIVE_ORDER_REPLY);
+  assert.equal(
+    await checkout({ senderId: "sender-1", swiggyFoodClient: client, pendingCartSessions, pendingOrderConfirmations }),
+    NO_ACTIVE_ORDER_REPLY,
+  );
 });
 
-// --- getFoodOrderReply: view_cart ---
+test("checkout reports no active order when there's no session at all for the sender (not just a missing cartRestaurantId)", async () => {
+  const reply = await checkout({
+    senderId: "sender-1",
+    swiggyFoodClient: fakeClient(),
+    pendingCartSessions: new PendingCartSessions(),
+    pendingOrderConfirmations: new PendingOrderConfirmations(),
+  });
 
-test("getFoodOrderReply: view_cart formats the cart contents", async () => {
+  assert.equal(reply, NO_ACTIVE_ORDER_REPLY);
+});
+
+// --- viewCart ---
+
+test("viewCart formats the cart contents", async () => {
   const pendingCartSessions = new PendingCartSessions();
   pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", restaurantName: "Test Restaurant" });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
 
   const client = fakeClient({ getFoodCart: async () => cartPayload(cartData()) });
 
-  const reply = await getFoodOrderReply({
-    message: message("what's in my cart"),
-    swiggyFoodClient: client,
-    pendingCartSessions,
-    pendingOrderConfirmations,
-    classifyOrderIntent: async () => ({ type: "view_cart" }),
-    nlu,
-  });
+  const reply = await viewCart({ senderId: "sender-1", swiggyFoodClient: client, pendingCartSessions });
 
   assert.match(reply, /Test Restaurant/);
   assert.match(reply, /1x Margherita Pizza \(Hand Tossed\) — ₹119/);
   assert.match(reply, /Total: ₹187/);
 });
 
-test("getFoodOrderReply: view_cart reports an empty cart", async () => {
+test("viewCart reports an empty cart", async () => {
   const pendingCartSessions = new PendingCartSessions();
   pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
 
   const client = fakeClient({ getFoodCart: async () => cartPayload(cartData({ items: [] })) });
 
-  const reply = await getFoodOrderReply({
-    message: message("what's in my cart"),
-    swiggyFoodClient: client,
-    pendingCartSessions,
-    pendingOrderConfirmations,
-    classifyOrderIntent: async () => ({ type: "view_cart" }),
-    nlu,
-  });
+  const reply = await viewCart({ senderId: "sender-1", swiggyFoodClient: client, pendingCartSessions });
 
   assert.match(reply, /cart is empty/);
 });
 
-// --- getFoodOrderReply: remove_from_cart ---
+// --- removeFromCart ---
 
-test("getFoodOrderReply: remove_from_cart removes the item entirely when no count is given", async () => {
+test("removeFromCart removes the item entirely when no count is given", async () => {
   const pendingCartSessions = new PendingCartSessions();
   pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", restaurantName: "Test Restaurant" });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
 
   const updateFoodCartCalls = [];
   const client = fakeClient({
@@ -867,14 +716,7 @@ test("getFoodOrderReply: remove_from_cart removes the item entirely when no coun
     },
   });
 
-  const reply = await getFoodOrderReply({
-    message: message("remove the pizza"),
-    swiggyFoodClient: client,
-    pendingCartSessions,
-    pendingOrderConfirmations,
-    classifyOrderIntent: async () => ({ type: "remove_from_cart", query: "pizza" }),
-    nlu,
-  });
+  const reply = await removeFromCart({ senderId: "sender-1", query: "pizza", swiggyFoodClient: client, pendingCartSessions });
 
   assert.equal(updateFoodCartCalls.length, 1);
   assert.equal(updateFoodCartCalls[0].cartItems[0].menu_item_id, "item-1");
@@ -886,10 +728,9 @@ test("getFoodOrderReply: remove_from_cart removes the item entirely when no coun
   assert.match(reply, /Removed Margherita Pizza from your cart/);
 });
 
-test("getFoodOrderReply: remove_from_cart reduces the quantity when a count is given, preserving existing customization", async () => {
+test("removeFromCart reduces the quantity when a count is given, preserving existing customization", async () => {
   const pendingCartSessions = new PendingCartSessions();
   pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", restaurantName: "Test Restaurant" });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
 
   const updateFoodCartCalls = [];
   const client = fakeClient({
@@ -913,13 +754,12 @@ test("getFoodOrderReply: remove_from_cart reduces the quantity when a count is g
     },
   });
 
-  const reply = await getFoodOrderReply({
-    message: message("remove 1 garlic bread"),
+  const reply = await removeFromCart({
+    senderId: "sender-1",
+    query: "garlic bread",
+    quantity: 1,
     swiggyFoodClient: client,
     pendingCartSessions,
-    pendingOrderConfirmations,
-    classifyOrderIntent: async () => ({ type: "remove_from_cart", query: "garlic bread", quantity: 1 }),
-    nlu,
   });
 
   assert.equal(updateFoodCartCalls[0].cartItems[0].quantity, 2);
@@ -927,10 +767,9 @@ test("getFoodOrderReply: remove_from_cart reduces the quantity when a count is g
   assert.match(reply, /Updated Garlic Bread to 2x/);
 });
 
-test("getFoodOrderReply: remove_from_cart asks which item when the query matches more than one cart line, instead of guessing", async () => {
+test("removeFromCart asks which item when the query matches more than one cart line, instead of guessing", async () => {
   const pendingCartSessions = new PendingCartSessions();
   pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", restaurantName: "Fake Pizza Co" });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
 
   let updateFoodCartCalled = false;
   const client = fakeClient({
@@ -949,14 +788,7 @@ test("getFoodOrderReply: remove_from_cart asks which item when the query matches
     },
   });
 
-  const reply = await getFoodOrderReply({
-    message: message("remove the pizza"),
-    swiggyFoodClient: client,
-    pendingCartSessions,
-    pendingOrderConfirmations,
-    classifyOrderIntent: async () => ({ type: "remove_from_cart", query: "pizza" }),
-    nlu,
-  });
+  const reply = await removeFromCart({ senderId: "sender-1", query: "pizza", swiggyFoodClient: client, pendingCartSessions });
 
   assert.equal(updateFoodCartCalled, false);
   assert.match(reply, /Margherita Pizza/);
@@ -964,10 +796,9 @@ test("getFoodOrderReply: remove_from_cart asks which item when the query matches
   assert.match(reply, /Which one did you mean/);
 });
 
-test("getFoodOrderReply: remove_from_cart clamps at zero rather than going negative", async () => {
+test("removeFromCart clamps at zero rather than going negative", async () => {
   const pendingCartSessions = new PendingCartSessions();
   pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", restaurantName: "Test Restaurant" });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
 
   const updateFoodCartCalls = [];
   const client = fakeClient({
@@ -979,22 +810,14 @@ test("getFoodOrderReply: remove_from_cart clamps at zero rather than going negat
     },
   });
 
-  await getFoodOrderReply({
-    message: message("remove 5 garlic bread"),
-    swiggyFoodClient: client,
-    pendingCartSessions,
-    pendingOrderConfirmations,
-    classifyOrderIntent: async () => ({ type: "remove_from_cart", query: "garlic bread", quantity: 5 }),
-    nlu,
-  });
+  await removeFromCart({ senderId: "sender-1", query: "garlic bread", quantity: 5, swiggyFoodClient: client, pendingCartSessions });
 
   assert.equal(updateFoodCartCalls[0].cartItems[0].quantity, 0);
 });
 
-test("getFoodOrderReply: remove_from_cart reports when the dish isn't in the cart", async () => {
+test("removeFromCart reports when the dish isn't in the cart", async () => {
   const pendingCartSessions = new PendingCartSessions();
   pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", restaurantName: "Test Restaurant" });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
 
   let updateFoodCartCalled = false;
   const client = fakeClient({
@@ -1006,42 +829,26 @@ test("getFoodOrderReply: remove_from_cart reports when the dish isn't in the car
     },
   });
 
-  const reply = await getFoodOrderReply({
-    message: message("remove the biryani"),
-    swiggyFoodClient: client,
-    pendingCartSessions,
-    pendingOrderConfirmations,
-    classifyOrderIntent: async () => ({ type: "remove_from_cart", query: "biryani" }),
-    nlu,
-  });
+  const reply = await removeFromCart({ senderId: "sender-1", query: "biryani", swiggyFoodClient: client, pendingCartSessions });
 
   assert.equal(updateFoodCartCalled, false);
   assert.match(reply, /couldn't find "biryani" in your cart/);
 });
 
-test("getFoodOrderReply: remove_from_cart reports an empty cart", async () => {
+test("removeFromCart reports an empty cart", async () => {
   const pendingCartSessions = new PendingCartSessions();
   pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", restaurantName: "Test Restaurant" });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
 
   const client = fakeClient({ getFoodCart: async () => cartPayload(cartData({ items: [] })) });
 
-  const reply = await getFoodOrderReply({
-    message: message("remove the pizza"),
-    swiggyFoodClient: client,
-    pendingCartSessions,
-    pendingOrderConfirmations,
-    classifyOrderIntent: async () => ({ type: "remove_from_cart", query: "pizza" }),
-    nlu,
-  });
+  const reply = await removeFromCart({ senderId: "sender-1", query: "pizza", swiggyFoodClient: client, pendingCartSessions });
 
   assert.match(reply, /cart is empty/);
 });
 
-test("getFoodOrderReply: remove_from_cart falls back to a generic reply when update_food_cart throws", async () => {
+test("removeFromCart falls back to a generic reply when update_food_cart throws", async () => {
   const pendingCartSessions = new PendingCartSessions();
   pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", restaurantName: "Test Restaurant" });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
 
   const client = fakeClient({
     getFoodCart: async () =>
@@ -1051,24 +858,16 @@ test("getFoodOrderReply: remove_from_cart falls back to a generic reply when upd
     },
   });
 
-  const reply = await getFoodOrderReply({
-    message: message("remove the pizza"),
-    swiggyFoodClient: client,
-    pendingCartSessions,
-    pendingOrderConfirmations,
-    classifyOrderIntent: async () => ({ type: "remove_from_cart", query: "pizza" }),
-    nlu,
-  });
+  const reply = await removeFromCart({ senderId: "sender-1", query: "pizza", swiggyFoodClient: client, pendingCartSessions });
 
   assert.match(reply, /couldn't do that right now/);
 });
 
-// --- getFoodOrderReply: find_coupons / apply_coupon ---
+// --- findCoupons / applyCoupon ---
 
-test("getFoodOrderReply: find_coupons lists each coupon's code as the title field", async () => {
+test("findCoupons lists each coupon's code as the title field", async () => {
   const pendingCartSessions = new PendingCartSessions();
   pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
 
   const client = fakeClient({
     fetchFoodCoupons: async () =>
@@ -1079,84 +878,52 @@ test("getFoodOrderReply: find_coupons lists each coupon's code as the title fiel
       }),
   });
 
-  const reply = await getFoodOrderReply({
-    message: message("any coupons?"),
-    swiggyFoodClient: client,
-    pendingCartSessions,
-    pendingOrderConfirmations,
-    classifyOrderIntent: async () => ({ type: "find_coupons" }),
-    nlu,
-  });
+  const reply = await findCoupons({ senderId: "sender-1", swiggyFoodClient: client, pendingCartSessions });
 
   assert.match(reply, /SWIGGYIT — 20% off orders above ₹189/);
 });
 
-test("getFoodOrderReply: find_coupons reports when there are none", async () => {
+test("findCoupons reports when there are none", async () => {
   const pendingCartSessions = new PendingCartSessions();
   pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
 
   const client = fakeClient({ fetchFoodCoupons: async () => payload({ coupon_sections: [] }) });
 
-  const reply = await getFoodOrderReply({
-    message: message("any coupons?"),
-    swiggyFoodClient: client,
-    pendingCartSessions,
-    pendingOrderConfirmations,
-    classifyOrderIntent: async () => ({ type: "find_coupons" }),
-    nlu,
-  });
+  const reply = await findCoupons({ senderId: "sender-1", swiggyFoodClient: client, pendingCartSessions });
 
   assert.match(reply, /No coupons available/);
 });
 
-test("getFoodOrderReply: apply_coupon reports success only when coupon_discount is greater than zero", async () => {
+test("applyCoupon reports success only when coupon_discount is greater than zero", async () => {
   const pendingCartSessions = new PendingCartSessions();
   pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
 
   const client = fakeClient({
     applyFoodCoupon: async () => cartPayload(cartData({ offers: { coupon_discount: 50 } })),
   });
 
-  const reply = await getFoodOrderReply({
-    message: message("apply SWIGGYIT"),
-    swiggyFoodClient: client,
-    pendingCartSessions,
-    pendingOrderConfirmations,
-    classifyOrderIntent: async () => ({ type: "apply_coupon", couponCode: "SWIGGYIT" }),
-    nlu,
-  });
+  const reply = await applyCoupon({ senderId: "sender-1", couponCode: "SWIGGYIT", swiggyFoodClient: client, pendingCartSessions });
 
   assert.match(reply, /Applied SWIGGYIT — you saved ₹50/);
 });
 
-test("getFoodOrderReply: apply_coupon never claims a discount when coupon_discount is 0 (suggested, not applied)", async () => {
+test("applyCoupon never claims a discount when coupon_discount is 0 (suggested, not applied)", async () => {
   const pendingCartSessions = new PendingCartSessions();
   pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
 
   const client = fakeClient({
     applyFoodCoupon: async () => cartPayload(cartData({ offers: { coupon_discount: 0 } })),
   });
 
-  const reply = await getFoodOrderReply({
-    message: message("apply SWIGGYIT"),
-    swiggyFoodClient: client,
-    pendingCartSessions,
-    pendingOrderConfirmations,
-    classifyOrderIntent: async () => ({ type: "apply_coupon", couponCode: "SWIGGYIT" }),
-    nlu,
-  });
+  const reply = await applyCoupon({ senderId: "sender-1", couponCode: "SWIGGYIT", swiggyFoodClient: client, pendingCartSessions });
 
   assert.doesNotMatch(reply, /Applied/);
   assert.match(reply, /isn't giving a discount/);
 });
 
-test("getFoodOrderReply: apply_coupon degrades gracefully when the tool rejects the code", async () => {
+test("applyCoupon degrades gracefully when the tool rejects the code", async () => {
   const pendingCartSessions = new PendingCartSessions();
   pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
-  const pendingOrderConfirmations = new PendingOrderConfirmations();
 
   const client = fakeClient({
     applyFoodCoupon: async () => {
@@ -1164,21 +931,14 @@ test("getFoodOrderReply: apply_coupon degrades gracefully when the tool rejects 
     },
   });
 
-  const reply = await getFoodOrderReply({
-    message: message("apply BADCODE"),
-    swiggyFoodClient: client,
-    pendingCartSessions,
-    pendingOrderConfirmations,
-    classifyOrderIntent: async () => ({ type: "apply_coupon", couponCode: "BADCODE" }),
-    nlu,
-  });
+  const reply = await applyCoupon({ senderId: "sender-1", couponCode: "BADCODE", swiggyFoodClient: client, pendingCartSessions });
 
   assert.match(reply, /couldn't apply "BADCODE"/);
 });
 
-// --- getFoodOrderReply: checkout ---
+// --- checkout ---
 
-test("getFoodOrderReply: checkout builds a summary and stores a pending confirmation", async () => {
+test("checkout builds a summary and stores a pending confirmation", async () => {
   const pendingCartSessions = new PendingCartSessions();
   pendingCartSessions.set("sender-1", {
     addressId: "addr-1",
@@ -1197,14 +957,7 @@ test("getFoodOrderReply: checkout builds a summary and stores a pending confirma
     getPaymentOptions: async () => payload({ cod: { available: true, displayName: "Cash on Delivery" } }),
   });
 
-  const reply = await getFoodOrderReply({
-    message: message("checkout"),
-    swiggyFoodClient: client,
-    pendingCartSessions,
-    pendingOrderConfirmations,
-    classifyOrderIntent: async () => ({ type: "checkout" }),
-    nlu,
-  });
+  const reply = await checkout({ senderId: "sender-1", swiggyFoodClient: client, pendingCartSessions, pendingOrderConfirmations });
 
   // get_food_cart doesn't always return the restaurant name unless it's
   // passed in (confirmed live) - checkout must carry it forward from the
@@ -1220,27 +973,20 @@ test("getFoodOrderReply: checkout builds a summary and stores a pending confirma
   });
 });
 
-test("getFoodOrderReply: checkout refuses an empty cart", async () => {
+test("checkout refuses an empty cart", async () => {
   const pendingCartSessions = new PendingCartSessions();
   pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", cartRestaurantId: "r-1" });
   const pendingOrderConfirmations = new PendingOrderConfirmations();
 
   const client = fakeClient({ getFoodCart: async () => cartPayload(cartData({ items: [] })) });
 
-  const reply = await getFoodOrderReply({
-    message: message("checkout"),
-    swiggyFoodClient: client,
-    pendingCartSessions,
-    pendingOrderConfirmations,
-    classifyOrderIntent: async () => ({ type: "checkout" }),
-    nlu,
-  });
+  const reply = await checkout({ senderId: "sender-1", swiggyFoodClient: client, pendingCartSessions, pendingOrderConfirmations });
 
   assert.match(reply, /cart is empty/);
   assert.equal(pendingOrderConfirmations.peek("sender-1"), undefined);
 });
 
-test("getFoodOrderReply: checkout reports no active order rather than building a summary from a cart this session never established", async () => {
+test("checkout reports no active order rather than building a summary from a cart this session never established", async () => {
   const pendingCartSessions = new PendingCartSessions();
   // restaurantId is set (e.g. from a numbered restaurant pick) but nothing
   // has actually been added yet, so cartRestaurantId is unset - the live
@@ -1256,21 +1002,14 @@ test("getFoodOrderReply: checkout reports no active order rather than building a
     },
   });
 
-  const reply = await getFoodOrderReply({
-    message: message("checkout"),
-    swiggyFoodClient: client,
-    pendingCartSessions,
-    pendingOrderConfirmations,
-    classifyOrderIntent: async () => ({ type: "checkout" }),
-    nlu,
-  });
+  const reply = await checkout({ senderId: "sender-1", swiggyFoodClient: client, pendingCartSessions, pendingOrderConfirmations });
 
   assert.equal(getFoodCartCalled, false);
-  assert.match(reply, /don't have an order in progress/);
+  assert.equal(reply, NO_ACTIVE_ORDER_REPLY);
   assert.equal(pendingOrderConfirmations.peek("sender-1"), undefined);
 });
 
-test("getFoodOrderReply: checkout never guesses a payment method when COD isn't available", async () => {
+test("checkout never guesses a payment method when COD isn't available", async () => {
   const pendingCartSessions = new PendingCartSessions();
   pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", cartRestaurantId: "r-1" });
   const pendingOrderConfirmations = new PendingOrderConfirmations();
@@ -1280,51 +1019,10 @@ test("getFoodOrderReply: checkout never guesses a payment method when COD isn't 
     getPaymentOptions: async () => payload({ cod: { available: false } }),
   });
 
-  const reply = await getFoodOrderReply({
-    message: message("checkout"),
-    swiggyFoodClient: client,
-    pendingCartSessions,
-    pendingOrderConfirmations,
-    classifyOrderIntent: async () => ({ type: "checkout" }),
-    nlu,
-  });
+  const reply = await checkout({ senderId: "sender-1", swiggyFoodClient: client, pendingCartSessions, pendingOrderConfirmations });
 
   assert.match(reply, /Cash on Delivery isn't available/);
   assert.equal(pendingOrderConfirmations.peek("sender-1"), undefined);
-});
-
-// --- getFoodOrderReply: fail-closed behavior ---
-
-test("getFoodOrderReply returns undefined when the NLU provider isn't enabled", async () => {
-  const pendingCartSessions = new PendingCartSessions();
-  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
-
-  const reply = await getFoodOrderReply({
-    message: message("add a pizza"),
-    swiggyFoodClient: fakeClient(),
-    pendingCartSessions,
-    pendingOrderConfirmations: new PendingOrderConfirmations(),
-    classifyOrderIntent: async () => ({ type: "add_to_cart", query: "pizza", quantity: 1 }),
-    nlu: { enabled: false },
-  });
-
-  assert.equal(reply, undefined);
-});
-
-test("getFoodOrderReply returns undefined when no order intent is classified", async () => {
-  const pendingCartSessions = new PendingCartSessions();
-  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
-
-  const reply = await getFoodOrderReply({
-    message: message("thanks!"),
-    swiggyFoodClient: fakeClient(),
-    pendingCartSessions,
-    pendingOrderConfirmations: new PendingOrderConfirmations(),
-    classifyOrderIntent: async () => undefined,
-    nlu,
-  });
-
-  assert.equal(reply, undefined);
 });
 
 // --- placeConfirmedOrder ---
@@ -1684,9 +1382,9 @@ test("buildReorderUsualReply falls back to a generic reply when updateFoodCart t
   assert.match(reply, /couldn't do that right now/);
 });
 
-// --- buildRecommendationReply ---
+// --- describePastOrders ---
 
-test("buildRecommendationReply recommends the most-ordered-from restaurant and mentions the last order", async () => {
+test("describePastOrders lists every distinct restaurant with how often and what was ordered, most-recently-ordered-from first", async () => {
   const client = fakeClient({
     getFoodOrders: async () =>
       payload({
@@ -1698,17 +1396,18 @@ test("buildRecommendationReply recommends the most-ordered-from restaurant and m
       }),
   });
 
-  const reply = await buildRecommendationReply({ swiggyFoodClient: client });
+  const reply = await describePastOrders({ swiggyFoodClient: client });
 
-  assert.match(reply, /Biryani House 2 times before/);
-  assert.match(reply, /Last time you got: 1x Chicken Biryani/);
-  assert.doesNotMatch(reply, /Pizza Place/);
-  // 2 qualifies as a "usual" (MIN_USUAL_ORDER_COUNT) - safe to point at the
-  // reorder shortcut since it won't immediately contradict itself.
-  assert.match(reply, /reorder my usual/);
+  assert.match(reply, /- Biryani House, ordered 2 times \(ordered: 1x Chicken Biryani\)/);
+  assert.match(reply, /- Pizza Place, ordered once \(ordered: 1x Margherita\)/);
+  // Unlike the old single-pick recommendation, both restaurants are real
+  // facts the agent gets to reason over - this function no longer decides
+  // which one to suggest.
+  assert.match(reply, /find something in a similar cuisine\/category/);
+  assert.match(reply, /Never invent a dish, restaurant, or price/);
 });
 
-test("buildRecommendationReply breaks a tie toward whichever restaurant was ordered from most recently", async () => {
+test("describePastOrders preserves order (most recently ordered-from first)", async () => {
   const client = fakeClient({
     getFoodOrders: async () =>
       payload({
@@ -1719,27 +1418,26 @@ test("buildRecommendationReply breaks a tie toward whichever restaurant was orde
       }),
   });
 
-  const reply = await buildRecommendationReply({ swiggyFoodClient: client });
+  const reply = await describePastOrders({ swiggyFoodClient: client });
 
-  assert.match(reply, /Pizza Place before/);
-  assert.doesNotMatch(reply, /reorder my usual/);
+  const pizzaIndex = reply.indexOf("Pizza Place");
+  const biryaniIndex = reply.indexOf("Biryani House");
+  assert.ok(pizzaIndex >= 0 && biryaniIndex >= 0 && pizzaIndex < biryaniIndex);
+  assert.match(reply, /- Pizza Place, ordered once \(ordered: 1x Margherita\)/);
 });
 
-test("buildRecommendationReply works off a single past order (no >=2 threshold, unlike reorder_usual)", async () => {
+test("describePastOrders works off a single past order (no >=2 threshold, unlike reorder_usual)", async () => {
   const client = fakeClient({
     getFoodOrders: async () =>
       payload({ orders: [orderSummary({ orderId: "o1", restaurantId: "rest-1", restaurantName: "Biryani House" })] }),
   });
 
-  const reply = await buildRecommendationReply({ swiggyFoodClient: client });
+  const reply = await describePastOrders({ swiggyFoodClient: client });
 
-  assert.match(reply, /Biryani House before/);
-  // A single order doesn't qualify as a "usual" - buildReorderUsualReply
-  // would answer NO_USUAL_REPLY, so this must not suggest that shortcut.
-  assert.doesNotMatch(reply, /reorder my usual/);
+  assert.match(reply, /- Biryani House, ordered once/);
 });
 
-test("buildRecommendationReply ignores active (in-progress) orders", async () => {
+test("describePastOrders ignores active (in-progress) orders", async () => {
   const client = fakeClient({
     getFoodOrders: async () =>
       payload({
@@ -1747,40 +1445,40 @@ test("buildRecommendationReply ignores active (in-progress) orders", async () =>
       }),
   });
 
-  const reply = await buildRecommendationReply({ swiggyFoodClient: client });
+  const reply = await describePastOrders({ swiggyFoodClient: client });
 
   assert.match(reply, /don't have any past orders/);
 });
 
-test("buildRecommendationReply tells the user to add an address when they have none", async () => {
+test("describePastOrders tells the user to add an address when they have none", async () => {
   const client = fakeClient({ getAddresses: async () => payload({ addresses: [], total: 0 }) });
 
-  const reply = await buildRecommendationReply({ swiggyFoodClient: client });
+  const reply = await describePastOrders({ swiggyFoodClient: client });
 
   assert.match(reply, /don't have a saved delivery address/);
 });
 
-test("buildRecommendationReply gives a plain reply when there's no order history at all", async () => {
+test("describePastOrders gives a plain reply when there's no order history at all", async () => {
   const client = fakeClient({ getFoodOrders: async () => payload({ orders: [] }) });
 
-  const reply = await buildRecommendationReply({ swiggyFoodClient: client });
+  const reply = await describePastOrders({ swiggyFoodClient: client });
 
   assert.match(reply, /don't have any past orders/);
 });
 
-test("buildRecommendationReply falls back to a generic reply when getFoodOrders throws", async () => {
+test("describePastOrders falls back to a generic reply when getFoodOrders throws", async () => {
   const client = fakeClient({
     getFoodOrders: async () => {
       throw new Error("boom");
     },
   });
 
-  const reply = await buildRecommendationReply({ swiggyFoodClient: client });
+  const reply = await describePastOrders({ swiggyFoodClient: client });
 
   assert.match(reply, /couldn't do that right now/);
 });
 
-test("buildRecommendationReply never mutates the cart", async () => {
+test("describePastOrders never mutates the cart", async () => {
   let updateFoodCartCalled = false;
   const client = fakeClient({
     getFoodOrders: async () =>
@@ -1791,7 +1489,7 @@ test("buildRecommendationReply never mutates the cart", async () => {
     },
   });
 
-  await buildRecommendationReply({ swiggyFoodClient: client });
+  await describePastOrders({ swiggyFoodClient: client });
 
   assert.equal(updateFoodCartCalled, false);
 });
