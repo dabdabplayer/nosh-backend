@@ -381,7 +381,7 @@ async function replyToIncomingTextMessages(messages) {
           text: await buildReplyTextAndLog(message),
         });
       } catch (error) {
-        console.error("Failed to send WhatsApp reply.", { name: error.name });
+        console.error("Failed to send WhatsApp reply.", { name: error.name, message: error.message });
       }
     }),
   );
