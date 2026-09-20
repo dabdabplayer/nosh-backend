@@ -15,8 +15,19 @@ const DEFAULT_SWIGGY_TOKEN_STORE_PATH = "data/swiggy-tokens.json";
 // V1 endpoint (not the beta V2) serves sarvam-105b; confirmed via that doc's
 // own worked tool-calling example, which matches this app's request shape
 // (tools + tool_choice: "auto", message.tool_calls with stringified JSON
-// arguments) field-for-field.
-const DEFAULT_NLU_BASE_URL = "https://api.sarvam.ai/v1";
+// arguments) field-for-field. This must be the bare origin, NOT
+// "https://api.sarvam.ai/v1" - the sarvamai SDK's ChatClient appends
+// "v1/chat/completions" to whatever baseUrl it's given itself (see
+// node_modules/sarvamai/dist/cjs/api/resources/chat/client/Client.js and
+// its own default in environments.js, SarvamAIEnvironment.Production.base).
+// Including "/v1" here produces "https://api.sarvam.ai/v1/v1/chat/completions",
+// a real 404 confirmed live in production right after the sarvam-agent.js
+// rollout (Render logs: { name: 'SarvamAIError', message: 'Status code:
+// 404\nBody: {"error":{"message":"Not Found","code":"not_found_error"}}' })
+// - a regression from the old nlu-client.js, which built this URL with a
+// plain fetch and needed "/v1" baked into the base for that reason; the SDK
+// does not.
+const DEFAULT_NLU_BASE_URL = "https://api.sarvam.ai";
 const DEFAULT_NLU_MODEL = "sarvam-105b";
 // The prior NVIDIA NIM provider had real, sometimes multi-second latency in
 // production (an 8s timeout was aborting almost every classification call,
