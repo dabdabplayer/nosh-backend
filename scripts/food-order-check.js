@@ -16,16 +16,16 @@
 //
 // Beyond add-to-cart and checkout, and unlike food-search-check.js,
 // order-intent classification (add_to_cart/view_cart/find_coupons/
-// apply_coupon/checkout) requires nvidiaNim.enabled - see
+// apply_coupon/checkout) requires nlu.enabled - see
 // getFoodOrderReply's early return. A bare numeric restaurant pick (e.g.
 // "1") is the one exception; it's resolved deterministically, no NLU
 // needed. For everything else (e.g. "add a margherita pizza", "checkout"),
-// set NVIDIA_API_KEY (real NVIDIA NIM) or point NVIDIA_NIM_BASE_URL /
-// NVIDIA_NIM_MODEL at a local OpenAI-compatible server (e.g. Ollama - see
+// set NLU_API_KEY (real Sarvam) or point NLU_BASE_URL /
+// NLU_MODEL at a local OpenAI-compatible server (e.g. Ollama - see
 // .env.example) before running this.
 //
 // Also exercises "reorder my usual" (src/food-order-orchestrator.js's
-// buildReorderUsualReply) - like add_to_cart/checkout, it needs NVIDIA NIM
+// buildReorderUsualReply) - like add_to_cart/checkout, it needs the NLU provider
 // enabled to be recognized, since reorder_usual is an NLU tool-call
 // classification, not a literal trigger. Against the mock server
 // (scripts/mock-swiggy-food-server.js), "reorder my usual" qualifies for
@@ -72,11 +72,11 @@ if (messages.length === 0) {
   const pendingCartSessions = new PendingCartSessions();
   const pendingOrderConfirmations = new PendingOrderConfirmations();
 
-  if (!config.nvidiaNim.enabled) {
+  if (!config.nlu.enabled) {
     console.warn(
-      "NVIDIA NIM isn't configured (no NVIDIA_API_KEY / NVIDIA_NIM_BASE_URL) - only the literal " +
-        '"find X" search trigger and numeric restaurant picks will work. Set NVIDIA_API_KEY or point ' +
-        "NVIDIA_NIM_BASE_URL at a local model (see .env.example) to exercise add-to-cart/checkout.",
+      "The NLU provider isn't configured (no NLU_API_KEY / NLU_BASE_URL) - only the literal " +
+        '"find X" search trigger and numeric restaurant picks will work. Set NLU_API_KEY or point ' +
+        "NLU_BASE_URL at a local model (see .env.example) to exercise add-to-cart/checkout.",
     );
   }
 
@@ -128,7 +128,7 @@ if (messages.length === 0) {
         swiggyFoodClient,
         pendingCartSessions,
         pendingOrderConfirmations,
-        nvidiaNim: config.nvidiaNim,
+        nlu: config.nlu,
       });
 
       if (orderReply !== undefined) {
@@ -137,7 +137,7 @@ if (messages.length === 0) {
     }
 
     const classification = await classifyIncomingMessage(message, pendingAddressSelections, {
-      nvidiaNim: config.nvidiaNim,
+      nlu: config.nlu,
       pendingCartSessions,
     });
 

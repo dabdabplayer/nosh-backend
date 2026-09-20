@@ -11,13 +11,19 @@ const DEFAULT_SWIGGY_OAUTH_BASE_URL = "https://mcp.swiggy.com/auth";
 const DEFAULT_SWIGGY_OAUTH_CLIENT_ID = "swiggy-mcp";
 const DEFAULT_SWIGGY_OAUTH_REDIRECT_URI = "https://whatsapp-test-webhook-low-latency.onrender.com/oauth/swiggy/callback";
 const DEFAULT_SWIGGY_TOKEN_STORE_PATH = "data/swiggy-tokens.json";
-const DEFAULT_NVIDIA_NIM_BASE_URL = "https://integrate.api.nvidia.com/v1";
-const DEFAULT_NVIDIA_NIM_MODEL = "meta/muse-glimmer-30b";
-// NVIDIA NIM's hosted inference has real, sometimes multi-second latency -
-// confirmed live (an 8s timeout was aborting almost every classification
-// call in production). 25s gives it real room without hanging a reply
-// indefinitely if NIM is actually down.
-const DEFAULT_NVIDIA_NIM_TIMEOUT_MS = 25_000;
+// Sarvam AI's chat completions - https://docs.sarvam.ai/api/api-guides-tutorials/chat-completion/overview
+// V1 endpoint (not the beta V2) serves sarvam-105b; confirmed via that doc's
+// own worked tool-calling example, which matches this app's request shape
+// (tools + tool_choice: "auto", message.tool_calls with stringified JSON
+// arguments) field-for-field.
+const DEFAULT_NLU_BASE_URL = "https://api.sarvam.ai/v1";
+const DEFAULT_NLU_MODEL = "sarvam-105b";
+// The prior NVIDIA NIM provider had real, sometimes multi-second latency in
+// production (an 8s timeout was aborting almost every classification call,
+// later raised to 25s). Kept as the default here too - a classifier call
+// that hangs indefinitely is worse than one that fails closed and falls
+// back to the regex trigger.
+const DEFAULT_NLU_TIMEOUT_MS = 25_000;
 
 function readPort(value) {
   if (value === undefined || value === "") {
@@ -125,28 +131,25 @@ function readTestModeFlag(value) {
 
 const swiggyTestModeEnabled = readTestModeFlag(process.env.SWIGGY_TEST_MODE);
 
-const nvidiaNimApiKey = readOptionalSecret(process.env.NVIDIA_API_KEY, "NVIDIA_API_KEY");
-const nvidiaNimBaseUrl =
-  readOptionalSecret(process.env.NVIDIA_NIM_BASE_URL, "NVIDIA_NIM_BASE_URL") ??
-  DEFAULT_NVIDIA_NIM_BASE_URL;
-const nvidiaNimModel =
-  readOptionalSecret(process.env.NVIDIA_NIM_MODEL, "NVIDIA_NIM_MODEL") ?? DEFAULT_NVIDIA_NIM_MODEL;
+const nluApiKey = readOptionalSecret(process.env.NLU_API_KEY, "NLU_API_KEY");
+const nluBaseUrl = readOptionalSecret(process.env.NLU_BASE_URL, "NLU_BASE_URL") ?? DEFAULT_NLU_BASE_URL;
+const nluModel = readOptionalSecret(process.env.NLU_MODEL, "NLU_MODEL") ?? DEFAULT_NLU_MODEL;
 
-function readNvidiaNimTimeoutMs(value) {
+function readNluTimeoutMs(value) {
   if (value === undefined || value === "") {
-    return DEFAULT_NVIDIA_NIM_TIMEOUT_MS;
+    return DEFAULT_NLU_TIMEOUT_MS;
   }
 
   const timeoutMs = Number(value);
 
   if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
-    throw new Error("NVIDIA_NIM_TIMEOUT_MS must be a positive integer.");
+    throw new Error("NLU_TIMEOUT_MS must be a positive integer.");
   }
 
   return timeoutMs;
 }
 
-const nvidiaNimTimeoutMs = readNvidiaNimTimeoutMs(process.env.NVIDIA_NIM_TIMEOUT_MS);
+const nluTimeoutMs = readNluTimeoutMs(process.env.NLU_TIMEOUT_MS);
 
 const swiggyOAuthClientId =
   readOptionalSecret(process.env.SWIGGY_OAUTH_CLIENT_ID, "SWIGGY_OAUTH_CLIENT_ID") ??
@@ -236,12 +239,12 @@ export const config = Object.freeze({
     testToken: swiggyFoodTestToken,
     testModeEnabled: swiggyTestModeEnabled,
   }),
-  nvidiaNim: Object.freeze({
-    apiKey: nvidiaNimApiKey,
-    baseUrl: nvidiaNimBaseUrl,
-    enabled: Boolean(nvidiaNimApiKey),
-    model: nvidiaNimModel,
-    timeoutMs: nvidiaNimTimeoutMs,
+  nlu: Object.freeze({
+    apiKey: nluApiKey,
+    baseUrl: nluBaseUrl,
+    enabled: Boolean(nluApiKey),
+    model: nluModel,
+    timeoutMs: nluTimeoutMs,
   }),
   swiggyOAuth: Object.freeze({
     authBaseUrl: swiggyOAuthBaseUrl,

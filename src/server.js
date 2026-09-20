@@ -248,7 +248,7 @@ async function buildReplyText(message) {
         swiggyFoodClient,
         pendingCartSessions,
         pendingOrderConfirmations,
-        nvidiaNim: config.nvidiaNim,
+        nlu: config.nlu,
       }),
     );
 
@@ -262,7 +262,7 @@ async function buildReplyText(message) {
   }
 
   const classification = await classifyIncomingMessage(message, pendingAddressSelections, {
-    nvidiaNim: config.nvidiaNim,
+    nlu: config.nlu,
     pendingCartSessions,
   });
 
@@ -369,7 +369,7 @@ async function buildReplyTextAndLog(message) {
 // The reorder_usual resume text isn't a deterministic trigger like "find X"
 // is - it goes back through NLU classification (resolveIntent doesn't
 // special-case it the way it does the find/search prefix), so this is
-// best-effort: if NVIDIA NIM happens to be disabled or misclassifies right
+// best-effort: if the NLU provider happens to be disabled or misclassifies right
 // at this moment, the resume silently falls through to the normal
 // placeholder instead of resuming, same as any other NLU outage elsewhere
 // in this app.

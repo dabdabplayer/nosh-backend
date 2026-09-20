@@ -24,7 +24,7 @@ export const PRIVACY_POLICY_HTML = `<!doctype html>
 </head>
 <body>
 <h1>Nosh Privacy Policy</h1>
-<p class="updated">Last updated: 19 September 2026</p>
+<p class="updated">Last updated: 20 September 2026</p>
 
 <p>Nosh Labs ("Nosh", "we", "us") operates Nosh, a WhatsApp-based conversational
 assistant that helps you search for restaurants, build a cart, and place
@@ -69,8 +69,8 @@ message Nosh on WhatsApp and how we handle it.</p>
   data; Nosh only accesses what's needed to act on your request, and Swiggy's
   own terms prohibit us from using that data for training, profiling, or any
   purpose beyond fulfilling it.</li>
-  <li><strong>NVIDIA</strong> (NIM API) - processes the text of your message
-  in real time to help Nosh understand your request. NVIDIA is not given
+  <li><strong>Sarvam AI</strong> - processes the text of your message
+  in real time to help Nosh understand your request. Sarvam AI is not given
   your Swiggy account data.</li>
 </ul>
 <p>We do not sell your data, and we do not share it with any other third

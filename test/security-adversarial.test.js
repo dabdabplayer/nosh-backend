@@ -71,7 +71,7 @@ before(async () => {
         PORT: String(PORT),
         // Deliberately unset (and NOT inherited from the outer environment):
         // WHATSAPP_ACCESS_TOKEN (no real send capability), SWIGGY_FOOD_MCP_URL,
-        // NVIDIA_API_KEY - not needed for these tests, and keeps this suite
+        // NLU_API_KEY - not needed for these tests, and keeps this suite
         // hermetic (no real external calls, no chance of a real WhatsApp send).
         SWIGGY_TOKEN_ENCRYPTION_KEY: randomBytes(32).toString("base64"),
         WHATSAPP_WEBHOOK_VERIFY_TOKEN,

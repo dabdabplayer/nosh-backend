@@ -175,8 +175,8 @@ const ORDER_TOOLS = Object.freeze([
 // failure), or { ok: false } on non-2xx, timeout, network error, or
 // malformed body. Never throws. Callers that offer a deterministic fallback
 // (see food-search-orchestrator.js's resolveIntent) need this ok/not-ok
-// distinction to fall back only when NIM itself is unavailable, not every
-// time it decides a message doesn't match any tool.
+// distinction to fall back only when the NLU provider itself is unavailable,
+// not every time it decides a message doesn't match any tool.
 async function requestToolCalls({ text, systemPrompt, tools, apiKey, baseUrl, model, fetchImpl, timeoutMs }) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -187,6 +187,13 @@ async function requestToolCalls({ text, systemPrompt, tools, apiKey, baseUrl, mo
       signal: controller.signal,
       headers: {
         authorization: `Bearer ${apiKey}`,
+        // Sarvam's documented auth header (required on every Sarvam
+        // endpoint - see docs.sarvam.ai/api-reference/authentication).
+        // Authorization: Bearer is only its OpenAI-compat accommodation,
+        // sent too so a local OpenAI-compatible dev server (e.g. Ollama,
+        // which reads Authorization and ignores unknown headers) still
+        // works unchanged.
+        "api-subscription-key": apiKey,
         "content-type": "application/json",
       },
       body: JSON.stringify({
@@ -197,23 +204,31 @@ async function requestToolCalls({ text, systemPrompt, tools, apiKey, baseUrl, mo
         ],
         tools,
         tool_choice: "auto",
+        // Sarvam's chat models run in "thinking mode" by default, which
+        // bills reasoning tokens as completion tokens and adds latency -
+        // exactly the kind of multi-second delay that forced this classifier's
+        // timeout up from 8s to 25s under the prior provider. This is a
+        // single-turn tool-call classification, not a task that benefits from
+        // reasoning, so disable it explicitly (the documented wire value is a
+        // literal JSON null, not an omitted field).
+        reasoning_effort: null,
       }),
     });
 
     if (!response.ok) {
-      // Body text included (truncated) - NVIDIA's error responses are
-      // just a status/title/detail object, never a secret, and knowing
-      // *why* a request was rejected (bad model/param vs. auth vs. rate
-      // limit) is the difference between guessing and fixing the right
-      // thing. Read as text, not .json(), since an error body might not
-      // even be valid JSON.
+      // Body text included (truncated) - these are structured
+      // status/title/detail objects, never a secret, and knowing *why* a
+      // request was rejected (bad model/param vs. auth vs. rate limit) is
+      // the difference between guessing and fixing the right thing. Read
+      // as text, not .json(), since an error body might not even be valid
+      // JSON.
       let bodyText;
       try {
         bodyText = (await response.text()).slice(0, 500);
       } catch {
         bodyText = undefined;
       }
-      console.error("NVIDIA NIM classification request failed.", { status: response.status, body: bodyText });
+      console.error("NLU classification request failed.", { status: response.status, body: bodyText });
       return { ok: false };
     }
 
@@ -221,7 +236,7 @@ async function requestToolCalls({ text, systemPrompt, tools, apiKey, baseUrl, mo
     const toolCalls = body?.choices?.[0]?.message?.tool_calls;
     return { ok: true, toolCalls: Array.isArray(toolCalls) ? toolCalls : [] };
   } catch (error) {
-    console.error("NVIDIA NIM classification request errored.", { name: error.name });
+    console.error("NLU classification request errored.", { name: error.name });
     return { ok: false };
   } finally {
     clearTimeout(timeout);
@@ -236,19 +251,20 @@ function parseToolCallArgs(toolCall) {
   }
 }
 
-// Returned instead of undefined when the NIM request itself failed (bad
+// Returned instead of undefined when the NLU request itself failed (bad
 // auth, timeout, network error, non-2xx) - distinct from the model
 // completing normally and simply not calling any tool. resolveIntent (in
 // food-search-orchestrator.js) uses this to fall back to the literal
-// find/search trigger only on a genuine NIM outage, not every time the model
+// find/search trigger only on a genuine NLU outage, not every time the model
 // decides a message isn't a search/reorder/recommend request.
-export const NIM_UNAVAILABLE = Symbol("nim-unavailable");
+export const NLU_UNAVAILABLE = Symbol("nlu-unavailable");
 
-// Classifies one inbound message via NVIDIA NIM's OpenAI-compatible chat
-// completions endpoint, using function calling for a structured result
-// instead of parsing prose. Never throws: returns NIM_UNAVAILABLE if the
-// request itself failed, or undefined if NIM responded but didn't recognize
-// a search/reorder/recommend intent in the message.
+// Classifies one inbound message via the configured NLU provider's
+// OpenAI-compatible chat completions endpoint (Sarvam by default - see
+// src/config.js), using function calling for a structured result instead of
+// parsing prose. Never throws: returns NLU_UNAVAILABLE if the request itself
+// failed, or undefined if the model responded but didn't recognize a
+// search/reorder/recommend intent in the message.
 export async function classifyMessage({
   text,
   apiKey,
@@ -274,7 +290,7 @@ export async function classifyMessage({
   });
 
   if (!result.ok) {
-    return NIM_UNAVAILABLE;
+    return NLU_UNAVAILABLE;
   }
 
   for (const toolCall of result.toolCalls) {

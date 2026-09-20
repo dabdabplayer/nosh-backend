@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { classifyMessage, classifyOrderIntent, NIM_UNAVAILABLE } from "../src/nlu-client.js";
+import { classifyMessage, classifyOrderIntent, NLU_UNAVAILABLE } from "../src/nlu-client.js";
 
 function toolCallResponse(toolCalls) {
   return {
@@ -33,11 +33,13 @@ test("classifyMessage returns a search_food intent for a matching tool call", as
   assert.equal(requests.length, 1);
   assert.equal(requests[0].url, "https://example.test/v1/chat/completions");
   assert.equal(requests[0].options.headers.authorization, "Bearer test-key");
+  assert.equal(requests[0].options.headers["api-subscription-key"], "test-key");
 
   const body = JSON.parse(requests[0].options.body);
   assert.equal(body.model, "test-model");
   assert.equal(body.messages[1].content, "I want biryani");
   assert.equal(body.tools[0].function.name, "search_food");
+  assert.equal(body.reasoning_effort, null);
 });
 
 test("classifyMessage returns a reorder_usual intent for a matching tool call", async () => {
@@ -190,7 +192,7 @@ test("classifyMessage returns undefined for an empty query", async () => {
   assert.equal(result, undefined);
 });
 
-test("classifyMessage returns NIM_UNAVAILABLE on a non-2xx response instead of throwing", async () => {
+test("classifyMessage returns NLU_UNAVAILABLE on a non-2xx response instead of throwing", async () => {
   const fetchImpl = async () => ({ ok: false, status: 500, json: async () => ({}) });
 
   const result = await classifyMessage({
@@ -201,10 +203,10 @@ test("classifyMessage returns NIM_UNAVAILABLE on a non-2xx response instead of t
     fetchImpl,
   });
 
-  assert.equal(result, NIM_UNAVAILABLE);
+  assert.equal(result, NLU_UNAVAILABLE);
 });
 
-test("classifyMessage returns NIM_UNAVAILABLE when the request throws instead of propagating", async () => {
+test("classifyMessage returns NLU_UNAVAILABLE when the request throws instead of propagating", async () => {
   const fetchImpl = async () => {
     throw new Error("network down");
   };
@@ -217,7 +219,7 @@ test("classifyMessage returns NIM_UNAVAILABLE when the request throws instead of
     fetchImpl,
   });
 
-  assert.equal(result, NIM_UNAVAILABLE);
+  assert.equal(result, NLU_UNAVAILABLE);
 });
 
 function orderToolCall(name, args) {
@@ -360,7 +362,7 @@ test("classifyOrderIntent returns undefined on a non-2xx response instead of thr
   assert.equal(result, undefined);
 });
 
-test("classifyMessage aborts and returns NIM_UNAVAILABLE on timeout", async () => {
+test("classifyMessage aborts and returns NLU_UNAVAILABLE on timeout", async () => {
   const fetchImpl = (url, options) =>
     new Promise((resolve, reject) => {
       options.signal.addEventListener("abort", () => {
@@ -379,5 +381,5 @@ test("classifyMessage aborts and returns NIM_UNAVAILABLE on timeout", async () =
     timeoutMs: 10,
   });
 
-  assert.equal(result, NIM_UNAVAILABLE);
+  assert.equal(result, NLU_UNAVAILABLE);
 });

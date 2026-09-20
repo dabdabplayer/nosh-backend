@@ -1,4 +1,4 @@
-import { classifyMessage as defaultClassifyMessage, NIM_UNAVAILABLE } from "./nlu-client.js";
+import { classifyMessage as defaultClassifyMessage, NLU_UNAVAILABLE } from "./nlu-client.js";
 import { parseStructuredPayload } from "./swiggy-food-client.js";
 
 const MAX_ADDRESS_CANDIDATES = 5;
@@ -14,8 +14,8 @@ function noOpenRestaurantsReply(searchTerm) {
 }
 
 // Matches an explicit "find X" / "search X" trigger. Only used as the
-// deterministic fallback in resolveIntent below when NVIDIA NIM isn't
-// configured - with NIM enabled, the LLM is the one deciding whether this is
+// deterministic fallback in resolveIntent below when the NLU provider isn't
+// configured - with it enabled, the LLM is the one deciding whether this is
 // a search, not this regex (see resolveIntent's comment).
 export function matchFoodSearchTrigger(text) {
   const match = /^(?:find|search)\s+(.+)$/i.exec(text.trim());
@@ -36,18 +36,19 @@ export function parseAddressSelectionReply(text, candidateCount) {
   return index >= 0 && index < candidateCount ? index : undefined;
 }
 
-// The LLM (NVIDIA NIM) is the primary interpreter of what the user wants,
-// the same way classifyOrderIntent already is for everything that happens
-// once a cart exists (food-order-orchestrator.js) - it's the model's job to
-// recognize "I want biryani", "find biryani", and "get me my usual biryani
-// place" all correctly, not a regex's. The literal find/search prefix match
-// is only a fallback for when NIM itself is unreachable (disabled entirely,
-// or the request failed/timed out - see NIM_UNAVAILABLE in nlu-client.js),
-// so the bot still does something useful rather than going fully silent. It
-// is NOT a fallback for "NIM ran and decided this isn't a search" - trusting
-// that answer, rather than second-guessing it with the regex, is the whole
-// point of this change; overriding it would just reintroduce the
-// trigger-word dependence this is meant to remove.
+// The LLM (Sarvam by default - see src/config.js's nlu block) is the primary
+// interpreter of what the user wants, the same way classifyOrderIntent
+// already is for everything that happens once a cart exists
+// (food-order-orchestrator.js) - it's the model's job to recognize "I want
+// biryani", "find biryani", and "get me my usual biryani place" all
+// correctly, not a regex's. The literal find/search prefix match is only a
+// fallback for when the NLU provider itself is unreachable (disabled
+// entirely, or the request failed/timed out - see NLU_UNAVAILABLE in
+// nlu-client.js), so the bot still does something useful rather than going
+// fully silent. It is NOT a fallback for "the model ran and decided this
+// isn't a search" - trusting that answer, rather than second-guessing it
+// with the regex, is the whole point of this change; overriding it would
+// just reintroduce the trigger-word dependence this is meant to remove.
 //
 // Passes hasActiveCart so the classifier can tell a genuine new search apart
 // from a cart-related message like "from Pizza Hut add a margherita pizza" -
@@ -61,14 +62,14 @@ export function parseAddressSelectionReply(text, candidateCount) {
 async function resolveIntent(
   trimmedText,
   senderId,
-  { nvidiaNim, pendingCartSessions, classifyMessage = defaultClassifyMessage } = {},
+  { nlu, pendingCartSessions, classifyMessage = defaultClassifyMessage } = {},
 ) {
   const fallbackToRegex = () => {
     const regexSearchTerm = matchFoodSearchTrigger(trimmedText);
     return regexSearchTerm ? { type: "search_food", query: regexSearchTerm } : undefined;
   };
 
-  if (!nvidiaNim?.enabled) {
+  if (!nlu?.enabled) {
     return fallbackToRegex();
   }
 
@@ -76,14 +77,14 @@ async function resolveIntent(
 
   const intent = await classifyMessage({
     text: trimmedText,
-    apiKey: nvidiaNim.apiKey,
-    baseUrl: nvidiaNim.baseUrl,
-    model: nvidiaNim.model,
-    timeoutMs: nvidiaNim.timeoutMs,
+    apiKey: nlu.apiKey,
+    baseUrl: nlu.baseUrl,
+    model: nlu.model,
+    timeoutMs: nlu.timeoutMs,
     hasActiveCart,
   });
 
-  if (intent === NIM_UNAVAILABLE) {
+  if (intent === NLU_UNAVAILABLE) {
     return fallbackToRegex();
   }
 
@@ -287,7 +288,7 @@ async function handleNewFoodSearch(
 // Accepts an already-computed `classification` when the caller ran one
 // already (server.js and the dev scripts do, to decide auth/routing before
 // calling this). Reusing it avoids a second NLU call for the same message -
-// classifying twice doubles exposure to NIM latency/timeouts for no benefit,
+// classifying twice doubles exposure to NLU latency/timeouts for no benefit,
 // and previously could silently discard an already-correct classification
 // if only the second call happened to time out.
 export async function getFoodSearchReply({
@@ -295,13 +296,13 @@ export async function getFoodSearchReply({
   swiggyFoodClient,
   pendingAddressSelections,
   pendingCartSessions,
-  nvidiaNim,
+  nlu,
   classifyMessage,
   classification: precomputedClassification,
 }) {
   const classification =
     precomputedClassification ??
-    (await classifyIncomingMessage(message, pendingAddressSelections, { nvidiaNim, classifyMessage }));
+    (await classifyIncomingMessage(message, pendingAddressSelections, { nlu, classifyMessage }));
 
   try {
     switch (classification.type) {

@@ -34,7 +34,7 @@ if (!firstMessageText) {
     message: { from: sender, id: "1", phoneNumberId: "test", text: firstMessageText },
     swiggyFoodClient,
     pendingAddressSelections,
-    nvidiaNim: config.nvidiaNim,
+    nlu: config.nlu,
   });
 
   console.log(firstReply ?? "(no trigger matched — placeholder would be used)");
@@ -44,7 +44,7 @@ if (!firstMessageText) {
       message: { from: sender, id: "2", phoneNumberId: "test", text: secondMessageText },
       swiggyFoodClient,
       pendingAddressSelections,
-      nvidiaNim: config.nvidiaNim,
+      nlu: config.nlu,
     });
 
     console.log(secondReply ?? "(no trigger matched — placeholder would be used)");

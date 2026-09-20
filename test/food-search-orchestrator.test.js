@@ -6,7 +6,7 @@ import {
   matchFoodSearchTrigger,
   parseAddressSelectionReply,
 } from "../src/food-search-orchestrator.js";
-import { NIM_UNAVAILABLE } from "../src/nlu-client.js";
+import { NLU_UNAVAILABLE } from "../src/nlu-client.js";
 import { PendingAddressSelections } from "../src/pending-address-selection.js";
 import { PendingCartSessions } from "../src/pending-cart-sessions.js";
 
@@ -145,7 +145,7 @@ test("classifyIncomingMessage: falls back to NIM classification when there's no 
   };
 
   const result = await classifyIncomingMessage(message("I want biryani"), pending, {
-    nvidiaNim: { enabled: true, apiKey: "key", baseUrl: "https://example.test", model: "test-model" },
+    nlu: { enabled: true, apiKey: "key", baseUrl: "https://example.test", model: "test-model" },
     classifyMessage,
   });
 
@@ -171,7 +171,7 @@ test("classifyIncomingMessage: calls NIM even for a literal find/search trigger 
   };
 
   const result = await classifyIncomingMessage(message("find biryani"), pending, {
-    nvidiaNim: { enabled: true, apiKey: "key", baseUrl: "https://example.test", model: "test-model" },
+    nlu: { enabled: true, apiKey: "key", baseUrl: "https://example.test", model: "test-model" },
     classifyMessage,
   });
 
@@ -188,7 +188,7 @@ test("classifyIncomingMessage: literal find/search trigger still works when NIM 
   };
 
   const result = await classifyIncomingMessage(message("find biryani"), pending, {
-    nvidiaNim: { enabled: false },
+    nlu: { enabled: false },
     classifyMessage,
   });
 
@@ -201,7 +201,7 @@ test("classifyIncomingMessage: NIM answering with no recognized intent is truste
   const classifyMessage = async () => undefined;
 
   const result = await classifyIncomingMessage(message("I want biryani"), pending, {
-    nvidiaNim: { enabled: true, apiKey: "key", baseUrl: "https://example.test", model: "test-model" },
+    nlu: { enabled: true, apiKey: "key", baseUrl: "https://example.test", model: "test-model" },
     classifyMessage,
   });
 
@@ -210,10 +210,10 @@ test("classifyIncomingMessage: NIM answering with no recognized intent is truste
 
 test("classifyIncomingMessage: a genuine NIM outage (not just 'no intent') falls back to the literal trigger", async () => {
   const pending = new PendingAddressSelections();
-  const classifyMessage = async () => NIM_UNAVAILABLE;
+  const classifyMessage = async () => NLU_UNAVAILABLE;
 
   const result = await classifyIncomingMessage(message("find biryani"), pending, {
-    nvidiaNim: { enabled: true, apiKey: "key", baseUrl: "https://example.test", model: "test-model" },
+    nlu: { enabled: true, apiKey: "key", baseUrl: "https://example.test", model: "test-model" },
     classifyMessage,
   });
 
@@ -222,10 +222,10 @@ test("classifyIncomingMessage: a genuine NIM outage (not just 'no intent') falls
 
 test("classifyIncomingMessage: a genuine NIM outage with no literal trigger falls back to no_trigger", async () => {
   const pending = new PendingAddressSelections();
-  const classifyMessage = async () => NIM_UNAVAILABLE;
+  const classifyMessage = async () => NLU_UNAVAILABLE;
 
   const result = await classifyIncomingMessage(message("I want biryani"), pending, {
-    nvidiaNim: { enabled: true, apiKey: "key", baseUrl: "https://example.test", model: "test-model" },
+    nlu: { enabled: true, apiKey: "key", baseUrl: "https://example.test", model: "test-model" },
     classifyMessage,
   });
 
@@ -244,7 +244,7 @@ test("classifyIncomingMessage: tells the classifier about an active cart session
   };
 
   await classifyIncomingMessage(message("from Pizza Hut add a margherita pizza"), pending, {
-    nvidiaNim: { enabled: true, apiKey: "key", baseUrl: "https://example.test", model: "test-model" },
+    nlu: { enabled: true, apiKey: "key", baseUrl: "https://example.test", model: "test-model" },
     pendingCartSessions,
     classifyMessage,
   });
@@ -264,7 +264,7 @@ test("classifyIncomingMessage: reports no active cart when there isn't one", asy
   };
 
   await classifyIncomingMessage(message("I want biryani"), pending, {
-    nvidiaNim: { enabled: true, apiKey: "key", baseUrl: "https://example.test", model: "test-model" },
+    nlu: { enabled: true, apiKey: "key", baseUrl: "https://example.test", model: "test-model" },
     pendingCartSessions,
     classifyMessage,
   });
@@ -281,7 +281,7 @@ test("classifyIncomingMessage: NIM is skipped entirely when not enabled", async 
   };
 
   const result = await classifyIncomingMessage(message("I want biryani"), pending, {
-    nvidiaNim: { enabled: false },
+    nlu: { enabled: false },
     classifyMessage,
   });
 
@@ -294,7 +294,7 @@ test("classifyIncomingMessage: a reorder_usual tool call becomes a reorder_usual
   const classifyMessage = async () => ({ type: "reorder_usual" });
 
   const result = await classifyIncomingMessage(message("get me my usual"), pending, {
-    nvidiaNim: { enabled: true, apiKey: "key", baseUrl: "https://example.test", model: "test-model" },
+    nlu: { enabled: true, apiKey: "key", baseUrl: "https://example.test", model: "test-model" },
     classifyMessage,
   });
 
@@ -307,7 +307,7 @@ test("classifyIncomingMessage: reorder_usual overrides a stale pending address p
   const classifyMessage = async () => ({ type: "reorder_usual" });
 
   const result = await classifyIncomingMessage(message("get me my usual"), pending, {
-    nvidiaNim: { enabled: true, apiKey: "key", baseUrl: "https://example.test", model: "test-model" },
+    nlu: { enabled: true, apiKey: "key", baseUrl: "https://example.test", model: "test-model" },
     classifyMessage,
   });
 
@@ -319,7 +319,7 @@ test("classifyIncomingMessage: a recommend tool call becomes a recommend classif
   const classifyMessage = async () => ({ type: "recommend" });
 
   const result = await classifyIncomingMessage(message("recommend me something"), pending, {
-    nvidiaNim: { enabled: true, apiKey: "key", baseUrl: "https://example.test", model: "test-model" },
+    nlu: { enabled: true, apiKey: "key", baseUrl: "https://example.test", model: "test-model" },
     classifyMessage,
   });
 
@@ -332,7 +332,7 @@ test("classifyIncomingMessage: recommend overrides a stale pending address promp
   const classifyMessage = async () => ({ type: "recommend" });
 
   const result = await classifyIncomingMessage(message("recommend me something"), pending, {
-    nvidiaNim: { enabled: true, apiKey: "key", baseUrl: "https://example.test", model: "test-model" },
+    nlu: { enabled: true, apiKey: "key", baseUrl: "https://example.test", model: "test-model" },
     classifyMessage,
   });
 
@@ -348,7 +348,7 @@ test("classifyIncomingMessage: trusts the LLM's recommend classification even fo
   const classifyMessage = async () => ({ type: "recommend" });
 
   const result = await classifyIncomingMessage(message("find biryani"), pending, {
-    nvidiaNim: { enabled: true, apiKey: "key", baseUrl: "https://example.test", model: "test-model" },
+    nlu: { enabled: true, apiKey: "key", baseUrl: "https://example.test", model: "test-model" },
     classifyMessage,
   });
 
@@ -360,7 +360,7 @@ test("classifyIncomingMessage: trusts the LLM's reorder_usual classification eve
   const classifyMessage = async () => ({ type: "reorder_usual" });
 
   const result = await classifyIncomingMessage(message("find biryani"), pending, {
-    nvidiaNim: { enabled: true, apiKey: "key", baseUrl: "https://example.test", model: "test-model" },
+    nlu: { enabled: true, apiKey: "key", baseUrl: "https://example.test", model: "test-model" },
     classifyMessage,
   });
 

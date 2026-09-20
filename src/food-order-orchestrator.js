@@ -1068,7 +1068,7 @@ export async function getFoodOrderReply({
   pendingCartSessions,
   pendingOrderConfirmations,
   classifyOrderIntent = defaultClassifyOrderIntent,
-  nvidiaNim,
+  nlu,
 }) {
   const session = pendingCartSessions.peek(message.from);
 
@@ -1097,7 +1097,7 @@ export async function getFoodOrderReply({
   // A bare number reply to the restaurant list just shown (see
   // runRestaurantSearch in food-search-orchestrator.js) is resolved
   // deterministically here, the same way parseOrderConfirmationReply gates
-  // order placement - no NLU call needed, and it still works if NIM is
+  // order placement - no NLU call needed, and it still works if the NLU provider is
   // down. Falls through to classifyOrderIntent below for anything that
   // isn't a valid selection number (e.g. naming the restaurant instead).
   // itemCandidates is checked above and restaurantCandidates never carries
@@ -1137,16 +1137,16 @@ export async function getFoodOrderReply({
     }
   }
 
-  if (!nvidiaNim?.enabled) {
+  if (!nlu?.enabled) {
     return undefined;
   }
 
   const intent = await classifyOrderIntent({
     text: message.text.trim(),
-    apiKey: nvidiaNim.apiKey,
-    baseUrl: nvidiaNim.baseUrl,
-    model: nvidiaNim.model,
-    timeoutMs: nvidiaNim.timeoutMs,
+    apiKey: nlu.apiKey,
+    baseUrl: nlu.baseUrl,
+    model: nlu.model,
+    timeoutMs: nlu.timeoutMs,
   });
 
   if (!intent) {

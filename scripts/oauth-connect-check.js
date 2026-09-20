@@ -144,7 +144,7 @@ if (!config.swiggyFood.enabled) {
           swiggyFoodClient,
           pendingCartSessions,
           pendingOrderConfirmations,
-          nvidiaNim: config.nvidiaNim,
+          nlu: config.nlu,
         }),
       );
 
@@ -158,7 +158,7 @@ if (!config.swiggyFood.enabled) {
     }
 
     const classification = await classifyIncomingMessage(message, pendingAddressSelections, {
-      nvidiaNim: config.nvidiaNim,
+      nlu: config.nlu,
       pendingCartSessions,
     });
 

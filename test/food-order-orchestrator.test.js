@@ -30,7 +30,7 @@ function cartFailurePayload(data) {
   return payload({ statusCode: 1, statusMessage: "FAILED", data });
 }
 
-const nvidiaNim = Object.freeze({
+const nlu = Object.freeze({
   enabled: true,
   apiKey: "test-key",
   baseUrl: "https://example.test",
@@ -171,7 +171,7 @@ test("getFoodOrderReply: a bare number picks the restaurant off the shown list, 
       classifyOrderIntentCalled = true;
       return undefined;
     },
-    nvidiaNim,
+    nlu,
   });
 
   assert.equal(classifyOrderIntentCalled, false);
@@ -206,7 +206,7 @@ test("getFoodOrderReply: picking a restaurant looks up items matching the origin
     pendingCartSessions,
     pendingOrderConfirmations,
     classifyOrderIntent: async () => undefined,
-    nvidiaNim,
+    nlu,
   });
 
   assert.deepEqual(menuSearchCalls, [{ query: "pizza", addressId: "addr-1", restaurantIdOfAddedItem: "r-pizza" }]);
@@ -254,7 +254,7 @@ test("getFoodOrderReply: a bare number then picks the item straight off that lis
       classifyOrderIntentCalled = true;
       return undefined;
     },
-    nvidiaNim,
+    nlu,
   });
 
   assert.equal(classifyOrderIntentCalled, false);
@@ -293,7 +293,7 @@ test("getFoodOrderReply: falls back to the freeform prompt when nothing matches 
     pendingCartSessions,
     pendingOrderConfirmations,
     classifyOrderIntent: async () => undefined,
-    nvidiaNim,
+    nlu,
   });
 
   assert.equal(reply, "Got it — what would you like from KFC?");
@@ -321,7 +321,7 @@ test("getFoodOrderReply: falls back to the freeform prompt when the menu lookup 
     pendingCartSessions,
     pendingOrderConfirmations,
     classifyOrderIntent: async () => undefined,
-    nvidiaNim,
+    nlu,
   });
 
   assert.equal(reply, "Got it — what would you like from KFC?");
@@ -341,13 +341,13 @@ test("getFoodOrderReply: an out-of-range or non-numeric reply falls through to n
     pendingCartSessions,
     pendingOrderConfirmations,
     classifyOrderIntent: async () => undefined,
-    nvidiaNim,
+    nlu,
   });
 
   assert.equal(reply, undefined);
 });
 
-test("getFoodOrderReply: works even when NVIDIA NIM is disabled, since restaurant selection is deterministic", async () => {
+test("getFoodOrderReply: works even when the NLU provider is disabled, since restaurant selection is deterministic", async () => {
   const pendingCartSessions = new PendingCartSessions();
   pendingCartSessions.set("sender-1", {
     addressId: "addr-1",
@@ -360,7 +360,7 @@ test("getFoodOrderReply: works even when NVIDIA NIM is disabled, since restauran
     swiggyFoodClient: fakeClient(),
     pendingCartSessions,
     pendingOrderConfirmations,
-    nvidiaNim: { enabled: false },
+    nlu: { enabled: false },
   });
 
   assert.equal(reply, "Got it — what would you like from KFC?");
@@ -394,7 +394,7 @@ test("getFoodOrderReply: add_to_cart bootstraps a session via cross-restaurant s
     pendingCartSessions,
     pendingOrderConfirmations,
     classifyOrderIntent,
-    nvidiaNim,
+    nlu,
   });
 
   assert.equal(searchCalls.length, 2);
@@ -444,7 +444,7 @@ test("getFoodOrderReply: add_to_cart reuses the existing restaurant, skips cross
     pendingCartSessions,
     pendingOrderConfirmations,
     classifyOrderIntent,
-    nvidiaNim,
+    nlu,
   });
 
   assert.equal(searchCalls.length, 1);
@@ -478,7 +478,7 @@ test("getFoodOrderReply: add_to_cart flushes the cart first when it's not yet co
     pendingCartSessions,
     pendingOrderConfirmations,
     classifyOrderIntent,
-    nvidiaNim,
+    nlu,
   });
 
   // Flush must happen BEFORE the add, not after - otherwise it would wipe
@@ -520,7 +520,7 @@ test("getFoodOrderReply: add_to_cart honors an explicit restaurant name instead 
     pendingCartSessions,
     pendingOrderConfirmations,
     classifyOrderIntent,
-    nvidiaNim,
+    nlu,
   });
 
   assert.deepEqual(restaurantSearchCalls, [{ query: "Pizza Hut", addressId: "addr-1" }]);
@@ -575,7 +575,7 @@ test("getFoodOrderReply: add_to_cart skips a sponsored ad ranked ahead of the ac
     pendingCartSessions,
     pendingOrderConfirmations,
     classifyOrderIntent,
-    nvidiaNim,
+    nlu,
   });
 
   assert.equal(menuSearchCalls.length, 1);
@@ -621,7 +621,7 @@ test("getFoodOrderReply: add_to_cart reports a friendly message when the named r
     pendingCartSessions,
     pendingOrderConfirmations,
     classifyOrderIntent,
-    nvidiaNim,
+    nlu,
   });
 
   assert.match(reply, /couldn't find a restaurant called "Nonexistent Place"/);
@@ -652,7 +652,7 @@ test("getFoodOrderReply: add_to_cart names the restaurant when the dish isn't on
     pendingCartSessions,
     pendingOrderConfirmations,
     classifyOrderIntent,
-    nvidiaNim,
+    nlu,
   });
 
   assert.match(reply, /couldn't find "sushi" at Pizza Hut/);
@@ -686,7 +686,7 @@ test("getFoodOrderReply: add_to_cart ignores a restaurant hint once a session re
     pendingCartSessions,
     pendingOrderConfirmations,
     classifyOrderIntent,
-    nvidiaNim,
+    nlu,
   });
 
   assert.equal(restaurantSearchCalled, false);
@@ -714,7 +714,7 @@ test("getFoodOrderReply: add_to_cart sends the default variant selection, not an
     pendingCartSessions,
     pendingOrderConfirmations,
     classifyOrderIntent,
-    nvidiaNim,
+    nlu,
   });
 
   assert.deepEqual(cartItemsSent, [
@@ -746,7 +746,7 @@ test("getFoodOrderReply: add_to_cart does not report success when update_food_ca
     pendingCartSessions,
     pendingOrderConfirmations,
     classifyOrderIntent,
-    nvidiaNim,
+    nlu,
   });
 
   assert.doesNotMatch(reply, /Added/);
@@ -769,7 +769,7 @@ test("getFoodOrderReply: add_to_cart reports a friendly message when nothing mat
     pendingCartSessions,
     pendingOrderConfirmations,
     classifyOrderIntent,
-    nvidiaNim,
+    nlu,
   });
 
   assert.match(reply, /couldn't find "unobtainium roll"/);
@@ -789,7 +789,7 @@ test("getFoodOrderReply: non-add intents without an active session report no act
       pendingCartSessions,
       pendingOrderConfirmations,
       classifyOrderIntent: async () => ({ type }),
-      nvidiaNim,
+      nlu,
     });
 
     assert.match(reply, /don't have an order in progress/);
@@ -811,7 +811,7 @@ test("getFoodOrderReply: view_cart formats the cart contents", async () => {
     pendingCartSessions,
     pendingOrderConfirmations,
     classifyOrderIntent: async () => ({ type: "view_cart" }),
-    nvidiaNim,
+    nlu,
   });
 
   assert.match(reply, /Test Restaurant/);
@@ -832,7 +832,7 @@ test("getFoodOrderReply: view_cart reports an empty cart", async () => {
     pendingCartSessions,
     pendingOrderConfirmations,
     classifyOrderIntent: async () => ({ type: "view_cart" }),
-    nvidiaNim,
+    nlu,
   });
 
   assert.match(reply, /cart is empty/);
@@ -873,7 +873,7 @@ test("getFoodOrderReply: remove_from_cart removes the item entirely when no coun
     pendingCartSessions,
     pendingOrderConfirmations,
     classifyOrderIntent: async () => ({ type: "remove_from_cart", query: "pizza" }),
-    nvidiaNim,
+    nlu,
   });
 
   assert.equal(updateFoodCartCalls.length, 1);
@@ -919,7 +919,7 @@ test("getFoodOrderReply: remove_from_cart reduces the quantity when a count is g
     pendingCartSessions,
     pendingOrderConfirmations,
     classifyOrderIntent: async () => ({ type: "remove_from_cart", query: "garlic bread", quantity: 1 }),
-    nvidiaNim,
+    nlu,
   });
 
   assert.equal(updateFoodCartCalls[0].cartItems[0].quantity, 2);
@@ -955,7 +955,7 @@ test("getFoodOrderReply: remove_from_cart asks which item when the query matches
     pendingCartSessions,
     pendingOrderConfirmations,
     classifyOrderIntent: async () => ({ type: "remove_from_cart", query: "pizza" }),
-    nvidiaNim,
+    nlu,
   });
 
   assert.equal(updateFoodCartCalled, false);
@@ -985,7 +985,7 @@ test("getFoodOrderReply: remove_from_cart clamps at zero rather than going negat
     pendingCartSessions,
     pendingOrderConfirmations,
     classifyOrderIntent: async () => ({ type: "remove_from_cart", query: "garlic bread", quantity: 5 }),
-    nvidiaNim,
+    nlu,
   });
 
   assert.equal(updateFoodCartCalls[0].cartItems[0].quantity, 0);
@@ -1012,7 +1012,7 @@ test("getFoodOrderReply: remove_from_cart reports when the dish isn't in the car
     pendingCartSessions,
     pendingOrderConfirmations,
     classifyOrderIntent: async () => ({ type: "remove_from_cart", query: "biryani" }),
-    nvidiaNim,
+    nlu,
   });
 
   assert.equal(updateFoodCartCalled, false);
@@ -1032,7 +1032,7 @@ test("getFoodOrderReply: remove_from_cart reports an empty cart", async () => {
     pendingCartSessions,
     pendingOrderConfirmations,
     classifyOrderIntent: async () => ({ type: "remove_from_cart", query: "pizza" }),
-    nvidiaNim,
+    nlu,
   });
 
   assert.match(reply, /cart is empty/);
@@ -1057,7 +1057,7 @@ test("getFoodOrderReply: remove_from_cart falls back to a generic reply when upd
     pendingCartSessions,
     pendingOrderConfirmations,
     classifyOrderIntent: async () => ({ type: "remove_from_cart", query: "pizza" }),
-    nvidiaNim,
+    nlu,
   });
 
   assert.match(reply, /couldn't do that right now/);
@@ -1085,7 +1085,7 @@ test("getFoodOrderReply: find_coupons lists each coupon's code as the title fiel
     pendingCartSessions,
     pendingOrderConfirmations,
     classifyOrderIntent: async () => ({ type: "find_coupons" }),
-    nvidiaNim,
+    nlu,
   });
 
   assert.match(reply, /SWIGGYIT — 20% off orders above ₹189/);
@@ -1104,7 +1104,7 @@ test("getFoodOrderReply: find_coupons reports when there are none", async () => 
     pendingCartSessions,
     pendingOrderConfirmations,
     classifyOrderIntent: async () => ({ type: "find_coupons" }),
-    nvidiaNim,
+    nlu,
   });
 
   assert.match(reply, /No coupons available/);
@@ -1125,7 +1125,7 @@ test("getFoodOrderReply: apply_coupon reports success only when coupon_discount 
     pendingCartSessions,
     pendingOrderConfirmations,
     classifyOrderIntent: async () => ({ type: "apply_coupon", couponCode: "SWIGGYIT" }),
-    nvidiaNim,
+    nlu,
   });
 
   assert.match(reply, /Applied SWIGGYIT — you saved ₹50/);
@@ -1146,7 +1146,7 @@ test("getFoodOrderReply: apply_coupon never claims a discount when coupon_discou
     pendingCartSessions,
     pendingOrderConfirmations,
     classifyOrderIntent: async () => ({ type: "apply_coupon", couponCode: "SWIGGYIT" }),
-    nvidiaNim,
+    nlu,
   });
 
   assert.doesNotMatch(reply, /Applied/);
@@ -1170,7 +1170,7 @@ test("getFoodOrderReply: apply_coupon degrades gracefully when the tool rejects 
     pendingCartSessions,
     pendingOrderConfirmations,
     classifyOrderIntent: async () => ({ type: "apply_coupon", couponCode: "BADCODE" }),
-    nvidiaNim,
+    nlu,
   });
 
   assert.match(reply, /couldn't apply "BADCODE"/);
@@ -1203,7 +1203,7 @@ test("getFoodOrderReply: checkout builds a summary and stores a pending confirma
     pendingCartSessions,
     pendingOrderConfirmations,
     classifyOrderIntent: async () => ({ type: "checkout" }),
-    nvidiaNim,
+    nlu,
   });
 
   // get_food_cart doesn't always return the restaurant name unless it's
@@ -1233,7 +1233,7 @@ test("getFoodOrderReply: checkout refuses an empty cart", async () => {
     pendingCartSessions,
     pendingOrderConfirmations,
     classifyOrderIntent: async () => ({ type: "checkout" }),
-    nvidiaNim,
+    nlu,
   });
 
   assert.match(reply, /cart is empty/);
@@ -1262,7 +1262,7 @@ test("getFoodOrderReply: checkout reports no active order rather than building a
     pendingCartSessions,
     pendingOrderConfirmations,
     classifyOrderIntent: async () => ({ type: "checkout" }),
-    nvidiaNim,
+    nlu,
   });
 
   assert.equal(getFoodCartCalled, false);
@@ -1286,7 +1286,7 @@ test("getFoodOrderReply: checkout never guesses a payment method when COD isn't 
     pendingCartSessions,
     pendingOrderConfirmations,
     classifyOrderIntent: async () => ({ type: "checkout" }),
-    nvidiaNim,
+    nlu,
   });
 
   assert.match(reply, /Cash on Delivery isn't available/);
@@ -1295,7 +1295,7 @@ test("getFoodOrderReply: checkout never guesses a payment method when COD isn't 
 
 // --- getFoodOrderReply: fail-closed behavior ---
 
-test("getFoodOrderReply returns undefined when NVIDIA NIM isn't enabled", async () => {
+test("getFoodOrderReply returns undefined when the NLU provider isn't enabled", async () => {
   const pendingCartSessions = new PendingCartSessions();
   pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
 
@@ -1305,7 +1305,7 @@ test("getFoodOrderReply returns undefined when NVIDIA NIM isn't enabled", async 
     pendingCartSessions,
     pendingOrderConfirmations: new PendingOrderConfirmations(),
     classifyOrderIntent: async () => ({ type: "add_to_cart", query: "pizza", quantity: 1 }),
-    nvidiaNim: { enabled: false },
+    nlu: { enabled: false },
   });
 
   assert.equal(reply, undefined);
@@ -1321,7 +1321,7 @@ test("getFoodOrderReply returns undefined when no order intent is classified", a
     pendingCartSessions,
     pendingOrderConfirmations: new PendingOrderConfirmations(),
     classifyOrderIntent: async () => undefined,
-    nvidiaNim,
+    nlu,
   });
 
   assert.equal(reply, undefined);
