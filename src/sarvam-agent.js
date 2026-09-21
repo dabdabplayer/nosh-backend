@@ -5,31 +5,30 @@ import {
   applyCoupon,
   buildReorderUsualReply,
   checkout,
-  describePastOrders,
   findCoupons,
+  recommendSimilar,
   removeFromCart,
   searchMenu,
   viewCart,
 } from "./food-order-orchestrator.js";
 
-// Confirmed live at 4: a real recommendation turn needs recommend_similar +
-// search_food + search_menu + a final text round = 4 rounds in the BEST
-// case (nothing round-limit-relevant left over), and the model reasonably
-// trying a second restaurant/dish when the first search_menu result wasn't
-// a good match (a legitimate retry, not a bug) pushes that to 5+ - which
-// hit this exact cap with `rounds: 4` in Render's logs, silently returning
-// the generic placeholder instead of the recommendation. 4 was sized for
-// the older, simpler tool set (pre-search_menu) and never revisited when
-// search_menu was added.
-// Raised again, 6 -> 8: confirmed live that REJECTING a recommendation and
-// asking for something different needs even more room than a first-time
-// recommendation - it has to avoid every dish already tried/had/rejected
-// this conversation, which shrinks the real remaining options and can take
-// more search_menu attempts to land on one. Hit `rounds: 6` with every
-// search_menu call in the trace actually reaching Swiggy for real (not
-// short-circuited), meaning genuinely none of those attempts found a
-// match within budget. See AGENTS.md's rate-limit math note for the
-// req/min tradeoff of raising this further.
+// History: this was raised from 4 -> 6 -> 8 because a recommendation turn
+// used to need recommend_similar (text-only) + agent-driven search_food +
+// one-or-more agent-driven search_menu retries + a final text round - each
+// retry was a full Sarvam round-trip, and REJECTING a recommendation needed
+// even more room to avoid every dish already tried this conversation. That
+// entire multi-round shape is gone: recommendSimilar (in
+// food-order-orchestrator.js) now does the address/history-or-craving
+// lookup AND fetches real candidate menu items via get_restaurant_menu
+// itself, in one tool call, so a real recommendation is back down to ~2
+// rounds (the tool call, then the final phrased reply) in the common case.
+// Left at 8 rather than lowered, since no other flow (explicit search,
+// cart edits, checkout) was ever the source of a round-cap failure in
+// Render's logs - there's no evidence a smaller cap is needed elsewhere,
+// and 8 only matters as a ceiling, not a typical cost. Revisit downward if
+// Sarvam round-trip latency (not round *count*) is still the bottleneck
+// after this change - see AGENTS.md's rate-limit math note for the req/min
+// tradeoff either way.
 const MAX_TOOL_ROUNDS = 8;
 
 // Sarvam's default max_tokens is 2048, and with reasoning_effort enabled,
@@ -56,12 +55,12 @@ const SYSTEM_PROMPT = [
   "Mirror the language of the user's MOST RECENT message specifically, not the conversation's overall history - reply in Hindi only if their latest message is in Hindi (Devanagari) script, in Hinglish only if their latest message is Latin-script code-mixed Hindi/English, and in English otherwise. If they switch languages mid-conversation, switch your reply immediately to match - do not let an earlier turn's language (even several recent ones) carry over once they've moved on. Match their tone, not just their vocabulary.",
   "Vary your phrasing turn to turn - do not reuse the same sentence structure or stock phrases repeatedly; this should read like a real conversation, not a form letter.",
   "Keep every reply SHORT - this is WhatsApp, read on a phone, not email. One to three short sentences for most replies. Say the point first, skip preamble (\"Sorry\", \"Hmm\", \"Honestly\", \"I'm really sorry\" as an opener), skip restating the situation before getting to it, and skip padding the end with extra alternatives/options unless the user actually asked for options. When you genuinely have nothing to offer, one short sentence saying so is enough - do not also explain why, apologize at length, or list several fallback suggestions nobody asked for.",
-  "When a tool's result already contains a numbered list, a cart summary, a coupon list, or an order summary, translate/adapt it into the user's language and tone, but keep every number, name, quantity, and price EXACTLY as given, in the exact same order - never renumber, reorder, merge, or drop an item. Exception: search_food's restaurant list during a recommendation (see below) - do not show that list to the user at all.",
+  "When a tool's result already contains a numbered list, a cart summary, a coupon list, or an order summary, translate/adapt it into the user's language and tone, but keep every number, name, quantity, and price EXACTLY as given, in the exact same order - never renumber, reorder, merge, or drop an item. Exception: recommend_similar's candidate list (see below) - do not show that list to the user at all, you pick from it yourself.",
   "The checkout tool's result is an order summary awaiting confirmation, not a placed order. Relay it faithfully and always end by telling the user to reply with the literal English word \"YES\" to confirm or \"NO\" to cancel, even if the rest of your reply is in another language - that exact wording is what a separate, deterministic part of this app checks for, so do not paraphrase it into another language or a synonym.",
   "You can never place or confirm an order yourself, under any circumstance - there is no tool available to you that does that. Only the user replying literally \"YES\" to an order summary already shown can do that, through a separate part of this app. Never say or imply that an order has been placed or confirmed unless a tool result explicitly told you so.",
   "The general rule for whether the user has to pick a restaurant themselves: did they name a SPECIFIC dish or restaurant (\"biryani\", \"from Pizza Hut\", \"margherita pizza\")? If so, search normally and let them choose from real results - there's genuine ambiguity there. If they only described a craving, mood, or cuisine with no specific dish or restaurant named (\"I want to eat something good\", \"what should I get\", \"I want something spicy\", \"mujhe kuch teekha khana hai\", \"surprise me\") - in ANY language or phrasing, not just these exact examples - that is a request for YOU to decide; the user should never have to pick from a list in that case.",
-  "For that second case (you're deciding): call recommend_similar FIRST, every single time this happens, even if you already discussed their order history earlier in this conversation - do not rely on memory or skip straight to search_food/search_menu, always get a fresh real answer. Do not repeat their literal last order. Use their real order history (recommend_similar) to judge what they tend to like, then call search_food yourself - but ALWAYS with a concrete, specific, searchable term as the query. If their CURRENT message names a craving/cuisine (\"spicy\"), translate that into your own best concrete guess at a matching dish/cuisine (e.g. \"spicy\" -> try a dish like \"chicken tikka masala\" or a cuisine like \"North Indian\") - but if their current message names NO craving at all (a bare \"suggest me something\", \"suggest me\", \"recommend something\"), do NOT carry forward a craving from earlier in the conversation - instead search using the CUISINE or RESTAURANT NAME (never the specific dish name itself) from an order in their real history, so you land at a restaurant they already like, which is guaranteed to be real and searchable. Then, once you call search_menu there, you MUST pick a DIFFERENT item than the one they already ordered at that restaurant - never literally re-suggest their past dish itself, that defeats the entire point of a recommendation. If that restaurant genuinely has nothing else, try a different restaurant from their history the same way before falling back to a plain cuisine guess. If your search term finds nothing, try ONE different concrete term before giving up - never retry with the same vague word. Do NOT show search_food's restaurant list to the user or ask them which restaurant they want. Instead, pick one genuinely open restaurant from the result yourself, then call search_menu at that restaurant for a specific real dish and pick one real item from the result. Present that single pick as your recommendation - name, restaurant, and its real price from search_menu - and ask whether they want you to add it to their cart. Do NOT call add_to_cart yet at this point; only call it after they say yes (in whatever words/language they use) to that specific offer, using the exact restaurant and item you already found. You have a limited number of tool calls per turn - if your first restaurant genuinely has nothing matching, try at most ONE other real restaurant from search_food's result, then commit to whatever real, in-stock item you've found so far rather than continuing to search for something better; a good real recommendation beats no reply at all.",
-  "If the user rejects a recommendation you already made this conversation (\"something different\", \"no\", \"something else\", etc.), that means try an actually DIFFERENT real restaurant and item than the one you already proposed - never re-confirm or re-describe the same item you just offered, that is not what \"different\" means. Prefer a different real restaurant from search_food's candidate list over guessing a whole new cuisine, since you already know those restaurants are real and open. If you genuinely cannot find anything else after a reasonable try, say so plainly (per the no-hallucination rule) rather than repeating your last offer.",
+  "For that second case (you're deciding): call recommend_similar FIRST, every single time this happens, even if you already discussed their order history earlier in this conversation - do not rely on memory, always get a fresh real answer. It already returns a short list of real, in-stock menu items with real restaurant names and prices - pass a `craving` argument (your own concrete translation of a mood/cuisine, e.g. \"spicy\" -> \"chicken tikka masala\") ONLY if their CURRENT message actually states a craving; omit it entirely for a bare \"suggest something\"/\"recommend something\" so it uses their real order history instead. Pick ONE item from the result that best fits what they tend to like, preferring one not marked as already-ordered-before - do not repeat their literal last order. Present that pick - name, restaurant, and its real price - and ask whether they want it added. Do NOT call add_to_cart yet; only call it after they say yes (in whatever words/language they use), using the exact restaurant and item name from the recommend_similar result. Do NOT show recommend_similar's candidate list to the user or ask them to pick - that defeats the point of a recommendation.",
+  "If the user rejects a recommendation you already made this conversation (\"something different\", \"no\", \"something else\", etc.), call recommend_similar again and pick a genuinely different real item than the one you already offered (check your own earlier reply in this conversation for what that was) - never re-confirm or re-describe the same item you just offered, that is not what \"different\" means. If you genuinely cannot find anything else after that, say so plainly (per the no-hallucination rule) rather than repeating your last offer.",
   "If every search this turn genuinely came back empty and you truly have nothing real to recommend, say so plainly and stop there - never invent a cuisine, restaurant, or dish as a consolation suggestion (e.g. mentioning \"Chinese places\" or any other option you did not actually see in a tool result this conversation is a hallucination, not a helpful save). Reporting an honest \"nothing matched\" is always correct; making something up to sound more helpful is never acceptable, no exceptions for this being a disappointing answer.",
   "This applies just as much when a tool call itself succeeds but its result says it found nothing (e.g. search_menu replying \"Couldn't find X at Y\") - that is the SAME empty-result case as above, not a license to state a specific item name or price anyway because the call technically went through. A tool call succeeding only means the request reached Swiggy; it does not mean it found what you were looking for - read what the result actually says before claiming anything from it.",
   "Never claim their order history is sparse, unavailable, or unhelpful unless you actually called recommend_similar THIS turn and it genuinely came back that way - skipping that call and then saying you \"don't have much to go on\" is the same kind of false claim as inventing a restaurant, just phrased as a limitation instead of a suggestion.",
@@ -194,8 +193,17 @@ const RECOMMEND_SIMILAR_TOOL = Object.freeze({
   function: {
     name: "recommend_similar",
     description:
-      "Get the user's real past-order history so you can reason about what to suggest next - something similar to what they tend to like, but not the exact same order again. After calling this, call search_food to find a concrete restaurant, then search_menu for a real dish and price there - never show search_food's restaurant list to the user or ask them to pick one; the point of a recommendation is that they don't have to decide. Present your single pick with its real price and ask if they want it added - do not call add_to_cart until they say yes.",
-    parameters: { type: "object", properties: {} },
+      "Get a short list of real, in-stock menu items (with real restaurant names and real prices) to recommend from - already gathered for you, no further search needed. With no craving argument, these come from the user's real past-order history (restaurants they already like, items they haven't already had there). With a craving argument, these come from a real search for that craving/cuisine instead. Pick ONE item from the result yourself and present it - never show the full list to the user or ask them to pick; the point of a recommendation is that they don't have to decide. Do not call add_to_cart until they say yes.",
+    parameters: {
+      type: "object",
+      properties: {
+        craving: {
+          type: "string",
+          description:
+            "A concrete cuisine/dish guess translated from a craving/mood the user's CURRENT message actually stated (e.g. \"spicy\" -> \"chicken tikka masala\" or \"North Indian\"). Omit entirely if their current message named no craving at all (a bare \"suggest something\"/\"recommend something\") - omitting uses their real order history instead, which is what you want in that case.",
+        },
+      },
+    },
   },
 });
 
@@ -292,7 +300,12 @@ async function executeTool(name, args, ctx) {
         return await buildReorderUsualReply({ senderId, swiggyFoodClient, pendingCartSessions });
 
       case "recommend_similar":
-        return await describePastOrders({ swiggyFoodClient, senderId, pendingCartSessions });
+        return await recommendSimilar({
+          swiggyFoodClient,
+          senderId,
+          pendingCartSessions,
+          craving: typeof args.craving === "string" && args.craving.trim() ? args.craving.trim() : undefined,
+        });
 
       default:
         return "That action isn't available.";

@@ -5,12 +5,12 @@ import {
   applyCoupon,
   buildReorderUsualReply,
   checkout,
-  describePastOrders,
   findCoupons,
   findUsualOrder,
   NO_ACTIVE_ORDER_REPLY,
   parseOrderConfirmationReply,
   placeConfirmedOrder,
+  recommendSimilar,
   removeFromCart,
   resolvePendingCartCandidateReply,
   searchMenu,
@@ -62,6 +62,7 @@ function fakeClient(overrides = {}) {
     getFoodOrders: overrides.getFoodOrders ?? (async () => payload({ orders: [] })),
     getFoodOrderDetails: overrides.getFoodOrderDetails,
     flushFoodCart: overrides.flushFoodCart ?? (async () => payload({ success: true })),
+    getRestaurantMenu: overrides.getRestaurantMenu ?? (async () => payload({ items: [] })),
   };
 }
 
@@ -1541,9 +1542,13 @@ test("buildReorderUsualReply falls back to a generic reply when updateFoodCart t
   assert.match(reply, /couldn't do that right now/);
 });
 
-// --- describePastOrders ---
+// --- recommendSimilar ---
 
-test("describePastOrders lists every distinct restaurant with how often and what was ordered, most-recently-ordered-from first", async () => {
+function restaurantMenuItemsPayload(items) {
+  return payload({ items });
+}
+
+test("recommendSimilar (no craving) returns real, in-stock, not-yet-tried items from the most-recent distinct restaurants in real order history", async () => {
   const client = fakeClient({
     getFoodOrders: async () =>
       payload({
@@ -1553,51 +1558,61 @@ test("describePastOrders lists every distinct restaurant with how often and what
           orderSummary({ orderId: "o1", restaurantId: "rest-1", restaurantName: "Biryani House", orderedItems: "1x Mutton Biryani" }),
         ],
       }),
+    getRestaurantMenu: async ({ restaurantId }) =>
+      restaurantId === "rest-1"
+        ? restaurantMenuItemsPayload([
+            { id: "i1", name: "Chicken Biryani", price: 249, inStock: 1 },
+            { id: "i2", name: "Veg Biryani", price: 199, inStock: 1 },
+          ])
+        : restaurantMenuItemsPayload([{ id: "i3", name: "Farmhouse Pizza", price: 299, inStock: 1 }]),
   });
 
-  const reply = await describePastOrders({ swiggyFoodClient: client });
+  const reply = await recommendSimilar({ swiggyFoodClient: client });
 
-  assert.match(reply, /- Biryani House, ordered 2 times \(ordered: 1x Chicken Biryani\)/);
-  assert.match(reply, /- Pizza Place, ordered once \(ordered: 1x Margherita\)/);
-  // Unlike the old single-pick recommendation, both restaurants are real
-  // facts the agent gets to reason over - this function no longer decides
-  // which one to suggest.
-  assert.match(reply, /to find a restaurant they already like/);
-  assert.match(reply, /must be DIFFERENT from what they already ordered/);
+  // Most-recently-ordered-from restaurant first.
+  const biryaniIndex = reply.indexOf("Biryani House");
+  const pizzaIndex = reply.indexOf("Pizza Place");
+  assert.ok(biryaniIndex >= 0 && pizzaIndex >= 0 && biryaniIndex < pizzaIndex);
+  // Already-ordered item excluded entirely from the real candidate lines (a not-yet-tried one exists) -
+  // it's still mentioned in the "previously ordered" history note, just not offered as a candidate.
+  assert.doesNotMatch(reply, /- Chicken Biryani/);
+  assert.match(reply, /Veg Biryani — ₹199/);
+  assert.match(reply, /Farmhouse Pizza — ₹299/);
+  assert.match(reply, /Pick ONE item from the list above/);
   assert.match(reply, /Never invent a dish, restaurant, or price/);
 });
 
-test("describePastOrders preserves order (most recently ordered-from first)", async () => {
+test("recommendSimilar (no craving) falls back to a restaurant's top items, marked as already-ordered, when everything there was already tried", async () => {
   const client = fakeClient({
     getFoodOrders: async () =>
-      payload({
-        orders: [
-          orderSummary({ orderId: "o2", restaurantId: "rest-2", restaurantName: "Pizza Place", orderedItems: "1x Margherita" }),
-          orderSummary({ orderId: "o1", restaurantId: "rest-1", restaurantName: "Biryani House", orderedItems: "1x Biryani" }),
-        ],
-      }),
+      payload({ orders: [orderSummary({ orderId: "o1", restaurantId: "rest-1", restaurantName: "Biryani House", orderedItems: "1x Chicken Biryani" })] }),
+    getRestaurantMenu: async () => restaurantMenuItemsPayload([{ id: "i1", name: "Chicken Biryani", price: 249, inStock: 1 }]),
   });
 
-  const reply = await describePastOrders({ swiggyFoodClient: client });
+  const reply = await recommendSimilar({ swiggyFoodClient: client });
 
-  const pizzaIndex = reply.indexOf("Pizza Place");
-  const biryaniIndex = reply.indexOf("Biryani House");
-  assert.ok(pizzaIndex >= 0 && biryaniIndex >= 0 && pizzaIndex < biryaniIndex);
-  assert.match(reply, /- Pizza Place, ordered once \(ordered: 1x Margherita\)/);
+  assert.match(reply, /Chicken Biryani — ₹249 \(they've ordered this, or something like it, before\)/);
 });
 
-test("describePastOrders works off a single past order (no >=2 threshold, unlike reorder_usual)", async () => {
+test("recommendSimilar (no craving) excludes out-of-stock items and prefers bestsellers first", async () => {
   const client = fakeClient({
     getFoodOrders: async () =>
       payload({ orders: [orderSummary({ orderId: "o1", restaurantId: "rest-1", restaurantName: "Biryani House" })] }),
+    getRestaurantMenu: async () =>
+      restaurantMenuItemsPayload([
+        { id: "i1", name: "Regular Item", price: 100, inStock: 1, isBestseller: false },
+        { id: "i2", name: "Out of Stock Item", price: 150, inStock: 0 },
+        { id: "i3", name: "Bestseller Item", price: 200, inStock: 1, isBestseller: true },
+      ]),
   });
 
-  const reply = await describePastOrders({ swiggyFoodClient: client });
+  const reply = await recommendSimilar({ swiggyFoodClient: client });
 
-  assert.match(reply, /- Biryani House, ordered once/);
+  assert.doesNotMatch(reply, /Out of Stock Item/);
+  assert.ok(reply.indexOf("Bestseller Item") < reply.indexOf("Regular Item"));
 });
 
-test("describePastOrders ignores active (in-progress) orders", async () => {
+test("recommendSimilar ignores active (in-progress) orders", async () => {
   const client = fakeClient({
     getFoodOrders: async () =>
       payload({
@@ -1605,67 +1620,68 @@ test("describePastOrders ignores active (in-progress) orders", async () => {
       }),
   });
 
-  const reply = await describePastOrders({ swiggyFoodClient: client });
+  const reply = await recommendSimilar({ swiggyFoodClient: client });
 
   assert.match(reply, /don't have any past orders/);
 });
 
-test("describePastOrders tells the user to add an address when they have none", async () => {
+test("recommendSimilar tells the user to add an address when they have none", async () => {
   const client = fakeClient({ getAddresses: async () => payload({ addresses: [], total: 0 }) });
 
-  const reply = await describePastOrders({ swiggyFoodClient: client });
+  const reply = await recommendSimilar({ swiggyFoodClient: client });
 
   assert.match(reply, /don't have a saved delivery address/);
 });
 
-test("describePastOrders gives a plain reply when there's no order history at all", async () => {
+test("recommendSimilar gives a plain reply when there's no order history at all", async () => {
   const client = fakeClient({ getFoodOrders: async () => payload({ orders: [] }) });
 
-  const reply = await describePastOrders({ swiggyFoodClient: client });
+  const reply = await recommendSimilar({ swiggyFoodClient: client });
 
   assert.match(reply, /don't have any past orders/);
 });
 
-test("describePastOrders falls back to a generic reply when getFoodOrders throws", async () => {
+test("recommendSimilar falls back to a generic reply when getFoodOrders throws", async () => {
   const client = fakeClient({
     getFoodOrders: async () => {
       throw new Error("boom");
     },
   });
 
-  const reply = await describePastOrders({ swiggyFoodClient: client });
+  const reply = await recommendSimilar({ swiggyFoodClient: client });
 
   assert.match(reply, /couldn't do that right now/);
 });
 
-test("describePastOrders never mutates the cart", async () => {
+test("recommendSimilar never mutates the cart", async () => {
   let updateFoodCartCalled = false;
   const client = fakeClient({
-    getFoodOrders: async () =>
-      payload({ orders: [orderSummary({ orderId: "o1", restaurantId: "rest-1" })] }),
+    getFoodOrders: async () => payload({ orders: [orderSummary({ orderId: "o1", restaurantId: "rest-1" })] }),
+    getRestaurantMenu: async () => restaurantMenuItemsPayload([{ id: "i1", name: "Item", price: 100, inStock: 1 }]),
     updateFoodCart: async () => {
       updateFoodCartCalled = true;
       return cartPayload(cartData());
     },
   });
 
-  await describePastOrders({ swiggyFoodClient: client });
+  await recommendSimilar({ swiggyFoodClient: client });
 
   assert.equal(updateFoodCartCalled, false);
 });
 
-test("describePastOrders persists the resolved address so a following search_food call reuses it", async () => {
+test("recommendSimilar persists the resolved address so a following add_to_cart call reuses it", async () => {
   const pendingCartSessions = new PendingCartSessions();
   const client = fakeClient({
     getFoodOrders: async () => payload({ orders: [orderSummary({ orderId: "o1", restaurantId: "rest-1" })] }),
+    getRestaurantMenu: async () => restaurantMenuItemsPayload([{ id: "i1", name: "Item", price: 100, inStock: 1 }]),
   });
 
-  await describePastOrders({ swiggyFoodClient: client, senderId: "sender-1", pendingCartSessions });
+  await recommendSimilar({ swiggyFoodClient: client, senderId: "sender-1", pendingCartSessions });
 
   assert.deepEqual(pendingCartSessions.peek("sender-1"), { addressId: "addr-1" });
 });
 
-test("describePastOrders never overwrites an already-established session", async () => {
+test("recommendSimilar never overwrites an already-established session", async () => {
   const pendingCartSessions = new PendingCartSessions();
   pendingCartSessions.set("sender-1", {
     addressId: "addr-existing",
@@ -1675,9 +1691,10 @@ test("describePastOrders never overwrites an already-established session", async
   });
   const client = fakeClient({
     getFoodOrders: async () => payload({ orders: [orderSummary({ orderId: "o1", restaurantId: "rest-1" })] }),
+    getRestaurantMenu: async () => restaurantMenuItemsPayload([{ id: "i1", name: "Item", price: 100, inStock: 1 }]),
   });
 
-  await describePastOrders({ swiggyFoodClient: client, senderId: "sender-1", pendingCartSessions });
+  await recommendSimilar({ swiggyFoodClient: client, senderId: "sender-1", pendingCartSessions });
 
   assert.deepEqual(pendingCartSessions.peek("sender-1"), {
     addressId: "addr-existing",
@@ -1685,4 +1702,46 @@ test("describePastOrders never overwrites an already-established session", async
     restaurantName: "Existing Place",
     cartRestaurantId: "r-existing",
   });
+});
+
+test("recommendSimilar with a craving searches real open restaurants for it instead of using order history", async () => {
+  let searchedQuery;
+  const client = fakeClient({
+    searchRestaurants: async ({ query }) => {
+      searchedQuery = query;
+      return payload({ restaurants: [{ id: "r1", name: "Spice House", availabilityStatus: "OPEN" }] });
+    },
+    getRestaurantMenu: async () =>
+      restaurantMenuItemsPayload([{ id: "i1", name: "Chicken Tikka Masala", price: 279, inStock: 1 }]),
+    getFoodOrders: async () => {
+      throw new Error("should not be called when a craving is given");
+    },
+  });
+
+  const reply = await recommendSimilar({ swiggyFoodClient: client, craving: "chicken tikka masala" });
+
+  assert.equal(searchedQuery, "chicken tikka masala");
+  assert.match(reply, /Spice House/);
+  assert.match(reply, /Chicken Tikka Masala — ₹279/);
+});
+
+test("recommendSimilar with a craving reports honestly when nothing real is open for it", async () => {
+  const client = fakeClient({ searchRestaurants: async () => payload({ restaurants: [] }) });
+
+  const reply = await recommendSimilar({ swiggyFoodClient: client, craving: "sushi" });
+
+  assert.match(reply, /couldn't find any open restaurants for "sushi"/);
+});
+
+test("recommendSimilar falls back to a generic reply when every candidate restaurant's menu lookup fails", async () => {
+  const client = fakeClient({
+    getFoodOrders: async () => payload({ orders: [orderSummary({ orderId: "o1", restaurantId: "rest-1" })] }),
+    getRestaurantMenu: async () => {
+      throw new Error("boom");
+    },
+  });
+
+  const reply = await recommendSimilar({ swiggyFoodClient: client });
+
+  assert.match(reply, /couldn't do that right now/);
 });

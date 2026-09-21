@@ -186,7 +186,7 @@ function buildReorderCartItems(orderItems) {
 // Requires >=2 non-active orders at the SAME restaurant to call it a
 // "usual" (a single past order isn't a pattern); otherwise returns
 // NO_USUAL_REPLY as the tool result, which the agent is expected to relay
-// (see describePastOrders/recommend_similar below for the "something
+// (see recommendSimilar/recommend_similar below for the "something
 // similar, not identical" case instead).
 //
 // On a match: fetches that order's structured items via
@@ -307,63 +307,185 @@ export async function buildReorderUsualReply({ senderId, swiggyFoodClient, pendi
 const NO_ORDER_HISTORY_REPLY =
   "You don't have any past orders yet for me to base a recommendation on — search for a restaurant or dish instead.";
 
-// Tool implementation for the agent's `recommend_similar` tool (see
-// src/sarvam-agent.js) - "recommend something similar to what I like, not
-// the exact same thing again" needs real reasoning over the user's actual
-// order history, which this function does NOT do itself: Swiggy's Food MCP
-// has no documented recommendation/bestseller/personalization/similarity
-// tool (AGENTS.md: never invent one), so this only gathers and returns the
-// REAL facts - which restaurants/items this sender has actually ordered,
-// and how often - built entirely from get_food_orders' own documented
-// fields (restaurantName, orderedItems). The agent is the one that reasons
-// about what's "similar but different" from there, and it's instructed
-// (system prompt, and again in this function's own returned text) to then
-// call search_food and add_to_cart itself - silently picking a restaurant
-// and dish rather than surfacing search_food's restaurant list and asking
-// the user to choose (the whole point of "recommend something" is that the
-// user shouldn't have to decide) - so unlike this function, which is
-// text-only, the overall recommend_similar flow DOES end up touching the
-// cart, via a later add_to_cart call the agent makes on its own.
-export async function describePastOrders({ swiggyFoodClient, senderId, pendingCartSessions }) {
-  let addressResult;
+const RECOMMEND_MAX_RESTAURANTS = 2;
+const RECOMMEND_MAX_ITEMS_PER_RESTAURANT = 4;
+
+// Real menu items a sender has already ordered (per their own order-history
+// strings, e.g. "1x Chicken Biryani") are excluded by a loose case-insensitive
+// substring check rather than an exact match - get_food_orders' orderedItems
+// field is a free-text description ("1x Chicken Biryani"), not a structured
+// item name/id, so this is the only real-data way to tell "have they had
+// this exact dish before" without inventing a match strategy Swiggy doesn't
+// document.
+function wasAlreadyOrdered(itemName, orderedItemStrings) {
+  const nameNormalized = (itemName ?? "").trim().toLowerCase();
+  if (!nameNormalized) {
+    return false;
+  }
+  return orderedItemStrings.some((raw) => raw.toLowerCase().includes(nameNormalized));
+}
+
+// Turns a restaurant's real, live get_restaurant_menu result into a short
+// block of real candidate items for the agent to pick from - in-stock only,
+// bestsellers first, capped at RECOMMEND_MAX_ITEMS_PER_RESTAURANT. Prefers
+// items NOT already in orderedItemStrings (a genuinely new suggestion), but
+// falls back to the restaurant's top items generally (still real, just not
+// guaranteed novel) rather than returning nothing when everything on a small
+// menu has already been tried. Returns undefined if the menu call fails or
+// comes back with nothing usable, so the caller can move on to its next
+// candidate restaurant instead of failing the whole recommendation.
+async function buildRestaurantCandidateBlock({ swiggyFoodClient, addressId, restaurantId, restaurantName, orderedItemStrings }) {
+  let menuResult;
   try {
-    addressResult = await swiggyFoodClient.getAddresses({});
+    menuResult = await swiggyFoodClient.getRestaurantMenu({ addressId, restaurantId });
   } catch {
-    return GENERIC_FALLBACK_REPLY;
+    return undefined;
   }
 
-  const parsedAddresses = parseStructuredPayload(addressResult);
-  const addresses = Array.isArray(parsedAddresses?.addresses) ? parsedAddresses.addresses : undefined;
-
-  if (addresses === undefined) {
-    return GENERIC_FALLBACK_REPLY;
+  const items = parseStructuredPayload(menuResult)?.items;
+  if (!Array.isArray(items)) {
+    return undefined;
   }
 
-  if ((typeof parsedAddresses?.total === "number" ? parsedAddresses.total : addresses.length) === 0) {
-    return NO_SAVED_ADDRESS_REPLY;
+  const inStockItems = items.filter((item) => item?.inStock !== 0);
+  const notYetTried = inStockItems.filter((item) => !wasAlreadyOrdered(item.name, orderedItemStrings));
+  const pool = notYetTried.length > 0 ? notYetTried : inStockItems;
+
+  if (pool.length === 0) {
+    return undefined;
   }
 
-  // Same one-message-shortcut simplification as buildReorderUsualReply
-  // above - doesn't prompt to disambiguate multiple saved addresses.
-  const addressId = addresses[0]?.id;
+  const sorted = [...pool].sort((a, b) => (b.isBestseller ? 1 : 0) - (a.isBestseller ? 1 : 0));
+  const picked = sorted.slice(0, RECOMMEND_MAX_ITEMS_PER_RESTAURANT);
+  const notYetTriedSet = new Set(notYetTried);
+
+  const itemLines = picked.map((item) => {
+    const price = typeof item.price === "number" ? ` — ₹${item.price}` : "";
+    const badge = notYetTriedSet.has(item) ? "" : " (they've ordered this, or something like it, before)";
+    return `  - ${item.name}${price}${badge}`;
+  });
+
+  const historyNote = orderedItemStrings.length > 0 ? orderedItemStrings.join(", ") : "unknown";
+  return [`${restaurantName} (previously ordered: ${historyNote}):`, ...itemLines].join("\n");
+}
+
+const RECOMMEND_CLOSING_INSTRUCTIONS =
+  "Pick ONE item from the list above that best fits what they tend to like, preferring one not marked as " +
+  "already-ordered-before. Present its real name, restaurant, and real price, and ask if they want it added " +
+  "- do not call add_to_cart until they say yes. Do not show this raw list to the user or ask them to pick - " +
+  "you decide. If they reject this pick, call recommend_similar again and choose a genuinely different item " +
+  "than the one you already offered (check your own earlier reply in this conversation). Never invent a " +
+  "dish, restaurant, or price not listed above.";
+
+// Tool implementation for the agent's `recommend_similar` tool (see
+// src/sarvam-agent.js). Does the entire "find something real to suggest"
+// job in ONE tool call - resolving the address, reading real order history
+// (or, if `craving` is given, running a real restaurant search for that
+// craving instead), and fetching each candidate restaurant's real, live
+// menu via get_restaurant_menu - so the agent gets a short list of real,
+// in-stock items with real prices to choose from directly, without needing
+// a separate search_food/search_menu round-trip (or several, if the first
+// pick didn't pan out) to get there. This used to be spread across
+// recommend_similar (text-only, describing history) + a agent-driven
+// search_food + one-or-more search_menu calls; collapsing it here cuts a
+// real recommendation from 4-8 sequential Sarvam round-trips down to about
+// 2 (this tool call, then the final phrased reply) without moving the
+// actual judgment call (which real item best fits this user) off the
+// model - the code only gathers candidates, same pattern checkout already
+// uses for "fetch cart + payment options in one call, then let the agent
+// phrase the summary". Swiggy's Food MCP has no documented
+// recommendation/bestseller/personalization tool (AGENTS.md: never invent
+// one) - every fact returned here (restaurant name, item name, price) comes
+// straight from a real tool result; only which restaurants/items to surface
+// is this function's own heuristic (recency + bestseller-first), not a
+// judgment about what the user would actually like.
+export async function recommendSimilar({ swiggyFoodClient, senderId, pendingCartSessions, craving }) {
+  const existingAddressId = pendingCartSessions?.peek(senderId)?.addressId;
+  let addressId = existingAddressId;
 
   if (!addressId) {
-    return GENERIC_FALLBACK_REPLY;
+    let addressResult;
+    try {
+      addressResult = await swiggyFoodClient.getAddresses({});
+    } catch {
+      return GENERIC_FALLBACK_REPLY;
+    }
+
+    const parsedAddresses = parseStructuredPayload(addressResult);
+    const addresses = Array.isArray(parsedAddresses?.addresses) ? parsedAddresses.addresses : undefined;
+
+    if (addresses === undefined) {
+      return GENERIC_FALLBACK_REPLY;
+    }
+
+    if ((typeof parsedAddresses?.total === "number" ? parsedAddresses.total : addresses.length) === 0) {
+      return NO_SAVED_ADDRESS_REPLY;
+    }
+
+    // Same one-message-shortcut simplification as buildReorderUsualReply
+    // above - doesn't prompt to disambiguate multiple saved addresses.
+    addressId = addresses[0]?.id;
+
+    if (!addressId) {
+      return GENERIC_FALLBACK_REPLY;
+    }
   }
 
-  // Persist this choice (but never overwrite an existing session - a
-  // recommendation shouldn't wipe out cart/restaurant state from an
-  // unrelated earlier action just by being asked about) so the search_food
-  // call the agent makes moments later, as part of the SAME recommendation,
-  // reuses this address instead of asking again - see searchFood's matching
-  // reuse check in food-search-orchestrator.js. Without this, a
-  // recommendation for a sender with 2+ saved addresses always re-asked
-  // "which address?" right after describePastOrders had already silently
-  // picked one for itself.
+  // Persist this choice (but never overwrite an existing session) so a
+  // later add_to_cart call this conversation, once the user says yes,
+  // reuses this address instead of asking again.
   if (senderId && pendingCartSessions && !pendingCartSessions.peek(senderId)?.addressId) {
     pendingCartSessions.set(senderId, { addressId });
   }
 
+  // Case B: the user stated a craving/cuisine and the agent translated it
+  // into a concrete search term - find real open restaurants matching that,
+  // rather than restaurants from history (a stated craving overrides "what
+  // they usually get").
+  if (craving) {
+    let searchResult;
+    try {
+      searchResult = await swiggyFoodClient.searchRestaurants({ query: craving, addressId });
+    } catch {
+      return GENERIC_FALLBACK_REPLY;
+    }
+
+    const restaurants = parseStructuredPayload(searchResult)?.restaurants;
+    const openRestaurants = Array.isArray(restaurants)
+      ? restaurants.filter((restaurant) => restaurant?.availabilityStatus === "OPEN").slice(0, RECOMMEND_MAX_RESTAURANTS)
+      : [];
+
+    if (openRestaurants.length === 0) {
+      return `I couldn't find any open restaurants for "${craving}" right now.`;
+    }
+
+    const blocks = [];
+    for (const restaurant of openRestaurants) {
+      const block = await buildRestaurantCandidateBlock({
+        swiggyFoodClient,
+        addressId,
+        restaurantId: restaurant.id,
+        restaurantName: restaurant.name,
+        orderedItemStrings: [],
+      });
+      if (block) {
+        blocks.push(block);
+      }
+    }
+
+    if (blocks.length === 0) {
+      return `I found open restaurants for "${craving}" but couldn't pull up a real menu for any of them right now.`;
+    }
+
+    return [
+      `Real menu candidates for "${craving}", from real open restaurants near this user:`,
+      ...blocks,
+      RECOMMEND_CLOSING_INSTRUCTIONS,
+    ].join("\n");
+  }
+
+  // Case A: no stated craving - base the recommendation on real order
+  // history instead.
   let ordersResult;
   try {
     ordersResult = await swiggyFoodClient.getFoodOrders({ addressId });
@@ -384,41 +506,45 @@ export async function describePastOrders({ swiggyFoodClient, senderId, pendingCa
     return NO_ORDER_HISTORY_REPLY;
   }
 
-  // get_food_orders' own doc says results come back newest-first, so this
-  // preserves that order (most recent first) rather than re-sorting -
-  // recency is itself a real, useful signal for the agent's own reasoning,
-  // not something this function should collapse into a single "top" pick
-  // the way the old restaurant-recommendation version did.
-  const countsByRestaurant = new Map();
+  // get_food_orders' own doc says results come back newest-first; dedupe to
+  // distinct restaurants while preserving that recency order, and collect
+  // every raw orderedItems string per restaurant so real menu items can be
+  // filtered against what was actually ordered before.
+  const orderedByRestaurant = new Map();
   for (const order of pastOrders) {
-    countsByRestaurant.set(order.restaurantId, (countsByRestaurant.get(order.restaurantId) ?? 0) + 1);
+    const existing = orderedByRestaurant.get(order.restaurantId);
+    if (existing) {
+      if (order.orderedItems) {
+        existing.orderedItemStrings.push(order.orderedItems);
+      }
+    } else {
+      orderedByRestaurant.set(order.restaurantId, {
+        restaurantId: order.restaurantId,
+        restaurantName: order.restaurantName,
+        orderedItemStrings: order.orderedItems ? [order.orderedItems] : [],
+      });
+    }
   }
 
-  const seenRestaurantIds = new Set();
-  const lines = [];
-  for (const order of pastOrders) {
-    if (seenRestaurantIds.has(order.restaurantId)) {
-      continue;
-    }
-    seenRestaurantIds.add(order.restaurantId);
+  const candidateRestaurants = [...orderedByRestaurant.values()].slice(0, RECOMMEND_MAX_RESTAURANTS);
 
-    const timesOrdered = countsByRestaurant.get(order.restaurantId);
-    const timesPhrase = timesOrdered === 1 ? "once" : `${timesOrdered} times`;
-    const itemsPhrase = order.orderedItems ? ` (ordered: ${order.orderedItems})` : "";
-    lines.push(`- ${order.restaurantName}, ordered ${timesPhrase}${itemsPhrase}`);
+  const blocks = [];
+  for (const restaurant of candidateRestaurants) {
+    const block = await buildRestaurantCandidateBlock({ swiggyFoodClient, addressId, ...restaurant });
+    if (block) {
+      blocks.push(block);
+    }
+  }
+
+  if (blocks.length === 0) {
+    return GENERIC_FALLBACK_REPLY;
   }
 
   return [
-    "Real order history for this user, most recently ordered-from restaurant first:",
-    ...lines,
-    "Use this to judge what they tend to like, then call search_food (using a cuisine or restaurant " +
-      "name from this history, not a specific dish they've already had) to find a restaurant they " +
-      "already like. Do not show search_food's restaurant list to the user or ask them to pick one - " +
-      "choose one open restaurant yourself, then call search_menu there for a real item and price. That " +
-      "item must be DIFFERENT from what they already ordered at that restaurant per this history - never " +
-      "search for or recommend the exact same dish again, that defeats the point of a recommendation. " +
-      "Present that pick and ask if they want it added - do not call add_to_cart until they say yes. " +
-      "Never invent a dish, restaurant, or price that didn't come back from a real tool result.",
+    "Real menu candidates for a recommendation, gathered from this user's actual order history and each " +
+      "restaurant's real current menu:",
+    ...blocks,
+    RECOMMEND_CLOSING_INSTRUCTIONS,
   ].join("\n");
 }
 
@@ -1163,10 +1289,12 @@ export async function addToCart({ senderId, query, quantity, restaurantNameHint,
 // Tool implementation for the agent's `search_menu` tool (see
 // src/sarvam-agent.js) - lets the agent find a real dish and its real price
 // at a specific restaurant WITHOUT adding anything to the cart, so it can
-// quote a real price and ask "want me to add it?" before committing (see
-// the recommend_similar flow's own instructions). Needs an addressId
-// already established by a prior search_food call in this conversation -
-// this never resolves a delivery address itself, unlike searchFood.
+// quote a real price and ask "want me to add it?" before committing, for an
+// EXPLICIT dish/restaurant request (recommend_similar handles the "you
+// decide" case itself now, via get_restaurant_menu, without going through
+// this tool). Needs an addressId already established by a prior search_food
+// call in this conversation - this never resolves a delivery address
+// itself, unlike searchFood.
 export async function searchMenu({ senderId, restaurantName, query, swiggyFoodClient, pendingCartSessions }) {
   const session = pendingCartSessions.peek(senderId);
 
