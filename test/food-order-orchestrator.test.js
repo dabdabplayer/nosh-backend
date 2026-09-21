@@ -1613,3 +1613,36 @@ test("describePastOrders never mutates the cart", async () => {
 
   assert.equal(updateFoodCartCalled, false);
 });
+
+test("describePastOrders persists the resolved address so a following search_food call reuses it", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  const client = fakeClient({
+    getFoodOrders: async () => payload({ orders: [orderSummary({ orderId: "o1", restaurantId: "rest-1" })] }),
+  });
+
+  await describePastOrders({ swiggyFoodClient: client, senderId: "sender-1", pendingCartSessions });
+
+  assert.deepEqual(pendingCartSessions.peek("sender-1"), { addressId: "addr-1" });
+});
+
+test("describePastOrders never overwrites an already-established session", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", {
+    addressId: "addr-existing",
+    restaurantId: "r-existing",
+    restaurantName: "Existing Place",
+    cartRestaurantId: "r-existing",
+  });
+  const client = fakeClient({
+    getFoodOrders: async () => payload({ orders: [orderSummary({ orderId: "o1", restaurantId: "rest-1" })] }),
+  });
+
+  await describePastOrders({ swiggyFoodClient: client, senderId: "sender-1", pendingCartSessions });
+
+  assert.deepEqual(pendingCartSessions.peek("sender-1"), {
+    addressId: "addr-existing",
+    restaurantId: "r-existing",
+    restaurantName: "Existing Place",
+    cartRestaurantId: "r-existing",
+  });
+});

@@ -324,7 +324,7 @@ const NO_ORDER_HISTORY_REPLY =
 // user shouldn't have to decide) - so unlike this function, which is
 // text-only, the overall recommend_similar flow DOES end up touching the
 // cart, via a later add_to_cart call the agent makes on its own.
-export async function describePastOrders({ swiggyFoodClient }) {
+export async function describePastOrders({ swiggyFoodClient, senderId, pendingCartSessions }) {
   let addressResult;
   try {
     addressResult = await swiggyFoodClient.getAddresses({});
@@ -349,6 +349,19 @@ export async function describePastOrders({ swiggyFoodClient }) {
 
   if (!addressId) {
     return GENERIC_FALLBACK_REPLY;
+  }
+
+  // Persist this choice (but never overwrite an existing session - a
+  // recommendation shouldn't wipe out cart/restaurant state from an
+  // unrelated earlier action just by being asked about) so the search_food
+  // call the agent makes moments later, as part of the SAME recommendation,
+  // reuses this address instead of asking again - see searchFood's matching
+  // reuse check in food-search-orchestrator.js. Without this, a
+  // recommendation for a sender with 2+ saved addresses always re-asked
+  // "which address?" right after describePastOrders had already silently
+  // picked one for itself.
+  if (senderId && pendingCartSessions && !pendingCartSessions.peek(senderId)?.addressId) {
+    pendingCartSessions.set(senderId, { addressId });
   }
 
   let ordersResult;

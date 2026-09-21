@@ -123,6 +123,21 @@ export async function searchFood(
   pendingAddressSelections,
   pendingCartSessions,
 ) {
+  // Reuse an address this sender already picked earlier in the same session
+  // rather than asking again - confirmed live: with 2 saved addresses,
+  // "which one?" was being asked on every single search_food call within
+  // one conversation, including twice within 20 seconds of each other, and
+  // again mid-recommendation (defeating "the user shouldn't have to
+  // decide"). This doesn't contradict get_addresses' own "always show the
+  // list and let the user pick" guidance below - that's about a FRESH
+  // resolution with no established context; this is just not re-asking a
+  // question this conversation already answered.
+  const existingAddressId = pendingCartSessions?.peek(senderId)?.addressId;
+
+  if (existingAddressId) {
+    return runRestaurantSearch(swiggyFoodClient, searchTerm, existingAddressId, senderId, pendingCartSessions);
+  }
+
   let addressResult;
   try {
     addressResult = await swiggyFoodClient.getAddresses({});

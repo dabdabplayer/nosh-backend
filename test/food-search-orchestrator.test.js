@@ -139,6 +139,32 @@ test("searchFood prompts and does not search when addresses are ambiguous", asyn
   assert.ok(pending.peek("sender-1"));
 });
 
+test("searchFood reuses an address already established this session instead of asking again", async () => {
+  const pending = new PendingAddressSelections();
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", { addressId: "addr-known" });
+
+  let getAddressesCalled = false;
+  const searchCalls = [];
+  const client = fakeSwiggyFoodClient({
+    getAddresses: async () => {
+      getAddressesCalled = true;
+      return payload(ambiguousAddresses);
+    },
+    searchRestaurants: async (params) => {
+      searchCalls.push(params);
+      return payload({ restaurants: [restaurant()] });
+    },
+  });
+
+  const reply = await searchFood("sender-1", "biryani", client, pending, pendingCartSessions);
+
+  assert.equal(getAddressesCalled, false);
+  assert.deepEqual(searchCalls, [{ query: "biryani", addressId: "addr-known" }]);
+  assert.equal(pending.peek("sender-1"), undefined);
+  assert.match(reply, /Test Restaurant/);
+});
+
 test("searchFood tells the user to add an address when they have none", async () => {
   const pending = new PendingAddressSelections();
   let searchCalled = false;
