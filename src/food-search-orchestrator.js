@@ -1,4 +1,5 @@
 import { parseStructuredPayload } from "./swiggy-food-client.js";
+import { pick } from "./language-preference.js";
 
 // Exported so recommendSimilar (src/food-order-orchestrator.js) can offer
 // the exact same address-disambiguation prompt/candidate shape rather than
@@ -11,8 +12,12 @@ const GENERIC_FALLBACK_REPLY =
 export const NO_SAVED_ADDRESS_REPLY =
   "You don't have a saved delivery address yet. Please add one in the Swiggy app and try again.";
 
-function noOpenRestaurantsReply(searchTerm) {
-  return `I couldn't find any open restaurants for "${searchTerm}" right now.`;
+function noOpenRestaurantsReply(searchTerm, lang = "en") {
+  return pick(lang, {
+    en: `I couldn't find any open restaurants for "${searchTerm}" right now.`,
+    hi: `अभी "${searchTerm}" के लिए कोई खुला रेस्टोरेंट नहीं मिला।`,
+    hinglish: `Abhi "${searchTerm}" ke liye koi open restaurant nahi mila.`,
+  });
 }
 
 // A reply to a pending "which address?" prompt is just the 1-based number of
@@ -33,16 +38,22 @@ export function formatAddressLabel(address) {
   return address?.addressLine ? `${tag} — ${address.addressLine}` : tag;
 }
 
-export function formatAddressPrompt(candidates) {
+export function formatAddressPrompt(candidates, lang = "en") {
   const lines = candidates.map((candidate, index) => `${index + 1}. ${candidate.label}`);
-  return [
-    "You have a few saved addresses — which one should I use?",
-    ...lines,
-    "Reply with the number.",
-  ].join("\n");
+  const header = pick(lang, {
+    en: "You have a few saved addresses — which one should I use?",
+    hi: "आपके पास कुछ सेव किए गए पते हैं — मैं कौन सा इस्तेमाल करूं?",
+    hinglish: "Aapke paas kuch saved addresses hain — kaunsa use karoon?",
+  });
+  const footer = pick(lang, {
+    en: "Reply with the number.",
+    hi: "नंबर के साथ जवाब दें।",
+    hinglish: "Number ke saath reply karein.",
+  });
+  return [header, ...lines, footer].join("\n");
 }
 
-function formatRestaurantReply(searchTerm, restaurants) {
+function formatRestaurantReply(searchTerm, restaurants, lang = "en") {
   const lines = restaurants.map((restaurant, index) => {
     const parts = [
       restaurant.avgRating !== undefined ? `⭐${restaurant.avgRating}` : undefined,
@@ -54,16 +65,25 @@ function formatRestaurantReply(searchTerm, restaurants) {
     return `${index + 1}. ${restaurant.name}${parts.length > 0 ? ` — ${parts.join(", ")}` : ""}`;
   });
 
-  return [`Here's what I found for "${searchTerm}":`, ...lines, "Which one would you like? Reply with the number."].join(
-    "\n",
-  );
+  const header = pick(lang, {
+    en: `Here's what I found for "${searchTerm}":`,
+    hi: `"${searchTerm}" के लिए मुझे ये मिले:`,
+    hinglish: `"${searchTerm}" ke liye ye mile:`,
+  });
+  const footer = pick(lang, {
+    en: "Which one would you like? Reply with the number.",
+    hi: "कौन सा चाहिए? नंबर के साथ जवाब दें।",
+    hinglish: "Kaunsa chahiye? Number ke saath reply karein.",
+  });
+
+  return [header, ...lines, footer].join("\n");
 }
 
 // Records the resolved delivery address as a lightweight cart session (no
 // restaurant chosen yet) so a later "add to cart" doesn't need to re-resolve
 // the address or make the user pick a restaurant by number first -
 // food-order-orchestrator.js fills in the restaurant on the first add.
-async function runRestaurantSearch(swiggyFoodClient, searchTerm, addressId, senderId, pendingCartSessions) {
+async function runRestaurantSearch(swiggyFoodClient, searchTerm, addressId, senderId, pendingCartSessions, lang = "en") {
   if (senderId && pendingCartSessions) {
     pendingCartSessions.set(senderId, { addressId });
   }
@@ -87,7 +107,7 @@ async function runRestaurantSearch(swiggyFoodClient, searchTerm, addressId, send
     .slice(0, MAX_RESTAURANT_RESULTS);
 
   if (openRestaurants.length === 0) {
-    return noOpenRestaurantsReply(searchTerm);
+    return noOpenRestaurantsReply(searchTerm, lang);
   }
 
   // Lets a bare number reply (e.g. "2") pick a restaurant straight off this
@@ -108,7 +128,7 @@ async function runRestaurantSearch(swiggyFoodClient, searchTerm, addressId, send
     });
   }
 
-  return formatRestaurantReply(searchTerm, openRestaurants);
+  return formatRestaurantReply(searchTerm, openRestaurants, lang);
 }
 
 // Tool implementation for the agent's `search_food` tool (see
@@ -119,12 +139,23 @@ async function runRestaurantSearch(swiggyFoodClient, searchTerm, addressId, send
 // then searches restaurants, returning already-good English text that the
 // agent is expected to relay/translate into the user's own language rather
 // than repeat verbatim - see the system prompt in sarvam-agent.js.
+// `lang` is used ONLY for this function's own address-disambiguation prompt
+// (the one branch below that's actually terminal when reached via the
+// agent's search_food tool call - see executeTool's "search_food" case in
+// sarvam-agent.js). It is deliberately NEVER forwarded to runRestaurantSearch
+// below (always "en" there): a restaurant list reached via the agent's own
+// search_food call is never terminal - the agent itself translates it per
+// the system prompt - so pre-translating it here would be a silent behavior
+// change to a path nobody asked to change. Only resolvePendingAddressReply's
+// own direct call to runRestaurantSearch (the "search" kind resume, which
+// bypasses this function and the agent entirely) passes a real lang.
 export async function searchFood(
   senderId,
   searchTerm,
   swiggyFoodClient,
   pendingAddressSelections,
   pendingCartSessions,
+  lang = "en",
 ) {
   // Reuse an address this sender already picked earlier in the same session
   // rather than asking again - confirmed live: with 2 saved addresses,
@@ -178,7 +209,7 @@ export async function searchFood(
     }));
 
     pendingAddressSelections.set(senderId, { kind: "search", searchTerm, candidates });
-    return formatAddressPrompt(candidates);
+    return formatAddressPrompt(candidates, lang);
   }
 
   const addressId = addresses[0]?.id;
@@ -192,8 +223,10 @@ export async function searchFood(
 
 // Deterministic pre-agent short-circuit: if this sender already has a
 // pending "which saved address?" prompt outstanding, a bare number reply
-// resolves it without ever invoking the agent - zero extra Sarvam calls, and
-// it works in any language since it's just a digit, not a keyword match.
+// resolves it without ever invoking the agent for a "search" kind pending
+// selection - zero extra Sarvam calls, and it works in any language since
+// it's just a digit, not a keyword match. A "recommend" kind pending
+// selection is different (see below) and DOES fall through to the agent.
 // Returns { handled: false } when there's no pending address selection at
 // all, OR when there is one but the reply isn't a valid number - in that
 // second case the stale prompt is cleared and the message is handed to the
@@ -211,12 +244,7 @@ export async function resolvePendingAddressReply({
   swiggyFoodClient,
   pendingAddressSelections,
   pendingCartSessions,
-  // Only used for a "recommend" kind pending selection (see recommendSimilar
-  // in food-order-orchestrator.js) - injected as a parameter, not imported
-  // directly, since food-order-orchestrator.js already imports FROM this
-  // file (MAX_ADDRESS_CANDIDATES/formatAddressLabel/formatAddressPrompt
-  // above); importing back would be circular.
-  recommendSimilar,
+  lang = "en",
 }) {
   const pending = pendingAddressSelections.peek(message.from);
 
@@ -234,26 +262,34 @@ export async function resolvePendingAddressReply({
   pendingAddressSelections.clear(message.from);
   const addressId = pending.candidates[selectedIndex].id;
 
-  try {
-    // A recommendation's address prompt resumes back into recommendSimilar
-    // itself (with the SAME craving it was about to use, if any) rather
-    // than running a restaurant search - the whole point of "recommend
-    // something" is that the user picks an address, not a restaurant. Set
-    // the resolved address into the session FIRST so recommendSimilar's own
-    // existingAddressId check picks it up instead of re-fetching addresses
-    // and re-asking.
-    if (pending.kind === "recommend") {
-      pendingCartSessions?.set(message.from, { addressId });
-      const replyText = await recommendSimilar({
-        swiggyFoodClient,
-        senderId: message.from,
-        pendingCartSessions,
-        craving: pending.craving,
-      });
-      return { handled: true, replyText };
-    }
+  // A recommendation's address prompt does NOT resolve deterministically
+  // here, unlike a search's. recommendSimilar's own return value is
+  // LLM-facing instructional text (candidate items + "pick one and phrase
+  // it" guidance), never meant to reach the user directly - calling it here
+  // and returning its text as replyText would leak that raw internal text
+  // straight to WhatsApp. Instead, just record the resolved address and step
+  // aside (handled: false): buildReplyText then runs the bare number reply
+  // through the normal agent turn, and the agent has everything it needs in
+  // pendingConversationHistory - its own address-list turn (with this exact
+  // candidate's label) and the original craving-bearing request before it -
+  // to infer which address was picked and call recommend_similar again
+  // itself, now that pendingCartSessions.addressId is already set. pending.
+  // craving is kept in the pending record (unused here) as a documented
+  // upgrade path if this inference ever proves unreliable in practice.
+  if (pending.kind === "recommend") {
+    pendingCartSessions?.set(message.from, { addressId });
+    return { handled: false };
+  }
 
-    const replyText = await runRestaurantSearch(swiggyFoodClient, pending.searchTerm, addressId, message.from, pendingCartSessions);
+  try {
+    const replyText = await runRestaurantSearch(
+      swiggyFoodClient,
+      pending.searchTerm,
+      addressId,
+      message.from,
+      pendingCartSessions,
+      lang,
+    );
     return { handled: true, replyText };
   } catch (error) {
     console.error("Food search orchestration failed unexpectedly.", { name: error.name });

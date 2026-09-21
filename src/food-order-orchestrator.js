@@ -5,6 +5,7 @@ import {
   NO_SAVED_ADDRESS_REPLY,
   parseAddressSelectionReply,
 } from "./food-search-orchestrator.js";
+import { pick } from "./language-preference.js";
 import { parseStructuredPayload } from "./swiggy-food-client.js";
 
 const MAX_COUPONS = 5;
@@ -35,7 +36,19 @@ export function parseOrderConfirmationReply(text) {
 
 const GENERIC_FALLBACK_REPLY =
   "Sorry, I couldn't do that right now. Please try again in a bit.";
-const EMPTY_CART_REPLY = "Your cart is empty — search for something and ask me to add it first.";
+
+// lang-aware, used only by the deterministic TERMINAL_TOOLS paths
+// (view_cart/checkout/apply_coupon - see formatCartReply/handleCheckout
+// below); every agent-phrased caller (add_to_cart, remove_from_cart,
+// reorder_usual) keeps calling this with no lang argument (default "en")
+// since the agent already translates its own replies.
+function emptyCartReply(lang = "en") {
+  return pick(lang, {
+    en: "Your cart is empty — search for something and ask me to add it first.",
+    hi: "आपकी कार्ट खाली है — पहले कुछ खोजें और मुझसे कार्ट में डालने को कहें।",
+    hinglish: "Aapki cart khali hai — pehle kuch search karein aur mujhe add karne ko kahein.",
+  });
+}
 
 // Every tool that reads/writes the cart returns the real data nested under
 // `data` (confirmed live against the real Swiggy Food MCP server), unlike
@@ -59,7 +72,7 @@ function unwrapCartPayload(toolResult) {
 // get_food_cart's documented output schema. Only shows a line when its
 // field is actually present, per this file's existing "never invent a
 // fallback value" convention.
-function formatPricingBreakdown(pricing, offers, { totalLabel = "Total" } = {}) {
+function formatPricingBreakdown(pricing, offers, { totalLabel, lang = "en" } = {}) {
   if (!pricing) {
     return [];
   }
@@ -67,11 +80,13 @@ function formatPricingBreakdown(pricing, offers, { totalLabel = "Total" } = {}) 
   const lines = [];
 
   if (typeof pricing.item_total === "number") {
-    lines.push(`Item total: ₹${pricing.item_total}`);
+    const label = pick(lang, { en: "Item total", hi: "आइटम टोटल", hinglish: "Item total" });
+    lines.push(`${label}: ₹${pricing.item_total}`);
   }
 
   if (typeof pricing.delivery_charge === "number") {
-    lines.push(`Delivery charge: ₹${pricing.delivery_charge}`);
+    const label = pick(lang, { en: "Delivery charge", hi: "डिलीवरी चार्ज", hinglish: "Delivery charge" });
+    lines.push(`${label}: ₹${pricing.delivery_charge}`);
   }
 
   // Swiggy's own field name (taxes_and_charges, not just "taxes") already
@@ -81,7 +96,12 @@ function formatPricingBreakdown(pricing, offers, { totalLabel = "Total" } = {}) 
   // inspect a real response for undocumented sub-fields. Label it as the
   // bundle it is rather than inventing a split Swiggy doesn't provide.
   if (typeof pricing.taxes_and_charges === "number") {
-    lines.push(`Taxes & other charges: ₹${pricing.taxes_and_charges}`);
+    const label = pick(lang, {
+      en: "Taxes & other charges",
+      hi: "टैक्स और अन्य शुल्क",
+      hinglish: "Tax aur other charges",
+    });
+    lines.push(`${label}: ₹${pricing.taxes_and_charges}`);
   }
 
   // coupon_discount can be present but 0 when Swiggy auto-suggests a coupon
@@ -89,19 +109,21 @@ function formatPricingBreakdown(pricing, offers, { totalLabel = "Total" } = {}) 
   // a discount line once it's genuinely applied.
   const couponDiscount = offers?.coupon_discount;
   if (typeof couponDiscount === "number" && couponDiscount > 0) {
-    lines.push(`Coupon discount: −₹${couponDiscount}`);
+    const label = pick(lang, { en: "Coupon discount", hi: "कूपन छूट", hinglish: "Coupon discount" });
+    lines.push(`${label}: −₹${couponDiscount}`);
   }
 
   if (typeof pricing.to_pay === "number") {
-    lines.push(`${totalLabel}: ₹${pricing.to_pay}`);
+    const label = totalLabel ?? pick(lang, { en: "Total", hi: "कुल", hinglish: "Total" });
+    lines.push(`${label}: ₹${pricing.to_pay}`);
   }
 
   return lines;
 }
 
-function formatCartReply(cartData) {
+function formatCartReply(cartData, lang = "en") {
   if (!cartData || !Array.isArray(cartData.items) || cartData.items.length === 0) {
-    return EMPTY_CART_REPLY;
+    return emptyCartReply(lang);
   }
 
   const lines = cartData.items.map((item) => {
@@ -112,10 +134,16 @@ function formatCartReply(cartData) {
     return `${item.quantity}x ${item.name}${suffix} — ₹${item.total}`;
   });
 
+  const header = pick(lang, {
+    en: `Your cart (${cartData.restaurant?.name ?? "restaurant"}):`,
+    hi: `आपकी कार्ट (${cartData.restaurant?.name ?? "restaurant"}):`,
+    hinglish: `Aapki cart (${cartData.restaurant?.name ?? "restaurant"}):`,
+  });
+
   return [
-    `Your cart (${cartData.restaurant?.name ?? "restaurant"}):`,
+    header,
     ...lines,
-    ...formatPricingBreakdown(cartData.pricing, cartData.offers),
+    ...formatPricingBreakdown(cartData.pricing, cartData.offers, { lang }),
   ]
     .filter(Boolean)
     .join("\n");
@@ -422,7 +450,20 @@ const RECOMMEND_CLOSING_INSTRUCTIONS =
 // straight from a real tool result; only which restaurants/items to surface
 // is this function's own heuristic (recency + bestseller-first), not a
 // judgment about what the user would actually like.
-export async function recommendSimilar({ swiggyFoodClient, senderId, pendingCartSessions, pendingAddressSelections, craving }) {
+export async function recommendSimilar({
+  swiggyFoodClient,
+  senderId,
+  pendingCartSessions,
+  pendingAddressSelections,
+  craving,
+  // Only used for this function's own address-disambiguation prompt below
+  // (terminal when reached via the agent's recommend_similar tool call - see
+  // executeTool's "recommend_similar" case in sarvam-agent.js) - same split
+  // as searchFood's own lang param in food-search-orchestrator.js. The rest
+  // of this function's text (the candidate-block instructions) is always
+  // agent-facing, never shown to the user directly, so it's unaffected.
+  lang = "en",
+}) {
   const existingAddressId = pendingCartSessions?.peek(senderId)?.addressId;
   let addressId = existingAddressId;
 
@@ -462,7 +503,7 @@ export async function recommendSimilar({ swiggyFoodClient, senderId, pendingCart
       }));
 
       pendingAddressSelections?.set(senderId, { kind: "recommend", craving, candidates });
-      return formatAddressPrompt(candidates);
+      return formatAddressPrompt(candidates, lang);
     }
 
     addressId = addresses[0]?.id;
@@ -876,7 +917,7 @@ async function handleAddToCart({
   });
 }
 
-async function handleViewCart({ swiggyFoodClient, addressId, restaurantName }) {
+async function handleViewCart({ swiggyFoodClient, addressId, restaurantName, lang = "en" }) {
   let cartResult;
   try {
     cartResult = await swiggyFoodClient.getFoodCart({ addressId, restaurantName });
@@ -884,7 +925,7 @@ async function handleViewCart({ swiggyFoodClient, addressId, restaurantName }) {
     return GENERIC_FALLBACK_REPLY;
   }
 
-  return formatCartReply(unwrapCartPayload(cartResult));
+  return formatCartReply(unwrapCartPayload(cartResult), lang);
 }
 
 // Matches a user-typed dish name (e.g. "the pizza") against every line in
@@ -949,7 +990,7 @@ async function handleRemoveFromCart({
   const cartData = unwrapCartPayload(cartResult);
 
   if (!cartData || !Array.isArray(cartData.items) || cartData.items.length === 0) {
-    return EMPTY_CART_REPLY;
+    return emptyCartReply();
   }
 
   const matches = findMatchingCartItems(cartData, query);
@@ -1006,12 +1047,16 @@ async function handleRemoveFromCart({
   return [confirmationLine, formatCartReply(updatedCartData)].join("\n\n");
 }
 
-function formatCoupons(couponsPayload) {
+function formatCoupons(couponsPayload, lang = "en") {
   const sections = Array.isArray(couponsPayload?.coupon_sections) ? couponsPayload.coupon_sections : [];
   const coupons = sections.flatMap((section) => (Array.isArray(section?.coupons) ? section.coupons : []));
 
   if (coupons.length === 0) {
-    return "No coupons available for this order right now.";
+    return pick(lang, {
+      en: "No coupons available for this order right now.",
+      hi: "अभी इस ऑर्डर के लिए कोई कूपन उपलब्ध नहीं है।",
+      hinglish: "Abhi is order ke liye koi coupon available nahi hai.",
+    });
   }
 
   // coupons[].title IS the redeemable code (confirmed live) - there's no
@@ -1020,10 +1065,17 @@ function formatCoupons(couponsPayload) {
     .slice(0, MAX_COUPONS)
     .map((coupon) => `${coupon.title} — ${coupon.description ?? coupon.subtitle ?? ""}`.trim());
 
-  return ["Available coupons:", ...lines, 'Reply "apply <code>" to use one, e.g. "apply SWIGGYIT".'].join("\n");
+  const header = pick(lang, { en: "Available coupons:", hi: "उपलब्ध कूपन:", hinglish: "Available coupons:" });
+  const footer = pick(lang, {
+    en: 'Reply "apply <code>" to use one, e.g. "apply SWIGGYIT".',
+    hi: 'इस्तेमाल करने के लिए "apply <code>" लिखें, जैसे "apply SWIGGYIT"।',
+    hinglish: 'Use karne ke liye "apply <code>" likhein, jaise "apply SWIGGYIT".',
+  });
+
+  return [header, ...lines, footer].join("\n");
 }
 
-async function handleFindCoupons({ swiggyFoodClient, restaurantId, addressId }) {
+async function handleFindCoupons({ swiggyFoodClient, restaurantId, addressId, lang = "en" }) {
   let result;
   try {
     result = await swiggyFoodClient.fetchFoodCoupons({ restaurantId, addressId });
@@ -1031,15 +1083,19 @@ async function handleFindCoupons({ swiggyFoodClient, restaurantId, addressId }) 
     return GENERIC_FALLBACK_REPLY;
   }
 
-  return formatCoupons(parseStructuredPayload(result));
+  return formatCoupons(parseStructuredPayload(result), lang);
 }
 
-async function handleApplyCoupon({ swiggyFoodClient, couponCode, addressId }) {
+async function handleApplyCoupon({ swiggyFoodClient, couponCode, addressId, lang = "en" }) {
   let result;
   try {
     result = await swiggyFoodClient.applyFoodCoupon({ couponCode, addressId });
   } catch {
-    return `Sorry, I couldn't apply "${couponCode}" — it may not be valid for this order right now.`;
+    return pick(lang, {
+      en: `Sorry, I couldn't apply "${couponCode}" — it may not be valid for this order right now.`,
+      hi: `माफ़ कीजिए, मैं "${couponCode}" लागू नहीं कर सका — यह अभी इस ऑर्डर के लिए मान्य नहीं हो सकता।`,
+      hinglish: `Sorry, main "${couponCode}" apply nahi kar saka — shayad yeh abhi is order ke liye valid nahi hai.`,
+    });
   }
 
   const cartData = unwrapCartPayload(result);
@@ -1049,22 +1105,50 @@ async function handleApplyCoupon({ swiggyFoodClient, couponCode, addressId }) {
   const discount = cartData?.offers?.coupon_discount ?? 0;
 
   if (!cartData || discount <= 0) {
-    return `"${couponCode}" isn't giving a discount on this order right now — you may need to add more items to qualify.`;
+    return pick(lang, {
+      en: `"${couponCode}" isn't giving a discount on this order right now — you may need to add more items to qualify.`,
+      hi: `"${couponCode}" पर अभी इस ऑर्डर में कोई छूट नहीं मिल रही — शायद इसके लिए आपको और आइटम जोड़ने होंगे।`,
+      hinglish: `"${couponCode}" par abhi is order mein koi discount nahi mil raha — shayad qualify karne ke liye aur items add karne honge.`,
+    });
   }
 
-  return [`Applied ${couponCode} — you saved ₹${discount}.`, formatCartReply(cartData)].join("\n\n");
+  const confirmationLine = pick(lang, {
+    en: `Applied ${couponCode} — you saved ₹${discount}.`,
+    hi: `${couponCode} लागू हो गया — आपने ₹${discount} बचाए।`,
+    hinglish: `${couponCode} apply ho gaya — aapne ₹${discount} bachaye.`,
+  });
+
+  return [confirmationLine, formatCartReply(cartData, lang)].join("\n\n");
 }
 
-function formatOrderSummary(cartData, paymentMethodLabel) {
+function formatOrderSummary(cartData, paymentMethodLabel, lang = "en") {
   const lines = cartData.items.map((item) => `${item.quantity}x ${item.name} — ₹${item.total}`);
 
+  const header = pick(lang, {
+    en: `Order summary — ${cartData.restaurant?.name ?? "your order"}:`,
+    hi: `ऑर्डर सारांश — ${cartData.restaurant?.name ?? "your order"}:`,
+    hinglish: `Order summary — ${cartData.restaurant?.name ?? "your order"}:`,
+  });
+  const totalLabel = pick(lang, { en: "Total to pay", hi: "कुल भुगतान", hinglish: "Total pay karna hai" });
+  const paymentLabel = pick(lang, { en: "Payment", hi: "भुगतान", hinglish: "Payment" });
+  // MUST keep the literal uppercase English "YES"/"NO" tokens regardless of
+  // language - parseOrderConfirmationReply's regex and server.js's own
+  // /\bYES\b/ / /\bNO\b/ backstop check are both English-only by design (see
+  // AGENTS.md's Commerce Safety section); translating these two tokens would
+  // silently break order placement for a non-English speaker.
+  const confirmFooter = pick(lang, {
+    en: "Reply YES to place this order, or NO to cancel.",
+    hi: "इस ऑर्डर को देने के लिए YES लिखें, रद्द करने के लिए NO लिखें।",
+    hinglish: "Order place karne ke liye YES likhein, cancel karne ke liye NO likhein.",
+  });
+
   return [
-    `Order summary — ${cartData.restaurant?.name ?? "your order"}:`,
+    header,
     ...lines,
-    ...formatPricingBreakdown(cartData.pricing, cartData.offers, { totalLabel: "Total to pay" }),
-    `Payment: ${paymentMethodLabel}`,
+    ...formatPricingBreakdown(cartData.pricing, cartData.offers, { totalLabel, lang }),
+    `${paymentLabel}: ${paymentMethodLabel}`,
     "",
-    "Reply YES to place this order, or NO to cancel.",
+    confirmFooter,
   ]
     .filter(Boolean)
     .join("\n");
@@ -1076,7 +1160,14 @@ function formatOrderSummary(cartData, paymentMethodLabel) {
 // explicit user-picked method, and completing a UPI payment needs a polling
 // flow (check_payment_status) that's a separate increment. If COD isn't
 // available, Nosh says so rather than guessing at a payment method.
-async function handleCheckout({ senderId, swiggyFoodClient, addressId, restaurantName, pendingOrderConfirmations }) {
+async function handleCheckout({
+  senderId,
+  swiggyFoodClient,
+  addressId,
+  restaurantName,
+  pendingOrderConfirmations,
+  lang = "en",
+}) {
   let cartResult;
   try {
     cartResult = await swiggyFoodClient.getFoodCart({ addressId, restaurantName });
@@ -1087,7 +1178,7 @@ async function handleCheckout({ senderId, swiggyFoodClient, addressId, restauran
   const cartData = unwrapCartPayload(cartResult);
 
   if (!cartData || !Array.isArray(cartData.items) || cartData.items.length === 0) {
-    return EMPTY_CART_REPLY;
+    return emptyCartReply(lang);
   }
 
   let paymentResult;
@@ -1100,7 +1191,12 @@ async function handleCheckout({ senderId, swiggyFoodClient, addressId, restauran
   const paymentOptions = parseStructuredPayload(paymentResult);
 
   if (!paymentOptions?.cod?.available) {
-    return "Cash on Delivery isn't available for this order, and Nosh can't complete a UPI payment over WhatsApp yet — please finish this order in the Swiggy app.";
+    return pick(lang, {
+      en: "Cash on Delivery isn't available for this order, and Nosh can't complete a UPI payment over WhatsApp yet — please finish this order in the Swiggy app.",
+      hi: "इस ऑर्डर के लिए कैश ऑन डिलीवरी उपलब्ध नहीं है, और Nosh अभी WhatsApp पर UPI पेमेंट पूरा नहीं कर सकता — कृपया इस ऑर्डर को Swiggy ऐप में पूरा करें।",
+      hinglish:
+        "Is order ke liye Cash on Delivery available nahi hai, aur Nosh abhi WhatsApp par UPI payment complete nahi kar sakta — please is order ko Swiggy app mein complete karein.",
+    });
   }
 
   pendingOrderConfirmations.set(senderId, {
@@ -1109,7 +1205,7 @@ async function handleCheckout({ senderId, swiggyFoodClient, addressId, restauran
     paymentMethod: "Cash",
   });
 
-  return formatOrderSummary(cartData, paymentOptions.cod.displayName ?? "Cash on Delivery");
+  return formatOrderSummary(cartData, paymentOptions.cod.displayName ?? "Cash on Delivery", lang);
 }
 
 // Best-effort check for "did place_food_order actually go through despite
@@ -1146,7 +1242,13 @@ async function findOrderPlacedSinceSnapshot(swiggyFoodClient, addressId, priorOr
 // learning the orderId - for that, findOrderPlacedSinceSnapshot below
 // snapshots the order list first and diffs it against the failure so a
 // retry doesn't double-order just because the success response got lost.
-export async function placeConfirmedOrder({ swiggyFoodClient, confirmation }) {
+const PLACE_ORDER_FAILED_REPLY = {
+  en: "Sorry, I couldn't place that order right now. Please try again in a bit.",
+  hi: "माफ़ कीजिए, मैं अभी वह ऑर्डर नहीं दे सका। कृपया थोड़ी देर में फिर कोशिश करें।",
+  hinglish: "Sorry, main abhi wo order place nahi kar saka. Thodi der mein phir try karein.",
+};
+
+export async function placeConfirmedOrder({ swiggyFoodClient, confirmation, lang = "en" }) {
   let orderId = confirmation.orderId;
   let lat = confirmation.lat;
   let lng = confirmation.lng;
@@ -1174,7 +1276,7 @@ export async function placeConfirmedOrder({ swiggyFoodClient, confirmation }) {
         : undefined;
 
       if (!newOrder) {
-        return { status: "failed", replyText: "Sorry, I couldn't place that order right now. Please try again in a bit." };
+        return { status: "failed", replyText: pick(lang, PLACE_ORDER_FAILED_REPLY) };
       }
 
       // It actually went through despite the error - fall through to
@@ -1186,7 +1288,7 @@ export async function placeConfirmedOrder({ swiggyFoodClient, confirmation }) {
       const orderData = parseStructuredPayload(placeResult);
 
       if (!orderData?.orderId) {
-        return { status: "failed", replyText: "Sorry, I couldn't place that order right now. Please try again in a bit." };
+        return { status: "failed", replyText: pick(lang, PLACE_ORDER_FAILED_REPLY) };
       }
 
       orderId = orderData.orderId;
@@ -1209,8 +1311,14 @@ export async function placeConfirmedOrder({ swiggyFoodClient, confirmation }) {
       orderId,
       lat,
       lng,
-      replyText:
-        "Your order was placed, but we couldn't confirm it just now — reply YES again and I'll retry confirming without placing a duplicate order.",
+      // MUST keep the literal uppercase "YES" - see formatOrderSummary's own
+      // comment above; this re-prompt feeds the same deterministic gate.
+      replyText: pick(lang, {
+        en: "Your order was placed, but we couldn't confirm it just now — reply YES again and I'll retry confirming without placing a duplicate order.",
+        hi: "आपका ऑर्डर दे दिया गया है, लेकिन हम इसे अभी कन्फर्म नहीं कर सके — फिर से YES लिखें और मैं बिना डुप्लीकेट ऑर्डर दिए कन्फर्म करने की कोशिश करूंगा।",
+        hinglish:
+          "Aapka order place ho gaya hai, lekin abhi confirm nahi ho saka — dobara YES likhein aur main duplicate order diye bina confirm karne ki koshish karunga.",
+      }),
     };
   }
 
@@ -1226,10 +1334,27 @@ export async function placeConfirmedOrder({ swiggyFoodClient, confirmation }) {
     console.error("Failed to flush Swiggy Food cart after a confirmed order.", { name: error?.name });
   }
 
-  return { status: "confirmed", replyText: "Your order has been placed! You'll get delivery updates from Swiggy." };
+  return {
+    status: "confirmed",
+    replyText: pick(lang, {
+      en: "Your order has been placed! You'll get delivery updates from Swiggy.",
+      hi: "आपका ऑर्डर दे दिया गया है! आपको Swiggy से डिलीवरी अपडेट मिलते रहेंगे।",
+      hinglish: "Aapka order place ho gaya hai! Aapko Swiggy se delivery updates milte rahenge.",
+    }),
+  };
 }
 
-export const NO_ACTIVE_ORDER_REPLY = "You don't have an order in progress yet — search for something first.";
+// lang-aware, used only by the terminal tool wrappers below (view_cart,
+// find_coupons, apply_coupon, checkout - see each wrapper's own call);
+// removeFromCart/searchMenu (agent-phrased, never terminal) call this with
+// no lang argument (default "en") since the agent translates its own reply.
+export function noActiveOrderReply(lang = "en") {
+  return pick(lang, {
+    en: "You don't have an order in progress yet — search for something first.",
+    hi: "अभी आपका कोई ऑर्डर प्रोसेस में नहीं है — पहले कुछ खोजें।",
+    hinglish: "Abhi aapka koi order in progress nahi hai — pehle kuch search karein.",
+  });
+}
 
 // Deterministic pre-agent short-circuit, extracted unchanged from what used
 // to be the top of getFoodOrderReply: a bare number reply to an item or
@@ -1239,7 +1364,7 @@ export const NO_ACTIVE_ORDER_REPLY = "You don't have an order in progress yet �
 // same reason (not a "trigger word", just picking an option off a list).
 // Returns { handled: false } when neither candidate list applies, so the
 // caller (server.js) knows to hand the message to the agent instead.
-export async function resolvePendingCartCandidateReply({ message, swiggyFoodClient, pendingCartSessions }) {
+export async function resolvePendingCartCandidateReply({ message, swiggyFoodClient, pendingCartSessions, lang = "en" }) {
   const session = pendingCartSessions.peek(message.from);
 
   if (session?.itemCandidates) {
@@ -1294,7 +1419,12 @@ export async function resolvePendingCartCandidateReply({ message, swiggyFoodClie
       }
 
       pendingCartSessions.set(message.from, { addressId: session.addressId, restaurantId: restaurant.id, restaurantName: restaurant.name });
-      return { handled: true, replyText: `Got it — what would you like from ${restaurant.name}?` };
+      const gotItReply = pick(lang, {
+        en: `Got it — what would you like from ${restaurant.name}?`,
+        hi: `ठीक है — ${restaurant.name} से आपको क्या चाहिए?`,
+        hinglish: `Theek hai — ${restaurant.name} se aapko kya chahiye?`,
+      });
+      return { handled: true, replyText: gotItReply };
     }
   }
 
@@ -1340,7 +1470,7 @@ export async function searchMenu({ senderId, restaurantName, query, swiggyFoodCl
   const session = pendingCartSessions.peek(senderId);
 
   if (!session?.addressId) {
-    return NO_ACTIVE_ORDER_REPLY;
+    return noActiveOrderReply();
   }
 
   let restaurantId = session.restaurantId;
@@ -1383,21 +1513,31 @@ export async function searchMenu({ senderId, restaurantName, query, swiggyFoodCl
   return formatItemSelectionReply(query, resolvedRestaurantName ?? "that restaurant", items);
 }
 
-export async function viewCart({ senderId, swiggyFoodClient, pendingCartSessions }) {
+// lang is threaded through to real detected language here (unlike addToCart/
+// removeFromCart/searchMenu above) because view_cart is a TERMINAL_TOOLS tool
+// - its result becomes the final reply directly, with no agent phrasing/
+// translation pass in between. See AGENTS.md's "place order and get address
+// should be hardcoded" decision and src/sarvam-agent.js's TERMINAL_TOOLS.
+export async function viewCart({ senderId, swiggyFoodClient, pendingCartSessions, lang = "en" }) {
   const session = pendingCartSessions.peek(senderId);
 
   if (!session) {
-    return NO_ACTIVE_ORDER_REPLY;
+    return noActiveOrderReply(lang);
   }
 
-  return handleViewCart({ swiggyFoodClient, addressId: session.addressId, restaurantName: session.restaurantName });
+  return handleViewCart({
+    swiggyFoodClient,
+    addressId: session.addressId,
+    restaurantName: session.restaurantName,
+    lang,
+  });
 }
 
 export async function removeFromCart({ senderId, query, quantity, swiggyFoodClient, pendingCartSessions }) {
   const session = pendingCartSessions.peek(senderId);
 
   if (!session) {
-    return NO_ACTIVE_ORDER_REPLY;
+    return noActiveOrderReply();
   }
 
   return handleRemoveFromCart({
@@ -1410,27 +1550,35 @@ export async function removeFromCart({ senderId, query, quantity, swiggyFoodClie
   });
 }
 
-export async function findCoupons({ senderId, swiggyFoodClient, pendingCartSessions }) {
+// TERMINAL_TOOLS tool - see viewCart's comment above.
+export async function findCoupons({ senderId, swiggyFoodClient, pendingCartSessions, lang = "en" }) {
   const session = pendingCartSessions.peek(senderId);
 
   if (!session) {
-    return NO_ACTIVE_ORDER_REPLY;
+    return noActiveOrderReply(lang);
   }
 
-  return handleFindCoupons({ swiggyFoodClient, restaurantId: session.restaurantId, addressId: session.addressId });
+  return handleFindCoupons({
+    swiggyFoodClient,
+    restaurantId: session.restaurantId,
+    addressId: session.addressId,
+    lang,
+  });
 }
 
-export async function applyCoupon({ senderId, couponCode, swiggyFoodClient, pendingCartSessions }) {
+// TERMINAL_TOOLS tool - see viewCart's comment above.
+export async function applyCoupon({ senderId, couponCode, swiggyFoodClient, pendingCartSessions, lang = "en" }) {
   const session = pendingCartSessions.peek(senderId);
 
   if (!session) {
-    return NO_ACTIVE_ORDER_REPLY;
+    return noActiveOrderReply(lang);
   }
 
-  return handleApplyCoupon({ swiggyFoodClient, couponCode, addressId: session.addressId });
+  return handleApplyCoupon({ swiggyFoodClient, couponCode, addressId: session.addressId, lang });
 }
 
-export async function checkout({ senderId, swiggyFoodClient, pendingCartSessions, pendingOrderConfirmations }) {
+// TERMINAL_TOOLS tool - see viewCart's comment above.
+export async function checkout({ senderId, swiggyFoodClient, pendingCartSessions, pendingOrderConfirmations, lang = "en" }) {
   const session = pendingCartSessions.peek(senderId);
 
   // Same stale-cart concern addResolvedItemToCart guards against on
@@ -1442,7 +1590,7 @@ export async function checkout({ senderId, swiggyFoodClient, pendingCartSessions
   // order" here is more honest than building an order summary around a
   // cart this session never actually built.
   if (!session?.cartRestaurantId) {
-    return NO_ACTIVE_ORDER_REPLY;
+    return noActiveOrderReply(lang);
   }
 
   return handleCheckout({
@@ -1451,5 +1599,6 @@ export async function checkout({ senderId, swiggyFoodClient, pendingCartSessions
     addressId: session.addressId,
     restaurantName: session.restaurantName,
     pendingOrderConfirmations,
+    lang,
   });
 }

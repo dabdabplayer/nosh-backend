@@ -396,7 +396,14 @@ test("resolvePendingAddressReply clears stale pending state and reports unhandle
   assert.equal(pending.peek("sender-1"), undefined);
 });
 
-test("resolvePendingAddressReply resumes into recommendSimilar (not a restaurant search) for a 'recommend' kind pending selection", async () => {
+test("resolvePendingAddressReply records the address and steps aside (does not call recommendSimilar itself) for a 'recommend' kind pending selection", async () => {
+  // recommendSimilar's own return value is LLM-facing instructional text,
+  // never meant to reach the user directly - calling it here and returning
+  // its text as replyText would leak that raw text straight to WhatsApp.
+  // The correct resume is handled: false, letting the bare number reach the
+  // agent through the normal runAgentTurn path (buildReplyText in
+  // server.js), which has enough context (pendingConversationHistory) to
+  // infer the picked address and call recommend_similar itself.
   const pending = new PendingAddressSelections();
   const pendingCartSessions = new PendingCartSessions();
   pending.set("sender-1", {
@@ -408,24 +415,14 @@ test("resolvePendingAddressReply resumes into recommendSimilar (not a restaurant
     ],
   });
 
-  let recommendSimilarCall;
-  const recommendSimilar = async (args) => {
-    recommendSimilarCall = args;
-    return "Chicken Tikka Masala from Test Kitchen — ₹279. Add karun?";
-  };
-
   const outcome = await resolvePendingAddressReply({
     message: message("2"),
     swiggyFoodClient: fakeSwiggyFoodClient({}),
     pendingAddressSelections: pending,
     pendingCartSessions,
-    recommendSimilar,
   });
 
-  assert.equal(outcome.handled, true);
-  assert.equal(outcome.replyText, "Chicken Tikka Masala from Test Kitchen — ₹279. Add karun?");
-  assert.equal(recommendSimilarCall.senderId, "sender-1");
-  assert.equal(recommendSimilarCall.craving, "chicken tikka masala");
+  assert.deepEqual(outcome, { handled: false });
   assert.equal(pendingCartSessions.peek("sender-1").addressId, "addr-2");
   assert.equal(pending.peek("sender-1"), undefined);
 });

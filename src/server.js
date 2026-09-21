@@ -5,9 +5,9 @@ import { resolvePendingAddressReply } from "./food-search-orchestrator.js";
 import {
   parseOrderConfirmationReply,
   placeConfirmedOrder,
-  recommendSimilar,
   resolvePendingCartCandidateReply,
 } from "./food-order-orchestrator.js";
+import { pick, PendingLanguagePreference } from "./language-preference.js";
 import { InProcessMessageIdempotency } from "./message-idempotency.js";
 import { PendingAddressSelections } from "./pending-address-selection.js";
 import { PendingCartSessions } from "./pending-cart-sessions.js";
@@ -54,6 +54,7 @@ const pendingPostAuthActions = new PendingPostAuthActions();
 const pendingCartSessions = new PendingCartSessions();
 const pendingOrderConfirmations = new PendingOrderConfirmations();
 const pendingConversationHistory = new PendingConversationHistory();
+const pendingLanguagePreference = new PendingLanguagePreference();
 const swiggyTokenStore = new SwiggyTokenStore(
   config.swiggyOAuth.tokenStorePath,
   config.swiggyOAuth.tokenEncryptionKey,
@@ -184,25 +185,40 @@ async function withSwiggyFoodClient(senderId, fn) {
 // Deterministic gate for the one irreversible action (placing a real order):
 // only a literal YES/NO reply to a specific stored order summary can trigger
 // it - never an NLU/LLM judgment call. See food-order-orchestrator.js.
-async function buildOrderConfirmationReply(message, pendingConfirmation) {
+async function buildOrderConfirmationReply(message, pendingConfirmation, lang = "en") {
   const decision = parseOrderConfirmationReply(message.text);
 
   if (decision === "cancel") {
     pendingOrderConfirmations.clear(message.from);
-    return "Order cancelled. Your cart is still there if you'd like to check out again later.";
+    return pick(lang, {
+      en: "Order cancelled. Your cart is still there if you'd like to check out again later.",
+      hi: "ऑर्डर रद्द कर दिया गया। अगर आप बाद में फिर से चेकआउट करना चाहें तो आपकी कार्ट अभी भी वहीं है।",
+      hinglish: "Order cancel kar diya gaya. Agar baad mein phir se checkout karna ho to aapki cart abhi bhi wahi hai.",
+    });
   }
 
   if (decision !== "confirm") {
-    return "Please reply YES to place this order, or NO to cancel.";
+    // MUST keep the literal uppercase "YES"/"NO" tokens - parseOrderConfirmationReply's
+    // regex and this file's own backstop below are both English-only by
+    // design (see AGENTS.md's Commerce Safety section).
+    return pick(lang, {
+      en: "Please reply YES to place this order, or NO to cancel.",
+      hi: "इस ऑर्डर को देने के लिए YES लिखें, या रद्द करने के लिए NO लिखें।",
+      hinglish: "Is order ko place karne ke liye YES likhein, ya cancel karne ke liye NO likhein.",
+    });
   }
 
   const outcome = await withSwiggyFoodClient(message.from, (swiggyFoodClient) =>
-    placeConfirmedOrder({ swiggyFoodClient, confirmation: pendingConfirmation }),
+    placeConfirmedOrder({ swiggyFoodClient, confirmation: pendingConfirmation, lang }),
   );
 
   if (!outcome.authenticated) {
     pendingOrderConfirmations.clear(message.from);
-    return "Your Swiggy connection expired before we could place this order. Please search again to reconnect.";
+    return pick(lang, {
+      en: "Your Swiggy connection expired before we could place this order. Please search again to reconnect.",
+      hi: "यह ऑर्डर देने से पहले आपका Swiggy कनेक्शन एक्सपायर हो गया। दोबारा कनेक्ट करने के लिए फिर से खोजें।",
+      hinglish: "Yeh order place karne se pehle aapka Swiggy connection expire ho gaya. Dobara connect karne ke liye phir se search karein.",
+    });
   }
 
   const { status, replyText, orderId, lat, lng } = outcome.result;
@@ -232,6 +248,14 @@ async function buildOrderConfirmationReply(message, pendingConfirmation) {
 }
 
 async function buildReplyText(message) {
+  // Updated on every inbound message regardless of which path below ends up
+  // handling it (see language-preference.js's own header comment) - a
+  // no-op when the message carries no real language signal (a bare number,
+  // "YES"/"NO"), so a content-free reply never overwrites a real earlier
+  // preference.
+  pendingLanguagePreference.update(message.from, message.text);
+  const lang = pendingLanguagePreference.get(message.from);
+
   if (!config.swiggyFood.enabled) {
     return PLACEHOLDER_REPLY_TEXT;
   }
@@ -243,7 +267,7 @@ async function buildReplyText(message) {
   const pendingConfirmation = pendingOrderConfirmations.peek(message.from);
 
   if (pendingConfirmation) {
-    return buildOrderConfirmationReply(message, pendingConfirmation);
+    return buildOrderConfirmationReply(message, pendingConfirmation, lang);
   }
 
   // Deterministic backstop, not the primary fix (see the system prompt's
@@ -274,7 +298,11 @@ async function buildReplyText(message) {
     const lastReplyText = lastAssistantTurn?.content ?? "";
 
     if (/\bYES\b/.test(lastReplyText) && /\bNO\b/.test(lastReplyText)) {
-      return "There's no order actually waiting for confirmation right now - I may have jumped the gun. Want me to show your cart, or go ahead and check out for real?";
+      return pick(lang, {
+        en: "There's no order actually waiting for confirmation right now - I may have jumped the gun. Want me to show your cart, or go ahead and check out for real?",
+        hi: "अभी वाकई कोई ऑर्डर कन्फर्मेशन का इंतज़ार नहीं कर रहा - शायद मैंने जल्दबाज़ी कर दी। क्या मैं आपकी कार्ट दिखाऊं, या असल में चेकआउट करूं?",
+        hinglish: "Abhi actually koi order confirmation ka wait nahi kar raha - shayad maine jaldi kar di. Aapki cart dikhaun, ya sach mein checkout karein?",
+      });
     }
   }
 
@@ -311,14 +339,19 @@ async function buildReplyText(message) {
       swiggyFoodClient,
       pendingAddressSelections,
       pendingCartSessions,
-      recommendSimilar,
+      lang,
     });
 
     if (addressOutcome.handled) {
       return addressOutcome.replyText ?? PLACEHOLDER_REPLY_TEXT;
     }
 
-    const candidateOutcome = await resolvePendingCartCandidateReply({ message, swiggyFoodClient, pendingCartSessions });
+    const candidateOutcome = await resolvePendingCartCandidateReply({
+      message,
+      swiggyFoodClient,
+      pendingCartSessions,
+      lang,
+    });
 
     if (candidateOutcome.handled) {
       return candidateOutcome.replyText ?? PLACEHOLDER_REPLY_TEXT;
@@ -332,6 +365,7 @@ async function buildReplyText(message) {
       pendingAddressSelections,
       pendingConversationHistory,
       nlu: config.nlu,
+      lang,
     });
 
     return reply ?? PLACEHOLDER_REPLY_TEXT;

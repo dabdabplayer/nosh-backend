@@ -466,6 +466,26 @@ test("runAgentTurn returns a terminal tool's own result directly, with no second
   assert.match(result, /empty|cart/i);
 });
 
+test("runAgentTurn threads lang through to a terminal tool's result", async () => {
+  const client = fakeClient(async () =>
+    toolCallResponse([{ id: "call_1", function: { name: "view_cart", arguments: "{}" } }]),
+  );
+
+  const ctx = newContext();
+  ctx.pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantName: "Test Biryani House" });
+
+  const result = await runAgentTurn({
+    message: { from: "sender-1", text: "mera cart dikhao" },
+    swiggyFoodClient: fakeSwiggyClient({ getFoodCart: async () => ({ structured: { statusCode: 0, data: { items: [] } } }) }),
+    ...ctx,
+    nlu,
+    client,
+    lang: "hi",
+  });
+
+  assert.match(result, /आपकी कार्ट खाली है/);
+});
+
 test("runAgentTurn returns checkout's own result directly, unphrased, even when it's just a refusal", async () => {
   let completionsCallCount = 0;
   const client = fakeClient(async () => {

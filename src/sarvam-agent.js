@@ -259,8 +259,15 @@ const TERMINAL_TOOLS = new Set(["checkout", "view_cart", "find_coupons", "apply_
 // Returns { text, terminal } rather than a bare string - see
 // TERMINAL_TOOLS above and runAgentTurn's own use of `terminal` below.
 async function executeTool(name, args, ctx) {
-  const { senderId, swiggyFoodClient, pendingCartSessions, pendingAddressSelections, pendingOrderConfirmations, searchMenuState } =
-    ctx;
+  const {
+    senderId,
+    swiggyFoodClient,
+    pendingCartSessions,
+    pendingAddressSelections,
+    pendingOrderConfirmations,
+    searchMenuState,
+    lang,
+  } = ctx;
 
   try {
     switch (name) {
@@ -272,9 +279,18 @@ async function executeTool(name, args, ctx) {
         // state rather than sniffing the returned text for an address-y
         // phrase, since a real state signal exists here (unlike the
         // search_menu case just below, which has to string-match its own
-        // result for lack of one).
+        // result for lack of one). lang is passed through regardless of
+        // which branch fires - searchFood itself only actually uses it for
+        // the (terminal) address prompt, see its own comment.
         const hadPendingAddress = Boolean(pendingAddressSelections.peek(senderId));
-        const text = await searchFood(senderId, args.query, swiggyFoodClient, pendingAddressSelections, pendingCartSessions);
+        const text = await searchFood(
+          senderId,
+          args.query,
+          swiggyFoodClient,
+          pendingAddressSelections,
+          pendingCartSessions,
+          lang,
+        );
         const nowPendingAddress = Boolean(pendingAddressSelections.peek(senderId));
         return { text, terminal: !hadPendingAddress && nowPendingAddress };
       }
@@ -330,20 +346,26 @@ async function executeTool(name, args, ctx) {
         };
 
       case "view_cart":
-        return { text: await viewCart({ senderId, swiggyFoodClient, pendingCartSessions }), terminal: TERMINAL_TOOLS.has(name) };
+        return {
+          text: await viewCart({ senderId, swiggyFoodClient, pendingCartSessions, lang }),
+          terminal: TERMINAL_TOOLS.has(name),
+        };
 
       case "find_coupons":
-        return { text: await findCoupons({ senderId, swiggyFoodClient, pendingCartSessions }), terminal: TERMINAL_TOOLS.has(name) };
+        return {
+          text: await findCoupons({ senderId, swiggyFoodClient, pendingCartSessions, lang }),
+          terminal: TERMINAL_TOOLS.has(name),
+        };
 
       case "apply_coupon":
         return {
-          text: await applyCoupon({ senderId, couponCode: args.couponCode, swiggyFoodClient, pendingCartSessions }),
+          text: await applyCoupon({ senderId, couponCode: args.couponCode, swiggyFoodClient, pendingCartSessions, lang }),
           terminal: TERMINAL_TOOLS.has(name),
         };
 
       case "checkout":
         return {
-          text: await checkout({ senderId, swiggyFoodClient, pendingCartSessions, pendingOrderConfirmations }),
+          text: await checkout({ senderId, swiggyFoodClient, pendingCartSessions, pendingOrderConfirmations, lang }),
           terminal: TERMINAL_TOOLS.has(name),
         };
 
@@ -364,6 +386,7 @@ async function executeTool(name, args, ctx) {
           pendingCartSessions,
           pendingAddressSelections,
           craving: typeof args.craving === "string" && args.craving.trim() ? args.craving.trim() : undefined,
+          lang,
         });
         const nowPendingAddress = Boolean(pendingAddressSelections.peek(senderId));
         return { text, terminal: !hadPendingAddress && nowPendingAddress };
@@ -425,6 +448,12 @@ export async function runAgentTurn({
   pendingConversationHistory,
   nlu,
   client = getClient(nlu),
+  // Only consulted by the deterministic TERMINAL_TOOLS results (checkout,
+  // view_cart, find_coupons, apply_coupon) and the terminal address-prompt
+  // branches of search_food/recommend_similar - see executeTool above. Every
+  // other reply the agent phrases itself mirrors the user's language on its
+  // own, per the system prompt, and ignores this.
+  lang = "en",
 }) {
   const senderId = message.from;
   const history = pendingConversationHistory.peek(senderId);
@@ -447,6 +476,7 @@ export async function runAgentTurn({
     pendingAddressSelections,
     pendingOrderConfirmations,
     searchMenuState,
+    lang,
   };
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {

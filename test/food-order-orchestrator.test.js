@@ -7,7 +7,7 @@ import {
   checkout,
   findCoupons,
   findUsualOrder,
-  NO_ACTIVE_ORDER_REPLY,
+  noActiveOrderReply,
   parseOrderConfirmationReply,
   placeConfirmedOrder,
   recommendSimilar,
@@ -309,6 +309,20 @@ test("resolvePendingCartCandidateReply: reports unhandled when there's no sessio
   });
 
   assert.deepEqual(outcome, { handled: false });
+});
+
+test("resolvePendingCartCandidateReply: a session with only an addressId (the recommend address-pick resume state) never matches a bare number - the reply must reach the agent, not be hijacked here", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", { addressId: "addr-2" });
+
+  const outcome = await resolvePendingCartCandidateReply({
+    message: message("2"),
+    swiggyFoodClient: fakeClient(),
+    pendingCartSessions,
+  });
+
+  assert.deepEqual(outcome, { handled: false });
+  assert.equal(pendingCartSessions.peek("sender-1").addressId, "addr-2");
 });
 
 // --- addToCart ---
@@ -690,7 +704,7 @@ test("searchMenu reports no active order when search_food was never called for t
     pendingCartSessions,
   });
 
-  assert.equal(reply, NO_ACTIVE_ORDER_REPLY);
+  assert.equal(reply, noActiveOrderReply());
 });
 
 test("searchMenu fuzzy-matches against search_food's own candidate list instead of a fresh Swiggy name search", async () => {
@@ -804,12 +818,45 @@ test("non-add tools without an active session report no active order", async () 
   const pendingOrderConfirmations = new PendingOrderConfirmations();
   const client = fakeClient();
 
-  assert.equal(await viewCart({ senderId: "sender-1", swiggyFoodClient: client, pendingCartSessions }), NO_ACTIVE_ORDER_REPLY);
-  assert.equal(await findCoupons({ senderId: "sender-1", swiggyFoodClient: client, pendingCartSessions }), NO_ACTIVE_ORDER_REPLY);
+  assert.equal(await viewCart({ senderId: "sender-1", swiggyFoodClient: client, pendingCartSessions }), noActiveOrderReply());
+  assert.equal(await findCoupons({ senderId: "sender-1", swiggyFoodClient: client, pendingCartSessions }), noActiveOrderReply());
   assert.equal(
     await checkout({ senderId: "sender-1", swiggyFoodClient: client, pendingCartSessions, pendingOrderConfirmations }),
-    NO_ACTIVE_ORDER_REPLY,
+    noActiveOrderReply(),
   );
+});
+
+test("viewCart/findCoupons/applyCoupon/checkout pass real lang through to noActiveOrderReply when there's no session", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  const pendingOrderConfirmations = new PendingOrderConfirmations();
+  const client = fakeClient();
+
+  assert.equal(
+    await viewCart({ senderId: "sender-1", swiggyFoodClient: client, pendingCartSessions, lang: "hi" }),
+    noActiveOrderReply("hi"),
+  );
+  assert.equal(
+    await findCoupons({ senderId: "sender-1", swiggyFoodClient: client, pendingCartSessions, lang: "hinglish" }),
+    noActiveOrderReply("hinglish"),
+  );
+  assert.equal(
+    await applyCoupon({ senderId: "sender-1", couponCode: "X", swiggyFoodClient: client, pendingCartSessions, lang: "hi" }),
+    noActiveOrderReply("hi"),
+  );
+  assert.equal(
+    await checkout({
+      senderId: "sender-1",
+      swiggyFoodClient: client,
+      pendingCartSessions,
+      pendingOrderConfirmations,
+      lang: "hinglish",
+    }),
+    noActiveOrderReply("hinglish"),
+  );
+  // Distinct per language, and distinct from English, so this test would
+  // actually fail if lang weren't wired through.
+  assert.notEqual(noActiveOrderReply("hi"), noActiveOrderReply());
+  assert.notEqual(noActiveOrderReply("hinglish"), noActiveOrderReply());
 });
 
 test("checkout reports no active order when there's no session at all for the sender (not just a missing cartRestaurantId)", async () => {
@@ -820,7 +867,7 @@ test("checkout reports no active order when there's no session at all for the se
     pendingOrderConfirmations: new PendingOrderConfirmations(),
   });
 
-  assert.equal(reply, NO_ACTIVE_ORDER_REPLY);
+  assert.equal(reply, noActiveOrderReply());
 });
 
 // --- viewCart ---
@@ -1166,7 +1213,7 @@ test("checkout reports no active order rather than building a summary from a car
   const reply = await checkout({ senderId: "sender-1", swiggyFoodClient: client, pendingCartSessions, pendingOrderConfirmations });
 
   assert.equal(getFoodCartCalled, false);
-  assert.equal(reply, NO_ACTIVE_ORDER_REPLY);
+  assert.equal(reply, noActiveOrderReply());
   assert.equal(pendingOrderConfirmations.peek("sender-1"), undefined);
 });
 
@@ -1184,6 +1231,61 @@ test("checkout never guesses a payment method when COD isn't available", async (
 
   assert.match(reply, /Cash on Delivery isn't available/);
   assert.equal(pendingOrderConfirmations.peek("sender-1"), undefined);
+});
+
+test("checkout's order summary keeps the literal uppercase YES/NO tokens in every language - parseOrderConfirmationReply and server.js's own backstop are both English-only by design", async () => {
+  for (const lang of ["en", "hi", "hinglish"]) {
+    const pendingCartSessions = new PendingCartSessions();
+    pendingCartSessions.set("sender-1", {
+      addressId: "addr-1",
+      restaurantId: "r-1",
+      restaurantName: "Test Restaurant",
+      cartRestaurantId: "r-1",
+    });
+    const pendingOrderConfirmations = new PendingOrderConfirmations();
+    const client = fakeClient({
+      getFoodCart: async () => cartPayload(cartData()),
+      getPaymentOptions: async () => payload({ cod: { available: true, displayName: "Cash on Delivery" } }),
+    });
+
+    const reply = await checkout({
+      senderId: "sender-1",
+      swiggyFoodClient: client,
+      pendingCartSessions,
+      pendingOrderConfirmations,
+      lang,
+    });
+
+    assert.match(reply, /\bYES\b/, `lang=${lang} must contain a literal YES`);
+    assert.match(reply, /\bNO\b/, `lang=${lang} must contain a literal NO`);
+  }
+});
+
+test("checkout translates the order summary for hi/hinglish while keeping YES/NO literal", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", {
+    addressId: "addr-1",
+    restaurantId: "r-1",
+    restaurantName: "Test Restaurant",
+    cartRestaurantId: "r-1",
+  });
+  const pendingOrderConfirmations = new PendingOrderConfirmations();
+  const client = fakeClient({
+    getFoodCart: async () => cartPayload(cartData()),
+    getPaymentOptions: async () => payload({ cod: { available: true, displayName: "Cash on Delivery" } }),
+  });
+
+  const reply = await checkout({
+    senderId: "sender-1",
+    swiggyFoodClient: client,
+    pendingCartSessions,
+    pendingOrderConfirmations,
+    lang: "hi",
+  });
+
+  assert.match(reply, /ऑर्डर सारांश/);
+  assert.match(reply, /YES लिखें/);
+  assert.match(reply, /NO लिखें/);
 });
 
 // --- placeConfirmedOrder ---
@@ -1275,6 +1377,57 @@ test("placeConfirmedOrder reports placed_not_confirmed when confirmOrder fails, 
 
   assert.equal(result.status, "placed_not_confirmed");
   assert.equal(result.orderId, "order-1");
+});
+
+test("placeConfirmedOrder's placed_not_confirmed re-prompt keeps the literal uppercase YES token in every language", async () => {
+  for (const lang of ["en", "hi", "hinglish"]) {
+    const client = {
+      placeFoodOrder: async () => payload({ orderId: "order-1", lat: 1.1, lng: 2.2 }),
+      confirmOrder: async () => {
+        throw new Error("boom");
+      },
+    };
+
+    const result = await placeConfirmedOrder({
+      swiggyFoodClient: client,
+      confirmation: { addressId: "addr-1", cartId: 1, paymentMethod: "Cash" },
+      lang,
+    });
+
+    assert.equal(result.status, "placed_not_confirmed");
+    assert.match(result.replyText, /\bYES\b/, `lang=${lang} must contain a literal YES`);
+  }
+});
+
+test("placeConfirmedOrder translates its outcomes for hi/hinglish", async () => {
+  const failClient = {
+    placeFoodOrder: async () => {
+      throw new Error("boom");
+    },
+    getFoodOrders: async () => payload({ orders: [] }),
+  };
+
+  const failResult = await placeConfirmedOrder({
+    swiggyFoodClient: failClient,
+    confirmation: { addressId: "addr-1", cartId: 1, paymentMethod: "Cash" },
+    lang: "hinglish",
+  });
+  assert.equal(failResult.status, "failed");
+  assert.match(failResult.replyText, /order place nahi kar saka/);
+
+  const confirmedClient = {
+    placeFoodOrder: async () => payload({ orderId: "order-1" }),
+    confirmOrder: async () => payload({ result: "success" }),
+    flushFoodCart: async () => payload({}),
+  };
+
+  const confirmedResult = await placeConfirmedOrder({
+    swiggyFoodClient: confirmedClient,
+    confirmation: { addressId: "addr-1", cartId: 1, paymentMethod: "Cash" },
+    lang: "hi",
+  });
+  assert.equal(confirmedResult.status, "confirmed");
+  assert.match(confirmedResult.replyText, /आपका ऑर्डर दे दिया गया है/);
 });
 
 test("placeConfirmedOrder never calls placeFoodOrder again once an orderId is already known (retry safety)", async () => {
