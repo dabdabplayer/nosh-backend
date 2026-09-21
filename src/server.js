@@ -84,9 +84,20 @@ const effectiveSwiggyFoodMcpUrl = config.swiggyFood.testModeEnabled
 // withSwiggyFoodClient and buildReplyText's search/reorder path) honor the
 // bypass identically. Never returns "unauthenticated" while test mode is
 // on, since there's no real per-sender connection to be missing.
+//
+// The bypass token is deliberately suffixed with senderId, not one shared
+// constant - the in-process mock (scripts/mock-swiggy-food-server.js) has
+// no other way to tell two different WhatsApp senders apart (there's no
+// real per-user OAuth token in test mode), and it uses this exact
+// Authorization header value to key its per-sender cart storage. A single
+// shared token here means every sender's cart collides with every other's
+// - confirmed as the cause of a live report ("doesn't update the cart")
+// once more than one conversation was live against this deployed test
+// service at the same time. See mock-swiggy-food-server.js's own
+// cartsByKey/cartKeyStorage comment for the other half of this.
 async function resolveSwiggyFoodAuth(senderId) {
   if (config.swiggyFood.testModeEnabled) {
-    return { status: "ok", accessToken: config.swiggyFood.testToken ?? "test-mode-bypass-token" };
+    return { status: "ok", accessToken: `${config.swiggyFood.testToken ?? "test-mode-bypass-token"}:${senderId}` };
   }
 
   return resolveSwiggyAccessToken({

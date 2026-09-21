@@ -23,8 +23,14 @@
 // on mcp.swiggy.com/builders/docs, the live-verified shape wins, per those
 // files' own comments.
 //
-// This is a single-cart, single-session stub (no concurrent-user isolation)
-// - fine for one developer driving one manual test at a time.
+// Carts are isolated per caller (see the Authorization-header-keyed
+// cartsByKey map below) - src/server.js's SWIGGY_TEST_MODE bypass sends a
+// distinct bearer token per real WhatsApp sender specifically so this mock
+// can back a shared, multiple-sender-at-once deployed test service without
+// one sender's cart bleeding into another's. Run standalone (this file's
+// own usage comment below) with no Authorization header at all, every
+// caller shares one "default" cart - fine for one developer driving one
+// manual test at a time.
 //
 // Usage:
 //   node scripts/mock-swiggy-food-server.js
@@ -38,6 +44,7 @@
 // set SWIGGY_FOOD_MCP_URL=http://localhost:3901/food in .env or the shell
 // before starting. The Authorization header is accepted but never checked.
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import http from "node:http";
 import { pathToFileURL } from "node:url";
@@ -343,19 +350,53 @@ const ORDER_DETAILS = {
   },
 };
 
-// --- Single in-memory cart --------------------------------------------
-// Deliberately module-level, not per-session: this is a single-developer
-// manual test tool, not a multi-user server.
+// --- Per-caller in-memory carts -----------------------------------------
+// Keyed by the request's Authorization bearer token via cartKeyStorage (an
+// AsyncLocalStorage set once per incoming HTTP request in
+// handleMockSwiggyFoodRequest below, not per MCP session) - a fresh MCP
+// session is opened on every single webhook request (see
+// src/swiggy-food-client.js: a new client is created and closed per
+// message), so keying by MCP session id alone would reset the cart on
+// every message; keying by the bearer token instead lets it persist across
+// a sender's whole conversation while staying isolated from every other
+// sender hitting this same deployed mock. AsyncLocalStorage (not a plain
+// module variable holding "the current key") because requests from
+// different senders can genuinely be in flight concurrently - a plain
+// variable would race between them.
+const cartsByKey = new Map();
+const cartKeyStorage = new AsyncLocalStorage();
 
-let cart = {
-  cart_id: 1,
-  restaurantId: undefined,
-  restaurantName: undefined,
-  items: new Map(), // menu_item_id -> { menu_item_id, name, quantity, unitPrice, variants }
-  couponCode: undefined,
-};
+function freshCart(previousCartId) {
+  return {
+    cart_id: (previousCartId ?? 0) + 1,
+    restaurantId: undefined,
+    restaurantName: undefined,
+    items: new Map(), // menu_item_id -> { menu_item_id, name, quantity, unitPrice, variants }
+    couponCode: undefined,
+  };
+}
+
+function getCart() {
+  const key = cartKeyStorage.getStore() ?? "default";
+  let cart = cartsByKey.get(key);
+
+  if (!cart) {
+    cart = freshCart(0);
+    cartsByKey.set(key, cart);
+  }
+
+  return cart;
+}
+
+function resetCart() {
+  const key = cartKeyStorage.getStore() ?? "default";
+  const next = freshCart(cartsByKey.get(key)?.cart_id);
+  cartsByKey.set(key, next);
+  return next;
+}
 
 function computeCartData() {
+  const cart = getCart();
   const items = [...cart.items.values()].map((item) => {
     const total = item.unitPrice * item.quantity;
     return {
@@ -565,6 +606,7 @@ function buildServer() {
       },
     },
     async ({ restaurantId, restaurantName, cartItems }) => {
+      const cart = getCart();
       cart.restaurantId = restaurantId;
       cart.restaurantName = restaurantName ?? cart.restaurantName;
 
@@ -623,7 +665,7 @@ function buildServer() {
     "flush_food_cart",
     { description: "Mock: clear the cart.", inputSchema: {} },
     async () => {
-      cart = { cart_id: cart.cart_id + 1, restaurantId: undefined, restaurantName: undefined, items: new Map(), couponCode: undefined };
+      resetCart();
       return structuredResult({ statusCode: 0, statusMessage: "CART_CLEARED_SUCCESSFULLY", success: true, message: "Cart cleared (mock)." });
     },
   );
@@ -664,7 +706,7 @@ function buildServer() {
       inputSchema: { couponCode: z.string(), addressId: z.string(), cartId: z.union([z.string(), z.number()]).optional() },
     },
     async ({ couponCode }) => {
-      cart.couponCode = couponCode.trim().toUpperCase() === COUPON_CODE ? COUPON_CODE : undefined;
+      getCart().couponCode = couponCode.trim().toUpperCase() === COUPON_CODE ? COUPON_CODE : undefined;
       return structuredResult(cartEnvelope("COUPON_APPLIED"));
     },
   );
@@ -858,43 +900,54 @@ export async function handleMockSwiggyFoodRequest(request, response) {
     return;
   }
 
-  try {
-    const sessionId = request.headers["mcp-session-id"];
-    let session = sessionId ? sessions.get(sessionId) : undefined;
+  // Cart isolation key for this request - see cartsByKey/cartKeyStorage
+  // above. Deliberately the raw Authorization header value (not decoded or
+  // validated - this mock never checks auth), so distinct bearer tokens map
+  // to distinct carts; no header at all (the standalone single-developer
+  // usage this file's own header comment documents) falls back to one
+  // shared "default" bucket.
+  const authHeader = request.headers.authorization;
+  const cartKey = typeof authHeader === "string" && authHeader.trim() ? authHeader.trim() : "default";
 
-    if (!session) {
-      if (sessionId) {
-        response.writeHead(404).end();
+  await cartKeyStorage.run(cartKey, async () => {
+    try {
+      const sessionId = request.headers["mcp-session-id"];
+      let session = sessionId ? sessions.get(sessionId) : undefined;
+
+      if (!session) {
+        if (sessionId) {
+          response.writeHead(404).end();
+          return;
+        }
+
+        if (!isInitializeRequest(body)) {
+          sendJsonRpcError(response, 400, "No valid session ID provided.");
+          return;
+        }
+
+        const server = buildServer();
+        const transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+          enableJsonResponse: true,
+          onsessioninitialized: (id) => {
+            sessions.set(id, { server, transport });
+          },
+        });
+
+        await server.connect(transport);
+        await transport.handleRequest(request, response, body);
         return;
       }
 
-      if (!isInitializeRequest(body)) {
-        sendJsonRpcError(response, 400, "No valid session ID provided.");
-        return;
+      await session.transport.handleRequest(request, response, body);
+    } catch (error) {
+      console.error("Mock Swiggy Food server error handling request.", error);
+
+      if (!response.headersSent) {
+        sendJsonRpcError(response, 500, "Internal mock server error.");
       }
-
-      const server = buildServer();
-      const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: () => randomUUID(),
-        enableJsonResponse: true,
-        onsessioninitialized: (id) => {
-          sessions.set(id, { server, transport });
-        },
-      });
-
-      await server.connect(transport);
-      await transport.handleRequest(request, response, body);
-      return;
     }
-
-    await session.transport.handleRequest(request, response, body);
-  } catch (error) {
-    console.error("Mock Swiggy Food server error handling request.", error);
-
-    if (!response.headersSent) {
-      sendJsonRpcError(response, 500, "Internal mock server error.");
-    }
-  }
+  });
 }
 
 // Only runs the file as a standalone server when executed directly (`node
