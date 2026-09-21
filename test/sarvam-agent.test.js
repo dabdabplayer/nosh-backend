@@ -371,10 +371,19 @@ test("runAgentTurn caps tool-call rounds and returns undefined rather than loopi
   let callCount = 0;
   const client = fakeClient(async () => {
     callCount += 1;
-    return toolCallResponse([{ id: `call_${callCount}`, function: { name: "view_cart", arguments: "{}" } }]);
+    // A non-terminal tool (see TERMINAL_TOOLS in sarvam-agent.js) - the
+    // point of this test is the round cap on genuine looping, which a
+    // terminal tool would never reach (it short-circuits on round 1).
+    return toolCallResponse([
+      {
+        id: `call_${callCount}`,
+        function: { name: "search_menu", arguments: JSON.stringify({ restaurantName: "Test Biryani House", query: "biryani" }) },
+      },
+    ]);
   });
 
   const ctx = newContext();
+  ctx.pendingCartSessions.set("sender-1", { addressId: "addr-1" });
   const result = await runAgentTurn({
     message: { from: "sender-1", text: "keep going" },
     swiggyFoodClient: fakeSwiggyClient(),
@@ -387,13 +396,18 @@ test("runAgentTurn caps tool-call rounds and returns undefined rather than loopi
   assert.equal(callCount, 8);
 });
 
-test("runAgentTurn survives a tool implementation throwing, feeding back an apologetic tool result", async () => {
+test("runAgentTurn survives a Swiggy call throwing inside a non-terminal tool, feeding back a fallback for the agent to phrase", async () => {
   const calls = [];
   const client = fakeClient(async ({ messages }) => {
     calls.push(messages);
 
     if (calls.length === 1) {
-      return toolCallResponse([{ id: "call_1", function: { name: "view_cart", arguments: "{}" } }]);
+      return toolCallResponse([
+        {
+          id: "call_1",
+          function: { name: "search_menu", arguments: JSON.stringify({ restaurantName: "Test Biryani House", query: "biryani" }) },
+        },
+      ]);
     }
 
     return textResponse("Sorry, something went wrong - want to try again?");
@@ -401,13 +415,13 @@ test("runAgentTurn survives a tool implementation throwing, feeding back an apol
 
   const ctx = newContext();
   const throwingSwiggyClient = {
-    getFoodCart: async () => {
+    searchMenu: async () => {
       throw new Error("boom");
     },
   };
 
   const result = await runAgentTurn({
-    message: { from: "sender-1", text: "show my cart" },
+    message: { from: "sender-1", text: "what's on the menu" },
     swiggyFoodClient: throwingSwiggyClient,
     pendingCartSessions: (() => {
       const store = new PendingCartSessions();
@@ -422,4 +436,163 @@ test("runAgentTurn survives a tool implementation throwing, feeding back an apol
   });
 
   assert.equal(result, "Sorry, something went wrong - want to try again?");
+});
+
+// --- Terminal tools (checkout, view_cart, find_coupons, apply_coupon,
+// search_food's address-disambiguation prompt): 2026-09-21 product
+// decision - the agent only ever DECIDES to call these, it never phrases,
+// translates, or adds commentary to what they say. See TERMINAL_TOOLS in
+// sarvam-agent.js and AGENTS.md's hallucinated-order-confirmation gotcha.
+
+test("runAgentTurn returns a terminal tool's own result directly, with no second completions call to phrase it", async () => {
+  let completionsCallCount = 0;
+  const client = fakeClient(async () => {
+    completionsCallCount += 1;
+    return toolCallResponse([{ id: "call_1", function: { name: "view_cart", arguments: "{}" } }]);
+  });
+
+  const ctx = newContext();
+  ctx.pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantName: "Test Biryani House" });
+
+  const result = await runAgentTurn({
+    message: { from: "sender-1", text: "what's in my cart" },
+    swiggyFoodClient: fakeSwiggyClient({ getFoodCart: async () => ({ structured: { statusCode: 0, data: { items: [] } } }) }),
+    ...ctx,
+    nlu,
+    client,
+  });
+
+  assert.equal(completionsCallCount, 1);
+  assert.match(result, /empty|cart/i);
+});
+
+test("runAgentTurn returns checkout's own result directly, unphrased, even when it's just a refusal", async () => {
+  let completionsCallCount = 0;
+  const client = fakeClient(async () => {
+    completionsCallCount += 1;
+    return toolCallResponse([{ id: "call_1", function: { name: "checkout", arguments: "{}" } }]);
+  });
+
+  const ctx = newContext();
+
+  const result = await runAgentTurn({
+    message: { from: "sender-1", text: "checkout" },
+    swiggyFoodClient: fakeSwiggyClient(),
+    ...ctx,
+    nlu,
+    client,
+  });
+
+  assert.equal(completionsCallCount, 1);
+  assert.match(result, /don't have an order in progress/);
+});
+
+test("runAgentTurn treats every result from checkout/view_cart/find_coupons/apply_coupon as terminal", async () => {
+  for (const toolName of ["checkout", "view_cart", "find_coupons", "apply_coupon"]) {
+    const client = fakeClient(async () =>
+      toolCallResponse([
+        {
+          id: "call_1",
+          function: { name: toolName, arguments: toolName === "apply_coupon" ? JSON.stringify({ couponCode: "SAVE10" }) : "{}" },
+        },
+      ]),
+    );
+
+    const ctx = newContext();
+    const result = await runAgentTurn({
+      message: { from: "sender-1", text: "go" },
+      swiggyFoodClient: fakeSwiggyClient(),
+      ...ctx,
+      nlu,
+      client,
+    });
+
+    assert.ok(typeof result === "string" && result.length > 0, `${toolName} should return a terminal result`);
+  }
+});
+
+test("runAgentTurn appends a terminal tool's result to conversation history, same as a normal phrased reply", async () => {
+  const client = fakeClient(async () => toolCallResponse([{ id: "call_1", function: { name: "checkout", arguments: "{}" } }]));
+
+  const ctx = newContext();
+  const result = await runAgentTurn({
+    message: { from: "sender-1", text: "checkout" },
+    swiggyFoodClient: fakeSwiggyClient(),
+    ...ctx,
+    nlu,
+    client,
+  });
+
+  const history = ctx.pendingConversationHistory.peek("sender-1");
+  assert.deepEqual(
+    history.map((turn) => ({ role: turn.role, content: turn.content })),
+    [
+      { role: "user", content: "checkout" },
+      { role: "assistant", content: result },
+    ],
+  );
+});
+
+test("runAgentTurn treats an ordinary search_food restaurant list as non-terminal (still agent-phrased)", async () => {
+  const calls = [];
+  const client = fakeClient(async ({ messages }) => {
+    calls.push(messages);
+
+    if (calls.length === 1) {
+      return toolCallResponse([
+        { id: "call_1", function: { name: "search_food", arguments: JSON.stringify({ query: "biryani" }) } },
+      ]);
+    }
+
+    return textResponse("Found a place for you!");
+  });
+
+  const ctx = newContext();
+  // Exactly one saved address (fakeSwiggyClient's default), so search_food
+  // resolves straight to a restaurant list - no address prompt this call.
+  const result = await runAgentTurn({
+    message: { from: "sender-1", text: "I want biryani" },
+    swiggyFoodClient: fakeSwiggyClient(),
+    ...ctx,
+    nlu,
+    client,
+  });
+
+  assert.equal(calls.length, 2);
+  assert.equal(result, "Found a place for you!");
+});
+
+test("runAgentTurn treats search_food's address-disambiguation prompt as terminal (skips agent phrasing)", async () => {
+  let completionsCallCount = 0;
+  const client = fakeClient(async () => {
+    completionsCallCount += 1;
+    return toolCallResponse([
+      { id: "call_1", function: { name: "search_food", arguments: JSON.stringify({ query: "biryani" }) } },
+    ]);
+  });
+
+  const ctx = newContext();
+  const swiggyFoodClient = fakeSwiggyClient({
+    getAddresses: async () => ({
+      structured: {
+        addresses: [
+          { id: "addr-1", addressTag: "Home", addressLine: "1 Main St" },
+          { id: "addr-2", addressTag: "Work", addressLine: "2 Other St" },
+        ],
+        total: 2,
+      },
+    }),
+  });
+
+  const result = await runAgentTurn({
+    message: { from: "sender-1", text: "I want biryani" },
+    swiggyFoodClient,
+    ...ctx,
+    nlu,
+    client,
+  });
+
+  assert.equal(completionsCallCount, 1);
+  assert.match(result, /which one should I use/i);
+  assert.ok(ctx.pendingAddressSelections.peek("sender-1"), "should have recorded the pending address selection");
 });

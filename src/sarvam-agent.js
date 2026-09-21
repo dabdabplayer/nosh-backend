@@ -55,10 +55,9 @@ const SYSTEM_PROMPT = [
   "Mirror the language of the user's MOST RECENT message specifically, not the conversation's overall history - reply in Hindi only if their latest message is in Hindi (Devanagari) script, in Hinglish only if their latest message is Latin-script code-mixed Hindi/English, and in English otherwise. If they switch languages mid-conversation, switch your reply immediately to match - do not let an earlier turn's language (even several recent ones) carry over once they've moved on. Match their tone, not just their vocabulary.",
   "Vary your phrasing turn to turn - do not reuse the same sentence structure or stock phrases repeatedly; this should read like a real conversation, not a form letter.",
   "Keep every reply SHORT - this is WhatsApp, read on a phone, not email. One to three short sentences for most replies. Say the point first, skip preamble (\"Sorry\", \"Hmm\", \"Honestly\", \"I'm really sorry\" as an opener), skip restating the situation before getting to it, and skip padding the end with extra alternatives/options unless the user actually asked for options. When you genuinely have nothing to offer, one short sentence saying so is enough - do not also explain why, apologize at length, or list several fallback suggestions nobody asked for.",
-  "When a tool's result already contains a numbered list, a cart summary, a coupon list, or an order summary, translate/adapt it into the user's language and tone, but keep every number, name, quantity, and price EXACTLY as given, in the exact same order - never renumber, reorder, merge, or drop an item. Exception: recommend_similar's candidate list (see below) - do not show that list to the user at all, you pick from it yourself.",
-  "The checkout tool's result is an order summary awaiting confirmation, not a placed order. Relay it faithfully and always end by telling the user to reply with the literal English word \"YES\" to confirm or \"NO\" to cancel, even if the rest of your reply is in another language - that exact wording is what a separate, deterministic part of this app checks for, so do not paraphrase it into another language or a synonym.",
-  "Never invite a YES/NO confirmation reply, in any wording, unless you are relaying the checkout tool's OWN result from THIS turn - not after applying a coupon, not after adding an item, not because the conversation feels like it's wrapping up. Only checkout's result is an order summary; nothing else is, no matter how complete the cart looks. If it feels like the order is ready, call checkout and relay its real result rather than writing your own confirmation-style ending.",
-  "You can never place or confirm an order yourself, under any circumstance - there is no tool available to you that does that. Only the user replying literally \"YES\" to an order summary already shown can do that, through a separate part of this app. Never say or imply that an order has been placed or confirmed, is being tracked, or has an ETA unless a tool result explicitly told you so this conversation - a user saying \"yes\"/\"confirm\" is not itself proof anything was placed; if you have no tool result confirming it, say you're not sure and suggest they check their cart or try checkout again, never describe a delivery status you don't have.",
+  "When a tool's result contains a numbered list (a restaurant search or a menu search), translate/adapt it into the user's language and tone, but keep every number, name, and price EXACTLY as given, in the exact same order - never renumber, reorder, merge, or drop an item. Exception: recommend_similar's candidate list (see below) - do not show that list to the user at all, you pick from it yourself.",
+  "checkout, view_cart, find_coupons, and apply_coupon are different from every other tool: their real result goes straight to the user, verbatim, the moment you call them - you will never see that result, and anything you write in that same turn is discarded, never shown to anyone. So don't bother composing a summary, a translation, or a confirmation-style ending around calling one of these - just call the right one when the user's request calls for it (checking out, seeing their cart, finding or applying a coupon) and your turn is done. This also means you can NEVER see or state real cart contents, prices, or coupon status yourself - if the user asks what's in their cart or wants a price check, call view_cart or find_coupons rather than answering from memory of an earlier turn, which may be stale.",
+  "You can never place or confirm an order yourself, under any circumstance - there is no tool available to you that does that, and you never even see checkout's own result (see above) to relay it. Only the user replying literally \"YES\" to an order summary already shown by checkout can place an order, through a separate part of this app you have no visibility into. You have no way to know whether an order was ever placed, confirmed, or is being tracked, or what its ETA is - never say or imply any of that, under any circumstance, including right after a user says \"yes\"/\"confirm\" to you (that alone proves nothing - the real confirmation, if any, happened entirely outside this conversation). If asked about order status, say you can't check that here and suggest they look in the Swiggy app, or offer to show their cart.",
   "The general rule for whether the user has to pick a restaurant themselves: did they name a SPECIFIC dish or restaurant (\"biryani\", \"from Pizza Hut\", \"margherita pizza\")? If so, search normally and let them choose from real results - there's genuine ambiguity there. If they only described a craving, mood, or cuisine with no specific dish or restaurant named (\"I want to eat something good\", \"what should I get\", \"I want something spicy\", \"mujhe kuch teekha khana hai\", \"surprise me\") - in ANY language or phrasing, not just these exact examples - that is a request for YOU to decide; the user should never have to pick from a list in that case.",
   "For that second case (you're deciding): call recommend_similar FIRST, every single time this happens, even if you already discussed their order history earlier in this conversation - do not rely on memory, always get a fresh real answer. It already returns a short list of real, in-stock menu items with real restaurant names and prices - pass a `craving` argument (your own concrete translation of a mood/cuisine, e.g. \"spicy\" -> \"chicken tikka masala\") ONLY if their CURRENT message actually states a craving; omit it entirely for a bare \"suggest something\"/\"recommend something\" so it uses their real order history instead. Pick ONE item from the result that best fits what they tend to like, preferring one not marked as already-ordered-before - do not repeat their literal last order. Present that pick - name, restaurant, and its real price - and ask whether they want it added. Do NOT call add_to_cart yet; only call it after they say yes (in whatever words/language they use), using the exact restaurant and item name from the recommend_similar result. Do NOT show recommend_similar's candidate list to the user or ask them to pick - that defeats the point of a recommendation.",
   "If the user rejects a recommendation you already made this conversation (\"something different\", \"no\", \"something else\", etc.), call recommend_similar again and pick a genuinely different real item than the one you already offered (check your own earlier reply in this conversation for what that was) - never re-confirm or re-describe the same item you just offered, that is not what \"different\" means. If you genuinely cannot find anything else after that, say so plainly (per the no-hallucination rule) rather than repeating your last offer.",
@@ -72,7 +71,7 @@ const SEARCH_FOOD_TOOL = Object.freeze({
   function: {
     name: "search_food",
     description:
-      "Find restaurants for a dish, cuisine, or restaurant name the user wants to order. Resolves the delivery address (asking which saved address to use, if more than one) and returns a numbered restaurant list.",
+      "Find restaurants for a dish, cuisine, or restaurant name the user wants to order. Resolves the delivery address first - if more than one is saved, that question goes straight to the user verbatim and you won't see a restaurant list this call; otherwise it returns a numbered restaurant list to you as normal.",
     parameters: {
       type: "object",
       properties: {
@@ -141,14 +140,19 @@ const REMOVE_FROM_CART_TOOL = Object.freeze({
 
 const VIEW_CART_TOOL = Object.freeze({
   type: "function",
-  function: { name: "view_cart", description: "Show what's currently in the user's cart.", parameters: { type: "object", properties: {} } },
+  function: {
+    name: "view_cart",
+    description: "Show what's currently in the user's cart. Its result goes straight to the user - you will not see it.",
+    parameters: { type: "object", properties: {} },
+  },
 });
 
 const FIND_COUPONS_TOOL = Object.freeze({
   type: "function",
   function: {
     name: "find_coupons",
-    description: "List available coupons/discounts for the user's current order.",
+    description:
+      "List available coupons/discounts for the user's current order. Its result goes straight to the user - you will not see it.",
     parameters: { type: "object", properties: {} },
   },
 });
@@ -157,7 +161,8 @@ const APPLY_COUPON_TOOL = Object.freeze({
   type: "function",
   function: {
     name: "apply_coupon",
-    description: "Apply a specific coupon code to the user's current order.",
+    description:
+      "Apply a specific coupon code to the user's current order. Its result goes straight to the user - you will not see it.",
     parameters: {
       type: "object",
       properties: { couponCode: { type: "string", description: "The coupon code, as the user said it." } },
@@ -175,7 +180,7 @@ const CHECKOUT_TOOL = Object.freeze({
   function: {
     name: "checkout",
     description:
-      "Get the order summary (items, pricing, payment method) for the user's current cart, ready for them to confirm. Does NOT place the order.",
+      "Get the order summary (items, pricing, payment method) for the user's current cart, ready for them to confirm, and the YES/NO confirmation prompt. Does NOT place the order. Its result goes straight to the user - you will not see it, so don't write your own summary or confirmation prompt; just call this when the user is ready to check out.",
     parameters: { type: "object", properties: {} },
   },
 });
@@ -226,20 +231,53 @@ const TOOLS = Object.freeze([
 // above and AGENTS.md's Commerce Safety rule.
 export { TOOLS };
 
+// Tools whose result is deterministic, already-final text - once one of
+// these is called, ITS OWN output becomes the reply directly, with no
+// further agent phrasing, translation, or commentary layered on top. Per
+// an explicit product decision (2026-09-21, see AGENTS.md's
+// hallucinated-order-confirmation gotcha): the agent only ever DECIDES
+// when to check out, view the cart, or look up/apply a coupon - it never
+// writes the words for what those actions actually said, since letting it
+// paraphrase a checkout-adjacent result is exactly what let it fabricate a
+// fake order confirmation once already. search_food is handled separately
+// in executeTool below (only terminal on the specific call where it
+// triggers an address-disambiguation prompt, not on an ordinary
+// restaurant-list result, which still gets agent-phrased like any other
+// search result - ditto recommend_similar, add_to_cart, remove_from_cart,
+// reorder_usual, and search_menu, deliberately left OFF this set: those
+// are the "decide what to get" middle of the funnel this agent still owns
+// end to end).
+const TERMINAL_TOOLS = new Set(["checkout", "view_cart", "find_coupons", "apply_coupon"]);
+
 // Every tool call is executed here, never left to the model to reach
 // Swiggy directly. Never throws - a failure inside a tool becomes a tool
 // RESULT the agent can react to gracefully, distinct from a failure of the
 // Sarvam API call itself (which propagates up out of runAgentTurn
 // unchanged, since that's the "NLU provider is down" case the caller
 // already knows how to handle).
+//
+// Returns { text, terminal } rather than a bare string - see
+// TERMINAL_TOOLS above and runAgentTurn's own use of `terminal` below.
 async function executeTool(name, args, ctx) {
   const { senderId, swiggyFoodClient, pendingCartSessions, pendingAddressSelections, pendingOrderConfirmations, searchMenuState } =
     ctx;
 
   try {
     switch (name) {
-      case "search_food":
-        return await searchFood(senderId, args.query, swiggyFoodClient, pendingAddressSelections, pendingCartSessions);
+      case "search_food": {
+        // Only terminal on the specific call where THIS invocation is what
+        // triggers the address-disambiguation prompt (pending went from
+        // unset to set) - an ordinary restaurant-list result (the common
+        // case) stays agent-phrased, same as before. Comparing before/after
+        // state rather than sniffing the returned text for an address-y
+        // phrase, since a real state signal exists here (unlike the
+        // search_menu case just below, which has to string-match its own
+        // result for lack of one).
+        const hadPendingAddress = Boolean(pendingAddressSelections.peek(senderId));
+        const text = await searchFood(senderId, args.query, swiggyFoodClient, pendingAddressSelections, pendingCartSessions);
+        const nowPendingAddress = Boolean(pendingAddressSelections.peek(senderId));
+        return { text, terminal: !hadPendingAddress && nowPendingAddress };
+      }
 
       case "search_menu": {
         const result = await searchMenu({
@@ -263,57 +301,75 @@ async function executeTool(name, args, ctx) {
           searchMenuState.foundMatch = true;
         }
 
-        return result;
+        return { text: result, terminal: false };
       }
 
       case "add_to_cart":
-        return await addToCart({
-          senderId,
-          query: args.query,
-          quantity: Number.isInteger(args.quantity) && args.quantity > 0 ? args.quantity : undefined,
-          restaurantNameHint: typeof args.restaurantName === "string" ? args.restaurantName : undefined,
-          swiggyFoodClient,
-          pendingCartSessions,
-        });
+        return {
+          text: await addToCart({
+            senderId,
+            query: args.query,
+            quantity: Number.isInteger(args.quantity) && args.quantity > 0 ? args.quantity : undefined,
+            restaurantNameHint: typeof args.restaurantName === "string" ? args.restaurantName : undefined,
+            swiggyFoodClient,
+            pendingCartSessions,
+          }),
+          terminal: false,
+        };
 
       case "remove_from_cart":
-        return await removeFromCart({
-          senderId,
-          query: args.query,
-          quantity: Number.isInteger(args.quantity) && args.quantity > 0 ? args.quantity : undefined,
-          swiggyFoodClient,
-          pendingCartSessions,
-        });
+        return {
+          text: await removeFromCart({
+            senderId,
+            query: args.query,
+            quantity: Number.isInteger(args.quantity) && args.quantity > 0 ? args.quantity : undefined,
+            swiggyFoodClient,
+            pendingCartSessions,
+          }),
+          terminal: false,
+        };
 
       case "view_cart":
-        return await viewCart({ senderId, swiggyFoodClient, pendingCartSessions });
+        return { text: await viewCart({ senderId, swiggyFoodClient, pendingCartSessions }), terminal: TERMINAL_TOOLS.has(name) };
 
       case "find_coupons":
-        return await findCoupons({ senderId, swiggyFoodClient, pendingCartSessions });
+        return { text: await findCoupons({ senderId, swiggyFoodClient, pendingCartSessions }), terminal: TERMINAL_TOOLS.has(name) };
 
       case "apply_coupon":
-        return await applyCoupon({ senderId, couponCode: args.couponCode, swiggyFoodClient, pendingCartSessions });
+        return {
+          text: await applyCoupon({ senderId, couponCode: args.couponCode, swiggyFoodClient, pendingCartSessions }),
+          terminal: TERMINAL_TOOLS.has(name),
+        };
 
       case "checkout":
-        return await checkout({ senderId, swiggyFoodClient, pendingCartSessions, pendingOrderConfirmations });
+        return {
+          text: await checkout({ senderId, swiggyFoodClient, pendingCartSessions, pendingOrderConfirmations }),
+          terminal: TERMINAL_TOOLS.has(name),
+        };
 
       case "reorder_usual":
-        return await buildReorderUsualReply({ senderId, swiggyFoodClient, pendingCartSessions });
+        return { text: await buildReorderUsualReply({ senderId, swiggyFoodClient, pendingCartSessions }), terminal: false };
 
       case "recommend_similar":
-        return await recommendSimilar({
-          swiggyFoodClient,
-          senderId,
-          pendingCartSessions,
-          craving: typeof args.craving === "string" && args.craving.trim() ? args.craving.trim() : undefined,
-        });
+        return {
+          text: await recommendSimilar({
+            swiggyFoodClient,
+            senderId,
+            pendingCartSessions,
+            craving: typeof args.craving === "string" && args.craving.trim() ? args.craving.trim() : undefined,
+          }),
+          terminal: false,
+        };
 
       default:
-        return "That action isn't available.";
+        return { text: "That action isn't available.", terminal: false };
     }
   } catch (error) {
     console.error("Sarvam agent tool execution failed.", { tool: name, name: error?.name });
-    return "Something went wrong doing that just now. Let the user know and suggest trying again in a bit.";
+    return {
+      text: "Something went wrong doing that just now. Let the user know and suggest trying again in a bit.",
+      terminal: false,
+    };
   }
 }
 
@@ -423,6 +479,16 @@ export async function runAgentTurn({
 
     messages.push({ role: "assistant", content: responseMessage.content ?? null, tool_calls: toolCalls });
 
+    // Set the moment any tool call this round comes back terminal (see
+    // TERMINAL_TOOLS above) - the FIRST one found wins on the rare chance
+    // more than one fires in the same round (an even rarer edge case than
+    // the model bundling tool calls at all). Every tool call this round
+    // still executes (real side effects must happen), but once any of them
+    // is terminal, that tool's own text becomes the reply directly below -
+    // no further completions call, so the agent never gets a chance to
+    // phrase, translate, or add commentary around it.
+    let terminalResultText;
+
     for (const toolCall of toolCalls) {
       // Checked before EVERY tool call this turn, not just search_food/
       // search_menu specifically - once search_menu has found a real match,
@@ -434,10 +500,24 @@ export async function runAgentTurn({
       // too - the system prompt already requires waiting for the user's
       // yes on a LATER turn before calling it, so it should never
       // legitimately fire in the SAME turn a match was just found either.
-      const resultText = searchMenuState.foundMatch
-        ? "You already found a real, in-stock item earlier this turn - present that one as your recommendation now instead of calling another tool."
+      const result = searchMenuState.foundMatch
+        ? {
+            text: "You already found a real, in-stock item earlier this turn - present that one as your recommendation now instead of calling another tool.",
+            terminal: false,
+          }
         : await executeTool(toolCall.function.name, parseToolArgs(toolCall), toolCtx);
-      messages.push({ role: "tool", tool_call_id: toolCall.id, content: resultText });
+
+      messages.push({ role: "tool", tool_call_id: toolCall.id, content: result.text });
+
+      if (result.terminal && terminalResultText === undefined) {
+        terminalResultText = result.text;
+      }
+    }
+
+    if (terminalResultText !== undefined) {
+      pendingConversationHistory.append(senderId, { role: "user", content: message.text });
+      pendingConversationHistory.append(senderId, { role: "assistant", content: terminalResultText });
+      return terminalResultText;
     }
   }
 
