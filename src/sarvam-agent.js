@@ -12,7 +12,17 @@ import {
   viewCart,
 } from "./food-order-orchestrator.js";
 
-const MAX_TOOL_ROUNDS = 4;
+// Confirmed live at 4: a real recommendation turn needs recommend_similar +
+// search_food + search_menu + a final text round = 4 rounds in the BEST
+// case (nothing round-limit-relevant left over), and the model reasonably
+// trying a second restaurant/dish when the first search_menu result wasn't
+// a good match (a legitimate retry, not a bug) pushes that to 5+ - which
+// hit this exact cap with `rounds: 4` in Render's logs, silently returning
+// the generic placeholder instead of the recommendation. 4 was sized for
+// the older, simpler tool set (pre-search_menu) and never revisited when
+// search_menu was added. See AGENTS.md's rate-limit math note for the
+// req/min tradeoff of raising this further.
+const MAX_TOOL_ROUNDS = 6;
 
 // Sarvam's default max_tokens is 2048, and with reasoning_effort enabled,
 // reasoning tokens are billed against that SAME budget as completion tokens
