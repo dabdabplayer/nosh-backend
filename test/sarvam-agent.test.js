@@ -277,6 +277,59 @@ test("runAgentTurn short-circuits a search_food call too once search_menu alread
   assert.match(toolMessagesSoFar.at(-1).content, /already found a real, in-stock item/);
 });
 
+test("runAgentTurn short-circuits ANY tool call once search_menu already found a real match, not just search_food/search_menu", async () => {
+  const calls = [];
+  const client = fakeClient(async ({ messages }) => {
+    calls.push(messages);
+
+    if (calls.length === 1) {
+      return toolCallResponse([
+        {
+          id: "call_1",
+          function: {
+            name: "search_menu",
+            arguments: JSON.stringify({ restaurantName: "Test Biryani House", query: "chicken biryani" }),
+          },
+        },
+      ]);
+    }
+
+    if (calls.length === 2) {
+      // A third, previously-untested tool - proves the guard is general,
+      // not a per-tool patch that happens to cover the two tools already
+      // seen failing live.
+      return toolCallResponse([{ id: "call_2", function: { name: "view_cart", arguments: "{}" } }]);
+    }
+
+    return textResponse("Chicken Biryani from Test Biryani House is ₹249 - want me to add it?");
+  });
+
+  const ctx = newContext();
+  ctx.pendingCartSessions.set("sender-1", { addressId: "addr-1" });
+
+  let getFoodCartCallCount = 0;
+  const swiggyFoodClient = fakeSwiggyClient({
+    searchMenu: async () => ({ structured: { items: [{ name: "Chicken Biryani", price: 249, inStock: 1 }] } }),
+    getFoodCart: async () => {
+      getFoodCartCallCount += 1;
+      return { structured: { statusCode: 0, data: { items: [] } } };
+    },
+  });
+
+  const result = await runAgentTurn({
+    message: { from: "sender-1", text: "what should I get" },
+    swiggyFoodClient,
+    ...ctx,
+    nlu,
+    client,
+  });
+
+  assert.match(result, /want me to add it/);
+  assert.equal(getFoodCartCallCount, 0);
+  const toolMessagesAfterViewCart = calls[2].filter((m) => m.role === "tool");
+  assert.match(toolMessagesAfterViewCart.at(-1).content, /already found a real, in-stock item/);
+});
+
 test("runAgentTurn appends the exchange to conversation history on success", async () => {
   const client = fakeClient(async () => textResponse("Sure thing!"));
   const ctx = newContext();

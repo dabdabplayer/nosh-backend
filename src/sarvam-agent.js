@@ -217,34 +217,9 @@ async function executeTool(name, args, ctx) {
   try {
     switch (name) {
       case "search_food":
-        // Confirmed live: once search_menu has found a real match this
-        // turn, the model doesn't necessarily retry via ANOTHER search_menu
-        // call (the case the short-circuit below was built for) - it can
-        // just as easily call search_food again instead, with a different
-        // query, and keep going from there. Same fix, same reason: guard
-        // both entry points into "search again," not just the one observed
-        // first.
-        if (searchMenuState?.foundMatch) {
-          return "You already found a real, in-stock item earlier this turn - present that one as your recommendation now instead of searching again.";
-        }
-
         return await searchFood(senderId, args.query, swiggyFoodClient, pendingAddressSelections, pendingCartSessions);
 
       case "search_menu": {
-        // Confirmed live, three separate prompt-wording attempts in one
-        // session: telling the model to "commit after one retry" once it
-        // has a real match does not reliably stop it from searching
-        // further anyway (seen exceeding MAX_TOOL_ROUNDS even after a
-        // genuine match came back on an earlier round this same turn).
-        // Enforced here instead, deterministically, same principle as the
-        // YES/NO gate - once search_menu has found a real item this turn,
-        // every further call is short-circuited without hitting Swiggy
-        // again, forcing the model to use what it already has rather than
-        // burning the round budget on more searching.
-        if (searchMenuState?.foundMatch) {
-          return "You already found a real, in-stock item earlier this turn - present that one as your recommendation now instead of searching again.";
-        }
-
         const result = await searchMenu({
           senderId,
           restaurantName: args.restaurantName,
@@ -253,6 +228,15 @@ async function executeTool(name, args, ctx) {
           pendingCartSessions,
         });
 
+        // Marks that a real match was found this turn - checked by the
+        // caller (runAgentTurn's loop, not here) BEFORE routing to any tool
+        // at all, so every entry point into "search again" is covered, not
+        // just this one. See runAgentTurn's own comment on why this moved
+        // out of individual tool cases: confirmed live twice in one
+        // session, once the model has a real match it doesn't reliably
+        // stop - and it doesn't always retry through the SAME tool either
+        // (search_menu again the first time, search_food with a different
+        // query the second time).
         if (searchMenuState && result.startsWith("Here's what I found")) {
           searchMenuState.foundMatch = true;
         }
@@ -413,7 +397,19 @@ export async function runAgentTurn({
     messages.push({ role: "assistant", content: responseMessage.content ?? null, tool_calls: toolCalls });
 
     for (const toolCall of toolCalls) {
-      const resultText = await executeTool(toolCall.function.name, parseToolArgs(toolCall), toolCtx);
+      // Checked before EVERY tool call this turn, not just search_food/
+      // search_menu specifically - once search_menu has found a real match,
+      // any further tool call (whichever one the model reaches for) gets
+      // the same short-circuit, never a real Swiggy call. Confirmed live
+      // that guarding individual tool cases one at a time doesn't hold: the
+      // model found a different tool to keep going with each time a
+      // narrower guard shipped. add_to_cart is deliberately included here
+      // too - the system prompt already requires waiting for the user's
+      // yes on a LATER turn before calling it, so it should never
+      // legitimately fire in the SAME turn a match was just found either.
+      const resultText = searchMenuState.foundMatch
+        ? "You already found a real, in-stock item earlier this turn - present that one as your recommendation now instead of calling another tool."
+        : await executeTool(toolCall.function.name, parseToolArgs(toolCall), toolCtx);
       messages.push({ role: "tool", tool_call_id: toolCall.id, content: resultText });
     }
   }
