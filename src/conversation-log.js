@@ -2,6 +2,24 @@ import { createClient } from "redis";
 import { KEY_LENGTH_BYTES, decryptRecord, encryptRecord, hashSenderId } from "./at-rest-encryption.js";
 
 const KEY_PREFIX = "nosh:chatlog:";
+// Bounds what would otherwise be an infinite retry loop, each attempt
+// logging "Conversation log Redis client error." forever, if the store is
+// ever unreachable (wrong URL, network issue, or - confirmed live via
+// scripts/view-chat-log.js - a Render Key Value IP allowlist blocking the
+// caller's current IP). node-redis's own default reconnectStrategy retries
+// forever with no bound, which is what caused that loop. connectTimeout
+// bounds a single attempt too, so a network black hole (not just a refused
+// connection) can't hang one either.
+const MAX_RECONNECT_ATTEMPTS = 3;
+const CONNECT_TIMEOUT_MS = 5000;
+
+function reconnectStrategy(retries, cause) {
+  if (retries >= MAX_RECONNECT_ATTEMPTS) {
+    return cause instanceof Error ? cause : new Error("Redis reconnect attempts exhausted.");
+  }
+  return Math.min(retries * 200, 1000);
+}
+
 // 14 days: long enough to debug an issue a user reports a few days late,
 // short enough to limit exposure if the store were ever compromised - see
 // the retention section this feature added to the privacy policy. Applied
@@ -44,7 +62,7 @@ export class ConversationLog {
     }
 
     this.#encryptionKey = encryptionKey;
-    this.#client = createRedisClient({ url });
+    this.#client = createRedisClient({ url, socket: { reconnectStrategy, connectTimeout: CONNECT_TIMEOUT_MS } });
     this.#client.on("error", (error) => {
       console.error("Conversation log Redis client error.", { name: error?.name });
     });
@@ -56,7 +74,14 @@ export class ConversationLog {
     }
 
     if (!this.#connecting) {
-      this.#connecting = this.#client.connect();
+      // Cleared on failure so a LATER call (once whatever blocked the
+      // connection - e.g. an IP allowlist - is fixed) gets a fresh bounded
+      // attempt instead of replaying the same rejection for the rest of
+      // this process's life.
+      this.#connecting = this.#client.connect().catch((error) => {
+        this.#connecting = undefined;
+        throw error;
+      });
     }
 
     await this.#connecting;
