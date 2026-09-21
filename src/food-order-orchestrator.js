@@ -1175,7 +1175,24 @@ export async function searchMenu({ senderId, restaurantName, query, swiggyFoodCl
   let resolvedRestaurantName = session.restaurantName;
 
   if (restaurantName) {
-    const restaurant = await resolveRestaurant({ swiggyFoodClient, restaurantName, addressId: session.addressId });
+    // Prefer a fuzzy match against the restaurant list search_food already
+    // showed for THIS session, if any, before falling back to a fresh
+    // Swiggy-side name search. Confirmed live: with only a couple of real
+    // restaurants in play, an approximate/paraphrased name the agent passes
+    // (rather than copying search_food's result verbatim, despite being
+    // told to) can fail a live name search repeatedly, burning the
+    // tool-call round budget - this list is the same real, already-fetched
+    // candidates from moments earlier in this exact conversation, so
+    // matching against it fuzzily first is still 100% real data, just more
+    // forgiving of an imprecise name.
+    const knownCandidate = session.restaurantCandidates?.find((candidate) => {
+      const candidateNormalized = normalizeRestaurantName(candidate.name);
+      const hintNormalized = normalizeRestaurantName(restaurantName);
+      return candidateNormalized.includes(hintNormalized) || hintNormalized.includes(candidateNormalized);
+    });
+
+    const restaurant =
+      knownCandidate ?? (await resolveRestaurant({ swiggyFoodClient, restaurantName, addressId: session.addressId }));
 
     if (!restaurant) {
       return `Sorry, I couldn't find a restaurant called "${restaurantName}" near you.`;

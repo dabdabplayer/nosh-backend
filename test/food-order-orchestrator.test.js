@@ -691,6 +691,45 @@ test("searchMenu reports no active order when search_food was never called for t
   assert.equal(reply, NO_ACTIVE_ORDER_REPLY);
 });
 
+test("searchMenu fuzzy-matches against search_food's own candidate list instead of a fresh Swiggy name search", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", {
+    addressId: "addr-1",
+    restaurantCandidates: [
+      { id: "r-biryani", name: "Test Kitchen Biryani House (Mock)" },
+      { id: "r-pizza", name: "Fake Pizza Co (Mock)" },
+    ],
+  });
+
+  let restaurantSearchCalled = false;
+  const menuSearchCalls = [];
+  const client = fakeClient({
+    searchRestaurants: async () => {
+      restaurantSearchCalled = true;
+      return payload({ restaurants: [] });
+    },
+    searchMenu: async (params) => {
+      menuSearchCalls.push(params);
+      return payload({ items: [menuItem({ name: "Chicken Tikka Masala", price: 260 })] });
+    },
+  });
+
+  // A paraphrased/approximate name, not the exact "(Mock)"-suffixed string
+  // search_food actually returned.
+  const reply = await searchMenu({
+    senderId: "sender-1",
+    restaurantName: "Test Kitchen Biryani House",
+    query: "spicy",
+    swiggyFoodClient: client,
+    pendingCartSessions,
+  });
+
+  assert.equal(restaurantSearchCalled, false);
+  assert.equal(menuSearchCalls[0].restaurantIdOfAddedItem, "r-biryani");
+  assert.match(reply, /Chicken Tikka Masala — ₹260/);
+  assert.match(reply, /at Test Kitchen Biryani House \(Mock\)/);
+});
+
 test("searchMenu reports a friendly message when the named restaurant can't be found", async () => {
   const pendingCartSessions = new PendingCartSessions();
   pendingCartSessions.set("sender-1", { addressId: "addr-1" });
