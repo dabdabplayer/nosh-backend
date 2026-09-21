@@ -317,11 +317,13 @@ const NO_ORDER_HISTORY_REPLY =
 // and how often - built entirely from get_food_orders' own documented
 // fields (restaurantName, orderedItems). The agent is the one that reasons
 // about what's "similar but different" from there, and it's instructed
-// (system prompt) to then call search_food/search_menu to find a concrete,
-// real, in-stock option rather than naming a dish out of thin air - the
-// facts in the final suggestion still all have to come from a real tool
-// result, only the similarity judgment is the model's. Text-only: this
-// never touches the cart.
+// (system prompt, and again in this function's own returned text) to then
+// call search_food and add_to_cart itself - silently picking a restaurant
+// and dish rather than surfacing search_food's restaurant list and asking
+// the user to choose (the whole point of "recommend something" is that the
+// user shouldn't have to decide) - so unlike this function, which is
+// text-only, the overall recommend_similar flow DOES end up touching the
+// cart, via a later add_to_cart call the agent makes on its own.
 export async function describePastOrders({ swiggyFoodClient }) {
   let addressResult;
   try {
@@ -396,9 +398,11 @@ export async function describePastOrders({ swiggyFoodClient }) {
   return [
     "Real order history for this user, most recently ordered-from restaurant first:",
     ...lines,
-    "Use this to judge what they tend to like, then find something in a similar cuisine/category " +
-      "they have NOT just had - call search_food or search_menu to find a concrete, real, in-stock option. " +
-      "Never invent a dish, restaurant, or price that didn't come back from a real tool result.",
+    "Use this to judge what they tend to like, then call search_food to find something in a similar " +
+      "cuisine/category they have NOT just had. Do not show search_food's restaurant list to the user or " +
+      "ask them to pick one - choose one open restaurant yourself, then call add_to_cart with that " +
+      "restaurant's real name and a specific real dish/cuisine. Present only the finished pick as the " +
+      "recommendation. Never invent a dish, restaurant, or price that didn't come back from a real tool result.",
   ].join("\n");
 }
 
