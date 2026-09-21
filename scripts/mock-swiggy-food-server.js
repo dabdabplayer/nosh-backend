@@ -356,9 +356,33 @@ function buildServer() {
       },
     },
     async ({ query }) => {
-      const restaurants = RESTAURANTS.filter((restaurant) =>
-        restaurant.name.toLowerCase().includes(query.trim().toLowerCase()) || query.trim().length > 0,
-      );
+      // Was `nameMatches || query.trim().length > 0` - the second clause
+      // made this return every restaurant for any non-empty query,
+      // regardless of relevance. Confirmed live: a "pasta" search returned
+      // a biryani house and a pizza place, neither of which serves pasta,
+      // and the agent burned multiple tool-call rounds discovering that via
+      // search_menu before running out of budget. Now matches by name,
+      // cuisine tag, or having an actual matching menu item - a reasonable
+      // stand-in for real Swiggy's cross-restaurant dish search, not "show
+      // everything."
+      const normalizedQuery = query.trim().toLowerCase();
+      const menuItemList = Object.values(MENU_ITEMS);
+
+      const restaurants = RESTAURANTS.filter((restaurant) => {
+        if (normalizedQuery.length === 0) {
+          return true;
+        }
+
+        const nameMatches = restaurant.name.toLowerCase().includes(normalizedQuery);
+        const cuisineMatches = (restaurant.cuisines ?? []).some((cuisine) =>
+          cuisine.toLowerCase().includes(normalizedQuery),
+        );
+        const hasMatchingItem = menuItemList.some(
+          (item) => item.restaurant_id === restaurant.id && item.name.toLowerCase().includes(normalizedQuery),
+        );
+
+        return nameMatches || cuisineMatches || hasMatchingItem;
+      });
 
       return structuredResult({
         restaurants,
