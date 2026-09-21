@@ -1144,6 +1144,43 @@ export async function addToCart({ senderId, query, quantity, restaurantNameHint,
   });
 }
 
+// Tool implementation for the agent's `search_menu` tool (see
+// src/sarvam-agent.js) - lets the agent find a real dish and its real price
+// at a specific restaurant WITHOUT adding anything to the cart, so it can
+// quote a real price and ask "want me to add it?" before committing (see
+// the recommend_similar flow's own instructions). Needs an addressId
+// already established by a prior search_food call in this conversation -
+// this never resolves a delivery address itself, unlike searchFood.
+export async function searchMenu({ senderId, restaurantName, query, swiggyFoodClient, pendingCartSessions }) {
+  const session = pendingCartSessions.peek(senderId);
+
+  if (!session?.addressId) {
+    return NO_ACTIVE_ORDER_REPLY;
+  }
+
+  let restaurantId = session.restaurantId;
+  let resolvedRestaurantName = session.restaurantName;
+
+  if (restaurantName) {
+    const restaurant = await resolveRestaurant({ swiggyFoodClient, restaurantName, addressId: session.addressId });
+
+    if (!restaurant) {
+      return `Sorry, I couldn't find a restaurant called "${restaurantName}" near you.`;
+    }
+
+    restaurantId = restaurant.id;
+    resolvedRestaurantName = restaurant.name;
+  }
+
+  const items = await findMatchingMenuItems({ swiggyFoodClient, query, addressId: session.addressId, restaurantId });
+
+  if (items.length === 0) {
+    return `Couldn't find "${query}" at ${resolvedRestaurantName ?? "that restaurant"} right now.`;
+  }
+
+  return formatItemSelectionReply(query, resolvedRestaurantName ?? "that restaurant", items);
+}
+
 export async function viewCart({ senderId, swiggyFoodClient, pendingCartSessions }) {
   const session = pendingCartSessions.peek(senderId);
 

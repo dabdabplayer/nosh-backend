@@ -8,6 +8,7 @@ import {
   describePastOrders,
   findCoupons,
   removeFromCart,
+  searchMenu,
   viewCart,
 } from "./food-order-orchestrator.js";
 
@@ -39,7 +40,7 @@ const SYSTEM_PROMPT = [
   "When a tool's result already contains a numbered list, a cart summary, a coupon list, or an order summary, translate/adapt it into the user's language and tone, but keep every number, name, quantity, and price EXACTLY as given, in the exact same order - never renumber, reorder, merge, or drop an item. Exception: search_food's restaurant list during a recommendation (see below) - do not show that list to the user at all.",
   "The checkout tool's result is an order summary awaiting confirmation, not a placed order. Relay it faithfully and always end by telling the user to reply with the literal English word \"YES\" to confirm or \"NO\" to cancel, even if the rest of your reply is in another language - that exact wording is what a separate, deterministic part of this app checks for, so do not paraphrase it into another language or a synonym.",
   "You can never place or confirm an order yourself, under any circumstance - there is no tool available to you that does that. Only the user replying literally \"YES\" to an order summary already shown can do that, through a separate part of this app. Never say or imply that an order has been placed or confirmed unless a tool result explicitly told you so.",
-  "When asked to recommend something (\"I want to eat something good\", \"what should I get\"), the user should never have to make a decision themselves. Do not repeat their literal last order. Use their real order history (recommend_similar) to judge what they tend to like, then call search_food yourself to find something concrete in a similar cuisine/category they have not just had. Do NOT show search_food's restaurant list to the user or ask them which restaurant they want - that defeats the point of a recommendation. Instead, pick one genuinely open restaurant from the result yourself, then call add_to_cart with that restaurant's real name as restaurantName and a specific real dish/cuisine as query. Present only your finished pick as the recommendation (what and where, already added to their cart), and invite them to swap it or say no if they'd rather something else - never ask them to choose from a list.",
+  "When asked to recommend something (\"I want to eat something good\", \"what should I get\"), the user should never have to make a decision themselves. Do not repeat their literal last order. Use their real order history (recommend_similar) to judge what they tend to like, then call search_food yourself to find something concrete in a similar cuisine/category they have not just had. Do NOT show search_food's restaurant list to the user or ask them which restaurant they want - that defeats the point of a recommendation. Instead, pick one genuinely open restaurant from the result yourself, then call search_menu at that restaurant for a specific real dish/cuisine and pick one real item from the result. Present that single pick as your recommendation - name, restaurant, and its real price from search_menu - and ask whether they want you to add it to their cart. Do NOT call add_to_cart yet at this point; only call it after they say yes (in whatever words/language they use) to that specific offer, using the exact restaurant and item you already found.",
 ].join(" ");
 
 const SEARCH_FOOD_TOOL = Object.freeze({
@@ -54,6 +55,23 @@ const SEARCH_FOOD_TOOL = Object.freeze({
         query: { type: "string", description: "The dish, cuisine, or restaurant name, as the user said it." },
       },
       required: ["query"],
+    },
+  },
+});
+
+const SEARCH_MENU_TOOL = Object.freeze({
+  type: "function",
+  function: {
+    name: "search_menu",
+    description:
+      "Look up real menu items and their real prices at a specific restaurant, WITHOUT adding anything to the cart. Use this to find out what something actually costs before recommending it or telling the user a price.",
+    parameters: {
+      type: "object",
+      properties: {
+        restaurantName: { type: "string", description: "The restaurant's real name, exactly as a prior tool result gave it." },
+        query: { type: "string", description: "The dish or cuisine to look for at that restaurant." },
+      },
+      required: ["restaurantName", "query"],
     },
   },
 });
@@ -152,13 +170,14 @@ const RECOMMEND_SIMILAR_TOOL = Object.freeze({
   function: {
     name: "recommend_similar",
     description:
-      "Get the user's real past-order history so you can reason about what to suggest next - something similar to what they tend to like, but not the exact same order again. After calling this, call search_food to find a concrete, real option, then add_to_cart it yourself - never show search_food's restaurant list to the user or ask them to pick one; the point of a recommendation is that they don't have to decide.",
+      "Get the user's real past-order history so you can reason about what to suggest next - something similar to what they tend to like, but not the exact same order again. After calling this, call search_food to find a concrete restaurant, then search_menu for a real dish and price there - never show search_food's restaurant list to the user or ask them to pick one; the point of a recommendation is that they don't have to decide. Present your single pick with its real price and ask if they want it added - do not call add_to_cart until they say yes.",
     parameters: { type: "object", properties: {} },
   },
 });
 
 const TOOLS = Object.freeze([
   SEARCH_FOOD_TOOL,
+  SEARCH_MENU_TOOL,
   ADD_TO_CART_TOOL,
   REMOVE_FROM_CART_TOOL,
   VIEW_CART_TOOL,
@@ -187,6 +206,15 @@ async function executeTool(name, args, ctx) {
     switch (name) {
       case "search_food":
         return await searchFood(senderId, args.query, swiggyFoodClient, pendingAddressSelections, pendingCartSessions);
+
+      case "search_menu":
+        return await searchMenu({
+          senderId,
+          restaurantName: args.restaurantName,
+          query: args.query,
+          swiggyFoodClient,
+          pendingCartSessions,
+        });
 
       case "add_to_cart":
         return await addToCart({

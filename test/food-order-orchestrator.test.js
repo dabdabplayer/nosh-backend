@@ -13,6 +13,7 @@ import {
   placeConfirmedOrder,
   removeFromCart,
   resolvePendingCartCandidateReply,
+  searchMenu,
   viewCart,
 } from "../src/food-order-orchestrator.js";
 import { PendingCartSessions } from "../src/pending-cart-sessions.js";
@@ -634,6 +635,125 @@ test("addToCart reports a friendly message when nothing matches", async () => {
   });
 
   assert.match(reply, /couldn't find "unobtainium roll"/);
+});
+
+// --- searchMenu ---
+
+test("searchMenu looks up a real item and price at a named restaurant without touching the cart", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", { addressId: "addr-1" });
+
+  const restaurantSearchCalls = [];
+  const menuSearchCalls = [];
+  let updateFoodCartCalled = false;
+  const client = fakeClient({
+    searchRestaurants: async (params) => {
+      restaurantSearchCalls.push(params);
+      return payload({ restaurants: [{ id: "r-pizzahut", name: "Pizza Hut", availabilityStatus: "OPEN" }] });
+    },
+    searchMenu: async (params) => {
+      menuSearchCalls.push(params);
+      return payload({ items: [menuItem({ name: "Margherita Pizza", price: 249 })] });
+    },
+    updateFoodCart: async () => {
+      updateFoodCartCalled = true;
+      return cartPayload(cartData());
+    },
+  });
+
+  const reply = await searchMenu({
+    senderId: "sender-1",
+    restaurantName: "Pizza Hut",
+    query: "margherita pizza",
+    swiggyFoodClient: client,
+    pendingCartSessions,
+  });
+
+  assert.deepEqual(restaurantSearchCalls, [{ query: "Pizza Hut", addressId: "addr-1" }]);
+  assert.equal(menuSearchCalls[0].restaurantIdOfAddedItem, "r-pizzahut");
+  assert.match(reply, /Margherita Pizza — ₹249/);
+  assert.match(reply, /at Pizza Hut/);
+  assert.equal(updateFoodCartCalled, false);
+});
+
+test("searchMenu reports no active order when search_food was never called for this sender", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  const client = fakeClient();
+
+  const reply = await searchMenu({
+    senderId: "sender-1",
+    restaurantName: "Pizza Hut",
+    query: "pizza",
+    swiggyFoodClient: client,
+    pendingCartSessions,
+  });
+
+  assert.equal(reply, NO_ACTIVE_ORDER_REPLY);
+});
+
+test("searchMenu reports a friendly message when the named restaurant can't be found", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", { addressId: "addr-1" });
+  const client = fakeClient({ searchRestaurants: async () => payload({ restaurants: [] }) });
+
+  const reply = await searchMenu({
+    senderId: "sender-1",
+    restaurantName: "Nonexistent Place",
+    query: "pizza",
+    swiggyFoodClient: client,
+    pendingCartSessions,
+  });
+
+  assert.match(reply, /couldn't find a restaurant called "Nonexistent Place"/);
+});
+
+test("searchMenu reports when nothing matches at the resolved restaurant", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", { addressId: "addr-1" });
+  const client = fakeClient({
+    searchRestaurants: async () => payload({ restaurants: [{ id: "r-1", name: "Pizza Hut", availabilityStatus: "OPEN" }] }),
+    searchMenu: async () => payload({ items: [] }),
+  });
+
+  const reply = await searchMenu({
+    senderId: "sender-1",
+    restaurantName: "Pizza Hut",
+    query: "unobtainium roll",
+    swiggyFoodClient: client,
+    pendingCartSessions,
+  });
+
+  assert.match(reply, /Couldn't find "unobtainium roll" at Pizza Hut/);
+});
+
+test("searchMenu reuses the session's already-established restaurant when no name hint is given", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-known", restaurantName: "Known Place" });
+
+  let restaurantSearchCalled = false;
+  const menuSearchCalls = [];
+  const client = fakeClient({
+    searchRestaurants: async () => {
+      restaurantSearchCalled = true;
+      return payload({ restaurants: [] });
+    },
+    searchMenu: async (params) => {
+      menuSearchCalls.push(params);
+      return payload({ items: [menuItem({ name: "Cheese Naan", price: 89 })] });
+    },
+  });
+
+  const reply = await searchMenu({
+    senderId: "sender-1",
+    query: "naan",
+    swiggyFoodClient: client,
+    pendingCartSessions,
+  });
+
+  assert.equal(restaurantSearchCalled, false);
+  assert.equal(menuSearchCalls[0].restaurantIdOfAddedItem, "r-known");
+  assert.match(reply, /Cheese Naan — ₹89/);
+  assert.match(reply, /at Known Place/);
 });
 
 // --- viewCart / findCoupons / checkout without a session ---

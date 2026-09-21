@@ -28,6 +28,9 @@ function fakeSwiggyClient(overrides = {}) {
     searchRestaurants:
       overrides.searchRestaurants ??
       (async () => ({ structured: { restaurants: [{ id: "r1", name: "Test Biryani House", availabilityStatus: "OPEN" }] } })),
+    searchMenu:
+      overrides.searchMenu ??
+      (async () => ({ structured: { items: [{ name: "Chicken Biryani", price: 249, inStock: 1 }] } })),
     getFoodCart: overrides.getFoodCart ?? (async () => ({ structured: { statusCode: 0, data: { items: [] } } })),
   };
 }
@@ -110,6 +113,44 @@ test("runAgentTurn executes a tool call and feeds the result back for the final 
   const toolMessages = calls[1].filter((m) => m.role === "tool");
   assert.equal(toolMessages.length, 1);
   assert.match(toolMessages[0].content, /Test Biryani House/);
+});
+
+test("runAgentTurn routes a search_menu tool call without touching the cart", async () => {
+  const calls = [];
+  const client = fakeClient(async ({ messages }) => {
+    calls.push(messages);
+
+    if (calls.length === 1) {
+      return toolCallResponse([
+        {
+          id: "call_1",
+          function: {
+            name: "search_menu",
+            arguments: JSON.stringify({ restaurantName: "Test Biryani House", query: "chicken biryani" }),
+          },
+        },
+      ]);
+    }
+
+    return textResponse("Chicken Biryani from Test Biryani House is ₹249 - want me to add it?");
+  });
+
+  const ctx = newContext();
+  ctx.pendingCartSessions.set("sender-1", { addressId: "addr-1" });
+
+  const result = await runAgentTurn({
+    message: { from: "sender-1", text: "what should I get" },
+    swiggyFoodClient: fakeSwiggyClient(),
+    ...ctx,
+    nlu,
+    client,
+  });
+
+  assert.match(result, /want me to add it/);
+  const toolMessages = calls[1].filter((m) => m.role === "tool");
+  assert.match(toolMessages[0].content, /Chicken Biryani — ₹249/);
+  // search_menu must never touch the cart.
+  assert.equal(ctx.pendingCartSessions.peek("sender-1").cartRestaurantId, undefined);
 });
 
 test("runAgentTurn appends the exchange to conversation history on success", async () => {
