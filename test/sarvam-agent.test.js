@@ -214,6 +214,69 @@ test("runAgentTurn short-circuits a second search_menu call once the first alrea
   assert.match(toolMessagesSoFar.at(-1).content, /already found a real, in-stock item/);
 });
 
+test("runAgentTurn short-circuits a search_food call too once search_menu already found a real match", async () => {
+  const calls = [];
+  const client = fakeClient(async ({ messages }) => {
+    calls.push(messages);
+
+    if (calls.length === 1) {
+      return toolCallResponse([
+        {
+          id: "call_1",
+          function: {
+            name: "search_menu",
+            arguments: JSON.stringify({ restaurantName: "Test Biryani House", query: "chicken biryani" }),
+          },
+        },
+      ]);
+    }
+
+    if (calls.length === 2) {
+      // Confirmed live: the model doesn't necessarily retry via ANOTHER
+      // search_menu call - it can call search_food again instead, with a
+      // different query. This must be short-circuited the same way.
+      return toolCallResponse([
+        { id: "call_2", function: { name: "search_food", arguments: JSON.stringify({ query: "pasta" }) } },
+      ]);
+    }
+
+    return textResponse("Chicken Biryani from Test Biryani House is ₹249 - want me to add it?");
+  });
+
+  const ctx = newContext();
+  ctx.pendingCartSessions.set("sender-1", { addressId: "addr-1" });
+
+  let searchMenuCallCount = 0;
+  let searchRestaurantsCallCount = 0;
+  const swiggyFoodClient = fakeSwiggyClient({
+    searchMenu: async () => {
+      searchMenuCallCount += 1;
+      return { structured: { items: [{ name: "Chicken Biryani", price: 249, inStock: 1 }] } };
+    },
+    searchRestaurants: async () => {
+      searchRestaurantsCallCount += 1;
+      return { structured: { restaurants: [{ id: "r1", name: "Test Biryani House", availabilityStatus: "OPEN" }] } };
+    },
+  });
+
+  const result = await runAgentTurn({
+    message: { from: "sender-1", text: "what should I get" },
+    swiggyFoodClient,
+    ...ctx,
+    nlu,
+    client,
+  });
+
+  assert.match(result, /want me to add it/);
+  assert.equal(searchMenuCallCount, 1);
+  // Exactly 1: the first search_menu call's own restaurant-name resolution
+  // (no restaurantCandidates seeded here to fuzzy-match against first) -
+  // the short-circuited search_food attempt must never add a second.
+  assert.equal(searchRestaurantsCallCount, 1);
+  const toolMessagesSoFar = calls[2].filter((m) => m.role === "tool");
+  assert.match(toolMessagesSoFar.at(-1).content, /already found a real, in-stock item/);
+});
+
 test("runAgentTurn appends the exchange to conversation history on success", async () => {
   const client = fakeClient(async () => textResponse("Sure thing!"));
   const ctx = newContext();

@@ -217,6 +217,17 @@ async function executeTool(name, args, ctx) {
   try {
     switch (name) {
       case "search_food":
+        // Confirmed live: once search_menu has found a real match this
+        // turn, the model doesn't necessarily retry via ANOTHER search_menu
+        // call (the case the short-circuit below was built for) - it can
+        // just as easily call search_food again instead, with a different
+        // query, and keep going from there. Same fix, same reason: guard
+        // both entry points into "search again," not just the one observed
+        // first.
+        if (searchMenuState?.foundMatch) {
+          return "You already found a real, in-stock item earlier this turn - present that one as your recommendation now instead of searching again.";
+        }
+
         return await searchFood(senderId, args.query, swiggyFoodClient, pendingAddressSelections, pendingCartSessions);
 
       case "search_menu": {
