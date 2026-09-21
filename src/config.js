@@ -31,10 +31,23 @@ const DEFAULT_NLU_BASE_URL = "https://api.sarvam.ai";
 const DEFAULT_NLU_MODEL = "sarvam-105b";
 // The prior NVIDIA NIM provider had real, sometimes multi-second latency in
 // production (an 8s timeout was aborting almost every classification call,
-// later raised to 25s). Kept as the default here too - a classifier call
-// that hangs indefinitely is worse than one that fails closed and falls
-// back to the regex trigger.
-const DEFAULT_NLU_TIMEOUT_MS = 25_000;
+// later raised to 25s). A hanging call is still worse than one that fails
+// closed - see AGENTS.md's rate-limit gotcha on why runAgentTurn never
+// retries a Sarvam-call failure itself.
+// Raised 25s -> 35s on 2026-09-21: confirmed live via Render logs
+// (`SarvamAIError, message: '"timeout"'`) - this is per-completions-call,
+// not a cumulative per-turn budget (the SDK applies it per HTTP request,
+// confirmed by reading its Client.js), but a LATER round in a multi-tool
+// agent turn carries more accumulated context (system prompt + growing
+// tool-result history) than an early one, so later rounds are more likely
+// to run long - and reasoning_effort was just raised to "medium" and
+// MAX_TOOL_ROUNDS to 8 in this same session, both of which make a slow
+// later-round call more likely, not less. Two timeouts were observed
+// across one day of testing (one before the reasoning_effort change, one
+// after) - a real but occasional failure, not a chronic one; this raise
+// gives genuinely slow responses more room without changing the
+// fail-closed behavior on a call that's actually stuck.
+const DEFAULT_NLU_TIMEOUT_MS = 35_000;
 // The prior NVIDIA NIM classifier disabled reasoning entirely (single-shot
 // intent classification gained nothing from it). The Sarvam agent
 // (src/sarvam-agent.js) does real multi-step reasoning - tool sequencing,
