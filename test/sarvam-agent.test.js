@@ -384,7 +384,7 @@ test("runAgentTurn caps tool-call rounds and returns undefined rather than loopi
   });
 
   assert.equal(result, undefined);
-  assert.equal(callCount, 6);
+  assert.equal(callCount, 8);
 });
 
 test("runAgentTurn survives a tool implementation throwing, feeding back an apologetic tool result", async () => {
