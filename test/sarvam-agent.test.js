@@ -153,6 +153,67 @@ test("runAgentTurn routes a search_menu tool call without touching the cart", as
   assert.equal(ctx.pendingCartSessions.peek("sender-1").cartRestaurantId, undefined);
 });
 
+test("runAgentTurn short-circuits a second search_menu call once the first already found a real match", async () => {
+  const calls = [];
+  const client = fakeClient(async ({ messages }) => {
+    calls.push(messages);
+
+    if (calls.length === 1) {
+      return toolCallResponse([
+        {
+          id: "call_1",
+          function: {
+            name: "search_menu",
+            arguments: JSON.stringify({ restaurantName: "Test Biryani House", query: "chicken biryani" }),
+          },
+        },
+      ]);
+    }
+
+    if (calls.length === 2) {
+      // The model tries a second restaurant/dish even though the first
+      // search_menu call already found something real - this must be
+      // short-circuited without a real Swiggy call, not executed again.
+      return toolCallResponse([
+        {
+          id: "call_2",
+          function: {
+            name: "search_menu",
+            arguments: JSON.stringify({ restaurantName: "Some Other Place", query: "something else" }),
+          },
+        },
+      ]);
+    }
+
+    return textResponse("Chicken Biryani from Test Biryani House is ₹249 - want me to add it?");
+  });
+
+  const ctx = newContext();
+  ctx.pendingCartSessions.set("sender-1", { addressId: "addr-1" });
+
+  let searchMenuCallCount = 0;
+  const swiggyFoodClient = fakeSwiggyClient({
+    searchMenu: async () => {
+      searchMenuCallCount += 1;
+      return { structured: { items: [{ name: "Chicken Biryani", price: 249, inStock: 1 }] } };
+    },
+  });
+
+  const result = await runAgentTurn({
+    message: { from: "sender-1", text: "what should I get" },
+    swiggyFoodClient,
+    ...ctx,
+    nlu,
+    client,
+  });
+
+  assert.match(result, /want me to add it/);
+  assert.equal(calls.length, 3);
+  assert.equal(searchMenuCallCount, 1);
+  const toolMessagesSoFar = calls[2].filter((m) => m.role === "tool");
+  assert.match(toolMessagesSoFar.at(-1).content, /already found a real, in-stock item/);
+});
+
 test("runAgentTurn appends the exchange to conversation history on success", async () => {
   const client = fakeClient(async () => textResponse("Sure thing!"));
   const ctx = newContext();

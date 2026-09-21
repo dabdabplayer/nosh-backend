@@ -211,21 +211,43 @@ export { TOOLS };
 // unchanged, since that's the "NLU provider is down" case the caller
 // already knows how to handle).
 async function executeTool(name, args, ctx) {
-  const { senderId, swiggyFoodClient, pendingCartSessions, pendingAddressSelections, pendingOrderConfirmations } = ctx;
+  const { senderId, swiggyFoodClient, pendingCartSessions, pendingAddressSelections, pendingOrderConfirmations, searchMenuState } =
+    ctx;
 
   try {
     switch (name) {
       case "search_food":
         return await searchFood(senderId, args.query, swiggyFoodClient, pendingAddressSelections, pendingCartSessions);
 
-      case "search_menu":
-        return await searchMenu({
+      case "search_menu": {
+        // Confirmed live, three separate prompt-wording attempts in one
+        // session: telling the model to "commit after one retry" once it
+        // has a real match does not reliably stop it from searching
+        // further anyway (seen exceeding MAX_TOOL_ROUNDS even after a
+        // genuine match came back on an earlier round this same turn).
+        // Enforced here instead, deterministically, same principle as the
+        // YES/NO gate - once search_menu has found a real item this turn,
+        // every further call is short-circuited without hitting Swiggy
+        // again, forcing the model to use what it already has rather than
+        // burning the round budget on more searching.
+        if (searchMenuState?.foundMatch) {
+          return "You already found a real, in-stock item earlier this turn - present that one as your recommendation now instead of searching again.";
+        }
+
+        const result = await searchMenu({
           senderId,
           restaurantName: args.restaurantName,
           query: args.query,
           swiggyFoodClient,
           pendingCartSessions,
         });
+
+        if (searchMenuState && result.startsWith("Here's what I found")) {
+          searchMenuState.foundMatch = true;
+        }
+
+        return result;
+      }
 
       case "add_to_cart":
         return await addToCart({
@@ -327,7 +349,19 @@ export async function runAgentTurn({
     { role: "user", content: message.text },
   ];
 
-  const toolCtx = { senderId, swiggyFoodClient, pendingCartSessions, pendingAddressSelections, pendingOrderConfirmations };
+  // Mutable, scoped to this one runAgentTurn call only - tracks whether
+  // search_menu has already found a real match THIS turn, so executeTool
+  // can short-circuit any further search_menu call rather than let the
+  // model keep searching past a good answer (see executeTool's comment).
+  const searchMenuState = {};
+  const toolCtx = {
+    senderId,
+    swiggyFoodClient,
+    pendingCartSessions,
+    pendingAddressSelections,
+    pendingOrderConfirmations,
+    searchMenuState,
+  };
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const response = await client.chat.completions({
