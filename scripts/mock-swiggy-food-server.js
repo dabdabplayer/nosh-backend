@@ -80,6 +80,28 @@ const RESTAURANTS = [
     veg: true,
     availabilityStatus: "OPEN",
   },
+  // Added 2026-09-21: the original 2-restaurant/3-item inventory was too
+  // small for the Sarvam agent's "recommend something similar but not
+  // identical" feature to ever actually work - a sender who'd ordered
+  // Chicken Biryani and Margherita Pizza before had NO other real dish at
+  // either restaurant to be recommended instead, and nothing anywhere
+  // matched a "spicy" craving by name/cuisine, so every recommendation
+  // attempt genuinely dead-ended. This restaurant/its items exist
+  // specifically to give real alternatives to recommend.
+  {
+    id: "mock-rest-3",
+    name: "Dragon Wok (Mock)",
+    cuisines: ["Chinese", "Asian"],
+    avgRating: 4.2,
+    totalRatings: "950+",
+    costForTwo: "₹380 for two",
+    areaName: "Mock Nagar",
+    distanceKm: 2.8,
+    deliveryTimeMinutes: 30,
+    deliveryTimeRange: "25-35 mins",
+    veg: false,
+    availabilityStatus: "OPEN",
+  },
 ];
 
 // menu_item_id -> item definition (also carries which restaurant it's on).
@@ -146,6 +168,60 @@ const MENU_ITEMS = {
     isBestseller: false,
     restaurant_id: "mock-rest-2",
     restaurant_name: "Fake Pizza Co (Mock)",
+  },
+  // Added 2026-09-21 alongside mock-rest-3 - see that restaurant's own
+  // comment. A second, different real dish at each of the original two
+  // restaurants so "similar to what they've had, but not the same again"
+  // has an actual alternative to find - and a real "spicy" match at both
+  // Test Kitchen Biryani House and Dragon Wok, which nothing in this mock
+  // previously matched by name/cuisine at all.
+  "mock-item-tikka-masala": {
+    menu_item_id: "mock-item-tikka-masala",
+    name: "Chicken Tikka Masala (Mock)",
+    price: 279,
+    isVeg: false,
+    inStock: 1,
+    hasVariants: false,
+    hasAddons: false,
+    isBestseller: false,
+    restaurant_id: "mock-rest-1",
+    restaurant_name: "Test Kitchen Biryani House (Mock)",
+  },
+  "mock-item-peri-peri-pizza": {
+    menu_item_id: "mock-item-peri-peri-pizza",
+    name: "Peri Peri Chicken Pizza (Mock)",
+    price: 299,
+    isVeg: false,
+    inStock: 1,
+    hasVariants: false,
+    hasAddons: false,
+    isBestseller: false,
+    restaurant_id: "mock-rest-2",
+    restaurant_name: "Fake Pizza Co (Mock)",
+  },
+  "mock-item-chilli-chicken": {
+    menu_item_id: "mock-item-chilli-chicken",
+    name: "Chilli Chicken (Mock)",
+    price: 259,
+    isVeg: false,
+    inStock: 1,
+    hasVariants: false,
+    hasAddons: false,
+    isBestseller: true,
+    restaurant_id: "mock-rest-3",
+    restaurant_name: "Dragon Wok (Mock)",
+  },
+  "mock-item-szechuan-noodles": {
+    menu_item_id: "mock-item-szechuan-noodles",
+    name: "Szechuan Noodles (Mock)",
+    price: 229,
+    isVeg: true,
+    inStock: 1,
+    hasVariants: false,
+    hasAddons: false,
+    isBestseller: false,
+    restaurant_id: "mock-rest-3",
+    restaurant_name: "Dragon Wok (Mock)",
   },
 };
 

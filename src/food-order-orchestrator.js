@@ -411,11 +411,14 @@ export async function describePastOrders({ swiggyFoodClient, senderId, pendingCa
   return [
     "Real order history for this user, most recently ordered-from restaurant first:",
     ...lines,
-    "Use this to judge what they tend to like, then call search_food to find something in a similar " +
-      "cuisine/category they have NOT just had. Do not show search_food's restaurant list to the user or " +
-      "ask them to pick one - choose one open restaurant yourself, then call add_to_cart with that " +
-      "restaurant's real name and a specific real dish/cuisine. Present only the finished pick as the " +
-      "recommendation. Never invent a dish, restaurant, or price that didn't come back from a real tool result.",
+    "Use this to judge what they tend to like, then call search_food (using a cuisine or restaurant " +
+      "name from this history, not a specific dish they've already had) to find a restaurant they " +
+      "already like. Do not show search_food's restaurant list to the user or ask them to pick one - " +
+      "choose one open restaurant yourself, then call search_menu there for a real item and price. That " +
+      "item must be DIFFERENT from what they already ordered at that restaurant per this history - never " +
+      "search for or recommend the exact same dish again, that defeats the point of a recommendation. " +
+      "Present that pick and ask if they want it added - do not call add_to_cart until they say yes. " +
+      "Never invent a dish, restaurant, or price that didn't come back from a real tool result.",
   ].join("\n");
 }
 

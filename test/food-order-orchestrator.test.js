@@ -1562,7 +1562,8 @@ test("describePastOrders lists every distinct restaurant with how often and what
   // Unlike the old single-pick recommendation, both restaurants are real
   // facts the agent gets to reason over - this function no longer decides
   // which one to suggest.
-  assert.match(reply, /find something in a similar cuisine\/category/);
+  assert.match(reply, /to find a restaurant they already like/);
+  assert.match(reply, /must be DIFFERENT from what they already ordered/);
   assert.match(reply, /Never invent a dish, restaurant, or price/);
 });
 
