@@ -38,10 +38,20 @@ const DEFAULT_NLU_TIMEOUT_MS = 25_000;
 // The prior NVIDIA NIM classifier disabled reasoning entirely (single-shot
 // intent classification gained nothing from it). The Sarvam agent
 // (src/sarvam-agent.js) does real multi-step reasoning - tool sequencing,
-// judging what's "similar but not identical" for a recommendation - so it
-// needs some, but "low" balances that against per-turn latency and Sarvam's
-// 40 req/min Starter-tier rate limit for sarvam-105b.
-const DEFAULT_NLU_REASONING_EFFORT = "low";
+// judging what's "similar but not identical" for a recommendation.
+// Raised from "low" to "medium" on 2026-09-21 after live testing: with
+// "low", several prompt-only instructions (language-mirroring the LATEST
+// message, not hallucinating a consolation option, reply brevity) weren't
+// holding reliably even after being stated explicitly - by the time this
+// changed, the system prompt had grown to 9 dense rules, which "low" may
+// simply not have the budget to reliably juggle all of at once. This is a
+// genuine experiment, not a confirmed fix - "medium" costs more latency
+// per turn and eats further into the 40 req/min Starter-tier budget (see
+// the rate-limit gotcha below), and hasn't itself been verified live yet.
+// If instruction-following is still unreliable after this, that's real
+// signal the system prompt itself needs trimming/restructuring, not that
+// reasoning_effort should keep climbing.
+const DEFAULT_NLU_REASONING_EFFORT = "medium";
 const VALID_REASONING_EFFORTS = new Set(["low", "medium", "high"]);
 
 function readPort(value) {
