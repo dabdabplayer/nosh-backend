@@ -1,4 +1,10 @@
-import { NO_SAVED_ADDRESS_REPLY, parseAddressSelectionReply } from "./food-search-orchestrator.js";
+import {
+  formatAddressLabel,
+  formatAddressPrompt,
+  MAX_ADDRESS_CANDIDATES,
+  NO_SAVED_ADDRESS_REPLY,
+  parseAddressSelectionReply,
+} from "./food-search-orchestrator.js";
 import { parseStructuredPayload } from "./swiggy-food-client.js";
 
 const MAX_COUPONS = 5;
@@ -342,7 +348,8 @@ async function buildRestaurantCandidateBlock({ swiggyFoodClient, addressId, rest
     return undefined;
   }
 
-  const items = parseStructuredPayload(menuResult)?.items;
+  const parsed = parseStructuredPayload(menuResult);
+  const items = parsed?.items;
   if (!Array.isArray(items)) {
     return undefined;
   }
@@ -365,17 +372,33 @@ async function buildRestaurantCandidateBlock({ swiggyFoodClient, addressId, rest
     return `  - ${item.name}${price}${badge}`;
   });
 
+  // Real display facts about the restaurant itself, straight from THIS SAME
+  // get_restaurant_menu call - verified against Swiggy's own docs
+  // (mcp.swiggy.com/builders/docs/reference/food/get_restaurant_menu.md)
+  // that its restaurant object can carry avgRating/avgRatingString and
+  // deliveryTime/slaString, explicitly documented as optional "display/
+  // ranking signals" - so only shown when actually present, never
+  // fabricated when Swiggy omits them.
+  const restaurant = parsed?.restaurant;
+  const ratingText =
+    restaurant?.avgRatingString ?? (typeof restaurant?.avgRating === "number" ? String(restaurant.avgRating) : undefined);
+  const etaText = restaurant?.slaString ?? (typeof restaurant?.deliveryTime === "number" ? `${restaurant.deliveryTime} mins` : undefined);
+  const restaurantFacts = [ratingText ? `⭐${ratingText}` : undefined, etaText].filter(Boolean).join(", ");
+  const restaurantHeader = restaurantFacts ? `${restaurantName} — ${restaurantFacts}` : restaurantName;
+
   const historyNote = orderedItemStrings.length > 0 ? orderedItemStrings.join(", ") : "unknown";
-  return [`${restaurantName} (previously ordered: ${historyNote}):`, ...itemLines].join("\n");
+  return [`${restaurantHeader} (previously ordered: ${historyNote}):`, ...itemLines].join("\n");
 }
 
 const RECOMMEND_CLOSING_INSTRUCTIONS =
   "Pick ONE item from the list above that best fits what they tend to like, preferring one not marked as " +
-  "already-ordered-before. Present its real name, restaurant, and real price, and ask if they want it added " +
-  "- do not call add_to_cart until they say yes. Do not show this raw list to the user or ask them to pick - " +
-  "you decide. If they reject this pick, call recommend_similar again and choose a genuinely different item " +
-  "than the one you already offered (check your own earlier reply in this conversation). Never invent a " +
-  "dish, restaurant, or price not listed above.";
+  "already-ordered-before. Present its real name, restaurant, real price, and (when a restaurant header " +
+  "includes one) its real rating and delivery time, and ask if they want it added - do not call add_to_cart " +
+  "until they say yes. If a restaurant header has no rating/delivery time listed, don't mention either - " +
+  "never invent one. Do not show this raw list to the user or ask them to pick - you decide. If they reject " +
+  "this pick, call recommend_similar again and choose a genuinely different item than the one you already " +
+  "offered (check your own earlier reply in this conversation). Never invent a dish, restaurant, price, " +
+  "rating, or delivery time not listed above.";
 
 // Tool implementation for the agent's `recommend_similar` tool (see
 // src/sarvam-agent.js). Does the entire "find something real to suggest"
@@ -399,7 +422,7 @@ const RECOMMEND_CLOSING_INSTRUCTIONS =
 // straight from a real tool result; only which restaurants/items to surface
 // is this function's own heuristic (recency + bestseller-first), not a
 // judgment about what the user would actually like.
-export async function recommendSimilar({ swiggyFoodClient, senderId, pendingCartSessions, craving }) {
+export async function recommendSimilar({ swiggyFoodClient, senderId, pendingCartSessions, pendingAddressSelections, craving }) {
   const existingAddressId = pendingCartSessions?.peek(senderId)?.addressId;
   let addressId = existingAddressId;
 
@@ -422,8 +445,26 @@ export async function recommendSimilar({ swiggyFoodClient, senderId, pendingCart
       return NO_SAVED_ADDRESS_REPLY;
     }
 
-    // Same one-message-shortcut simplification as buildReorderUsualReply
-    // above - doesn't prompt to disambiguate multiple saved addresses.
+    // A genuine choice exists - ask, exactly like an explicit search_food
+    // request would (see searchFood in food-search-orchestrator.js). Used
+    // to always silently auto-pick addresses[0] here ("the point of a
+    // recommendation is that they don't have to decide") - explicit user
+    // ask changed that: "I only want it to ask during the beginning of a
+    // new order" is exactly what this is, recommendation or not. Only
+    // asked ONCE per session either way - resolvePendingAddressReply
+    // (food-search-orchestrator.js) persists the pick into
+    // pendingCartSessions, so every later tool call this session (recommend
+    // or explicit search) reuses it via existingAddressId above.
+    if (addresses.length > 1) {
+      const candidates = addresses.slice(0, MAX_ADDRESS_CANDIDATES).map((address) => ({
+        id: address.id,
+        label: formatAddressLabel(address),
+      }));
+
+      pendingAddressSelections?.set(senderId, { kind: "recommend", craving, candidates });
+      return formatAddressPrompt(candidates);
+    }
+
     addressId = addresses[0]?.id;
 
     if (!addressId) {

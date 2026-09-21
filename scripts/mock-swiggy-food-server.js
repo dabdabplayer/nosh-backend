@@ -564,7 +564,18 @@ function buildServer() {
         }));
 
       return structuredResult({
-        restaurant: restaurant ? { id: restaurant.id, name: restaurant.name, city: "Mock City", isOpen: true } : null,
+        restaurant: restaurant
+          ? {
+              id: restaurant.id,
+              name: restaurant.name,
+              city: "Mock City",
+              isOpen: true,
+              avgRating: restaurant.avgRating,
+              avgRatingString: String(restaurant.avgRating),
+              deliveryTime: restaurant.deliveryTimeMinutes,
+              slaString: restaurant.deliveryTimeRange,
+            }
+          : null,
         items,
         categoryLabels: ["Recommended"],
         totalItems: items.length,

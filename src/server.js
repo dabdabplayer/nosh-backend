@@ -5,6 +5,7 @@ import { resolvePendingAddressReply } from "./food-search-orchestrator.js";
 import {
   parseOrderConfirmationReply,
   placeConfirmedOrder,
+  recommendSimilar,
   resolvePendingCartCandidateReply,
 } from "./food-order-orchestrator.js";
 import { InProcessMessageIdempotency } from "./message-idempotency.js";
@@ -310,6 +311,7 @@ async function buildReplyText(message) {
       swiggyFoodClient,
       pendingAddressSelections,
       pendingCartSessions,
+      recommendSimilar,
     });
 
     if (addressOutcome.handled) {

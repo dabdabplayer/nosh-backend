@@ -1,6 +1,9 @@
 import { parseStructuredPayload } from "./swiggy-food-client.js";
 
-const MAX_ADDRESS_CANDIDATES = 5;
+// Exported so recommendSimilar (src/food-order-orchestrator.js) can offer
+// the exact same address-disambiguation prompt/candidate shape rather than
+// duplicating it - see recommendSimilar's own address-choice branch.
+export const MAX_ADDRESS_CANDIDATES = 5;
 const MAX_RESTAURANT_RESULTS = 5;
 
 const GENERIC_FALLBACK_REPLY =
@@ -25,12 +28,12 @@ export function parseAddressSelectionReply(text, candidateCount) {
   return index >= 0 && index < candidateCount ? index : undefined;
 }
 
-function formatAddressLabel(address) {
+export function formatAddressLabel(address) {
   const tag = address?.addressTag ?? address?.addressCategory ?? "Address";
   return address?.addressLine ? `${tag} — ${address.addressLine}` : tag;
 }
 
-function formatAddressPrompt(candidates) {
+export function formatAddressPrompt(candidates) {
   const lines = candidates.map((candidate, index) => `${index + 1}. ${candidate.label}`);
   return [
     "You have a few saved addresses — which one should I use?",
@@ -174,7 +177,7 @@ export async function searchFood(
       label: formatAddressLabel(address),
     }));
 
-    pendingAddressSelections.set(senderId, { searchTerm, candidates });
+    pendingAddressSelections.set(senderId, { kind: "search", searchTerm, candidates });
     return formatAddressPrompt(candidates);
   }
 
@@ -208,6 +211,12 @@ export async function resolvePendingAddressReply({
   swiggyFoodClient,
   pendingAddressSelections,
   pendingCartSessions,
+  // Only used for a "recommend" kind pending selection (see recommendSimilar
+  // in food-order-orchestrator.js) - injected as a parameter, not imported
+  // directly, since food-order-orchestrator.js already imports FROM this
+  // file (MAX_ADDRESS_CANDIDATES/formatAddressLabel/formatAddressPrompt
+  // above); importing back would be circular.
+  recommendSimilar,
 }) {
   const pending = pendingAddressSelections.peek(message.from);
 
@@ -223,15 +232,28 @@ export async function resolvePendingAddressReply({
   }
 
   pendingAddressSelections.clear(message.from);
+  const addressId = pending.candidates[selectedIndex].id;
 
   try {
-    const replyText = await runRestaurantSearch(
-      swiggyFoodClient,
-      pending.searchTerm,
-      pending.candidates[selectedIndex].id,
-      message.from,
-      pendingCartSessions,
-    );
+    // A recommendation's address prompt resumes back into recommendSimilar
+    // itself (with the SAME craving it was about to use, if any) rather
+    // than running a restaurant search - the whole point of "recommend
+    // something" is that the user picks an address, not a restaurant. Set
+    // the resolved address into the session FIRST so recommendSimilar's own
+    // existingAddressId check picks it up instead of re-fetching addresses
+    // and re-asking.
+    if (pending.kind === "recommend") {
+      pendingCartSessions?.set(message.from, { addressId });
+      const replyText = await recommendSimilar({
+        swiggyFoodClient,
+        senderId: message.from,
+        pendingCartSessions,
+        craving: pending.craving,
+      });
+      return { handled: true, replyText };
+    }
+
+    const replyText = await runRestaurantSearch(swiggyFoodClient, pending.searchTerm, addressId, message.from, pendingCartSessions);
     return { handled: true, replyText };
   } catch (error) {
     console.error("Food search orchestration failed unexpectedly.", { name: error.name });

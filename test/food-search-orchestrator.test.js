@@ -395,3 +395,37 @@ test("resolvePendingAddressReply clears stale pending state and reports unhandle
   assert.deepEqual(outcome, { handled: false });
   assert.equal(pending.peek("sender-1"), undefined);
 });
+
+test("resolvePendingAddressReply resumes into recommendSimilar (not a restaurant search) for a 'recommend' kind pending selection", async () => {
+  const pending = new PendingAddressSelections();
+  const pendingCartSessions = new PendingCartSessions();
+  pending.set("sender-1", {
+    kind: "recommend",
+    craving: "chicken tikka masala",
+    candidates: [
+      { id: "addr-1", label: "Home — 1 Main St" },
+      { id: "addr-2", label: "Work — 2 Other St" },
+    ],
+  });
+
+  let recommendSimilarCall;
+  const recommendSimilar = async (args) => {
+    recommendSimilarCall = args;
+    return "Chicken Tikka Masala from Test Kitchen — ₹279. Add karun?";
+  };
+
+  const outcome = await resolvePendingAddressReply({
+    message: message("2"),
+    swiggyFoodClient: fakeSwiggyFoodClient({}),
+    pendingAddressSelections: pending,
+    pendingCartSessions,
+    recommendSimilar,
+  });
+
+  assert.equal(outcome.handled, true);
+  assert.equal(outcome.replyText, "Chicken Tikka Masala from Test Kitchen — ₹279. Add karun?");
+  assert.equal(recommendSimilarCall.senderId, "sender-1");
+  assert.equal(recommendSimilarCall.craving, "chicken tikka masala");
+  assert.equal(pendingCartSessions.peek("sender-1").addressId, "addr-2");
+  assert.equal(pending.peek("sender-1"), undefined);
+});

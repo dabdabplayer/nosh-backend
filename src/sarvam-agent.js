@@ -199,7 +199,7 @@ const RECOMMEND_SIMILAR_TOOL = Object.freeze({
   function: {
     name: "recommend_similar",
     description:
-      "Get a short list of real, in-stock menu items (with real restaurant names and real prices) to recommend from - already gathered for you, no further search needed. With no craving argument, these come from the user's real past-order history (restaurants they already like, items they haven't already had there). With a craving argument, these come from a real search for that craving/cuisine instead. Pick ONE item from the result yourself and present it - never show the full list to the user or ask them to pick; the point of a recommendation is that they don't have to decide. Do not call add_to_cart until they say yes.",
+      "Get a short list of real, in-stock menu items (with real restaurant names, ratings, delivery times where known, and real prices) to recommend from - already gathered for you, no further search needed. With no craving argument, these come from the user's real past-order history (restaurants they already like, items they haven't already had there). With a craving argument, these come from a real search for that craving/cuisine instead. Pick ONE item from the result yourself and present it - never show the full list to the user or ask them to pick; the point of a recommendation is that they don't have to decide. Do not call add_to_cart until they say yes. If more than one address is saved and none has been picked yet this session, this instead asks the user which address to use - that question goes straight to them verbatim, and you won't get a candidate list this call.",
     parameters: {
       type: "object",
       properties: {
@@ -350,16 +350,24 @@ async function executeTool(name, args, ctx) {
       case "reorder_usual":
         return { text: await buildReorderUsualReply({ senderId, swiggyFoodClient, pendingCartSessions }), terminal: false };
 
-      case "recommend_similar":
-        return {
-          text: await recommendSimilar({
-            swiggyFoodClient,
-            senderId,
-            pendingCartSessions,
-            craving: typeof args.craving === "string" && args.craving.trim() ? args.craving.trim() : undefined,
-          }),
-          terminal: false,
-        };
+      case "recommend_similar": {
+        // Same before/after pendingAddressSelections check as search_food
+        // above, and for the same reason: recommendSimilar can now ALSO
+        // trigger a real address-disambiguation prompt (see
+        // food-order-orchestrator.js) when more than one address is saved -
+        // that specific result must be terminal too, not agent-paraphrased,
+        // while an ordinary recommendation stays ordinary (non-terminal).
+        const hadPendingAddress = Boolean(pendingAddressSelections.peek(senderId));
+        const text = await recommendSimilar({
+          swiggyFoodClient,
+          senderId,
+          pendingCartSessions,
+          pendingAddressSelections,
+          craving: typeof args.craving === "string" && args.craving.trim() ? args.craving.trim() : undefined,
+        });
+        const nowPendingAddress = Boolean(pendingAddressSelections.peek(senderId));
+        return { text, terminal: !hadPendingAddress && nowPendingAddress };
+      }
 
       default:
         return { text: "That action isn't available.", terminal: false };

@@ -16,6 +16,7 @@ import {
   searchMenu,
   viewCart,
 } from "../src/food-order-orchestrator.js";
+import { PendingAddressSelections } from "../src/pending-address-selection.js";
 import { PendingCartSessions } from "../src/pending-cart-sessions.js";
 import { PendingOrderConfirmations } from "../src/pending-order-confirmations.js";
 
@@ -1579,7 +1580,7 @@ test("recommendSimilar (no craving) returns real, in-stock, not-yet-tried items 
   assert.match(reply, /Veg Biryani — ₹199/);
   assert.match(reply, /Farmhouse Pizza — ₹299/);
   assert.match(reply, /Pick ONE item from the list above/);
-  assert.match(reply, /Never invent a dish, restaurant, or price/);
+  assert.match(reply, /Never invent a dish, restaurant, price, rating, or delivery time/);
 });
 
 test("recommendSimilar (no craving) falls back to a restaurant's top items, marked as already-ordered, when everything there was already tried", async () => {
@@ -1744,4 +1745,115 @@ test("recommendSimilar falls back to a generic reply when every candidate restau
   const reply = await recommendSimilar({ swiggyFoodClient: client });
 
   assert.match(reply, /couldn't do that right now/);
+});
+
+test("recommendSimilar includes real rating and delivery time in the restaurant header when get_restaurant_menu returns them", async () => {
+  const client = fakeClient({
+    getFoodOrders: async () => payload({ orders: [orderSummary({ orderId: "o1", restaurantId: "rest-1", restaurantName: "Biryani House" })] }),
+    getRestaurantMenu: async () =>
+      payload({
+        restaurant: { id: "rest-1", name: "Biryani House", avgRatingString: "4.3", slaString: "25-30 mins" },
+        items: [{ id: "i1", name: "Veg Biryani", price: 199, inStock: 1 }],
+      }),
+  });
+
+  const reply = await recommendSimilar({ swiggyFoodClient: client });
+
+  assert.match(reply, /Biryani House — ⭐4.3, 25-30 mins \(previously ordered:/);
+});
+
+test("recommendSimilar never invents a rating or delivery time when get_restaurant_menu omits them", async () => {
+  const client = fakeClient({
+    getFoodOrders: async () => payload({ orders: [orderSummary({ orderId: "o1", restaurantId: "rest-1", restaurantName: "Biryani House" })] }),
+    getRestaurantMenu: async () =>
+      payload({
+        restaurant: { id: "rest-1", name: "Biryani House" },
+        items: [{ id: "i1", name: "Veg Biryani", price: 199, inStock: 1 }],
+      }),
+  });
+
+  const reply = await recommendSimilar({ swiggyFoodClient: client });
+
+  assert.match(reply, /^Biryani House \(previously ordered:/m);
+  assert.doesNotMatch(reply, /⭐/);
+});
+
+test("recommendSimilar (no craving) asks which address to use when more than one is saved and none chosen yet, instead of silently picking one", async () => {
+  const pendingAddressSelections = new PendingAddressSelections();
+  const client = fakeClient({
+    getAddresses: async () =>
+      payload({
+        addresses: [
+          { id: "addr-1", addressTag: "Home", addressLine: "1 Main St" },
+          { id: "addr-2", addressTag: "Work", addressLine: "2 Other St" },
+        ],
+        total: 2,
+      }),
+    getFoodOrders: async () => {
+      throw new Error("should not be called before the address is resolved");
+    },
+  });
+
+  const reply = await recommendSimilar({ swiggyFoodClient: client, senderId: "sender-1", pendingAddressSelections });
+
+  assert.match(reply, /which one should I use/i);
+  const pending = pendingAddressSelections.peek("sender-1");
+  assert.equal(pending.kind, "recommend");
+  assert.equal(pending.candidates.length, 2);
+});
+
+test("recommendSimilar (with craving) also asks which address to use when more than one is saved, and remembers the craving for the resume", async () => {
+  const pendingAddressSelections = new PendingAddressSelections();
+  const client = fakeClient({
+    getAddresses: async () =>
+      payload({
+        addresses: [
+          { id: "addr-1", addressTag: "Home", addressLine: "1 Main St" },
+          { id: "addr-2", addressTag: "Work", addressLine: "2 Other St" },
+        ],
+        total: 2,
+      }),
+  });
+
+  const reply = await recommendSimilar({
+    swiggyFoodClient: client,
+    senderId: "sender-1",
+    pendingAddressSelections,
+    craving: "chicken tikka masala",
+  });
+
+  assert.match(reply, /which one should I use/i);
+  assert.equal(pendingAddressSelections.peek("sender-1").craving, "chicken tikka masala");
+});
+
+test("recommendSimilar does not ask for an address when exactly one is saved (no genuine choice to make)", async () => {
+  const pendingAddressSelections = new PendingAddressSelections();
+  const client = fakeClient({
+    getFoodOrders: async () => payload({ orders: [orderSummary({ orderId: "o1", restaurantId: "rest-1" })] }),
+    getRestaurantMenu: async () => payload({ items: [{ id: "i1", name: "Item", price: 100, inStock: 1 }] }),
+  });
+
+  const reply = await recommendSimilar({ swiggyFoodClient: client, senderId: "sender-1", pendingAddressSelections });
+
+  assert.doesNotMatch(reply, /which one should I use/i);
+  assert.equal(pendingAddressSelections.peek("sender-1"), undefined);
+});
+
+test("recommendSimilar reuses an already-established session address without asking again", async () => {
+  const pendingAddressSelections = new PendingAddressSelections();
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", { addressId: "addr-already-chosen" });
+  let getAddressesCalled = false;
+  const client = fakeClient({
+    getAddresses: async () => {
+      getAddressesCalled = true;
+      return payload({ addresses: [], total: 0 });
+    },
+    getFoodOrders: async () => payload({ orders: [orderSummary({ orderId: "o1", restaurantId: "rest-1" })] }),
+    getRestaurantMenu: async () => payload({ items: [{ id: "i1", name: "Item", price: 100, inStock: 1 }] }),
+  });
+
+  await recommendSimilar({ swiggyFoodClient: client, senderId: "sender-1", pendingAddressSelections, pendingCartSessions });
+
+  assert.equal(getAddressesCalled, false);
 });

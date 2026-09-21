@@ -596,3 +596,38 @@ test("runAgentTurn treats search_food's address-disambiguation prompt as termina
   assert.match(result, /which one should I use/i);
   assert.ok(ctx.pendingAddressSelections.peek("sender-1"), "should have recorded the pending address selection");
 });
+
+test("runAgentTurn treats recommend_similar's address-disambiguation prompt as terminal too", async () => {
+  let completionsCallCount = 0;
+  const client = fakeClient(async () => {
+    completionsCallCount += 1;
+    return toolCallResponse([{ id: "call_1", function: { name: "recommend_similar", arguments: "{}" } }]);
+  });
+
+  const ctx = newContext();
+  const swiggyFoodClient = fakeSwiggyClient({
+    getAddresses: async () => ({
+      structured: {
+        addresses: [
+          { id: "addr-1", addressTag: "Home", addressLine: "1 Main St" },
+          { id: "addr-2", addressTag: "Work", addressLine: "2 Other St" },
+        ],
+        total: 2,
+      },
+    }),
+  });
+
+  const result = await runAgentTurn({
+    message: { from: "sender-1", text: "suggest something" },
+    swiggyFoodClient,
+    ...ctx,
+    nlu,
+    client,
+  });
+
+  assert.equal(completionsCallCount, 1);
+  assert.match(result, /which one should I use/i);
+  const pending = ctx.pendingAddressSelections.peek("sender-1");
+  assert.ok(pending, "should have recorded the pending address selection");
+  assert.equal(pending.kind, "recommend");
+});
