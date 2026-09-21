@@ -64,7 +64,7 @@ export class ConversationLog {
     this.#encryptionKey = encryptionKey;
     this.#client = createRedisClient({ url, socket: { reconnectStrategy, connectTimeout: CONNECT_TIMEOUT_MS } });
     this.#client.on("error", (error) => {
-      console.error("Conversation log Redis client error.", { name: error?.name });
+      console.error("Conversation log Redis client error.", { name: error?.name, message: error?.message });
     });
   }
 
@@ -103,7 +103,7 @@ export class ConversationLog {
       await this.#client.lTrim(key, -MAX_TURNS_PER_SENDER, -1);
       await this.#client.expire(key, TTL_SECONDS);
     } catch (error) {
-      console.error("Failed to append conversation log entry.", { name: error?.name });
+      console.error("Failed to append conversation log entry.", { name: error?.name, message: error?.message });
     }
   }
 
@@ -124,7 +124,7 @@ export class ConversationLog {
         .map((entry) => decryptRecord(JSON.parse(entry), this.#encryptionKey))
         .filter((turn) => turn !== undefined);
     } catch (error) {
-      console.error("Failed to read conversation log.", { name: error?.name });
+      console.error("Failed to read conversation log.", { name: error?.name, message: error?.message });
       return [];
     }
   }
