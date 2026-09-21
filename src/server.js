@@ -245,6 +245,38 @@ async function buildReplyText(message) {
     return buildOrderConfirmationReply(message, pendingConfirmation);
   }
 
+  // Deterministic backstop, not the primary fix (see the system prompt's
+  // new "never invite a YES/NO reply unless relaying checkout's own result"
+  // rule in sarvam-agent.js): confirmed live that the agent can still
+  // append a checkout-style "reply YES to confirm" ending onto some OTHER
+  // tool's result (e.g. after apply_coupon) without ever actually calling
+  // checkout - pendingOrderConfirmations never gets set in that case, so a
+  // literal "yes" reply falls straight through to a fresh agent turn, which
+  // then hallucinated a full "your order is confirmed, arriving in 25-30
+  // mins" reply with no real order ever placed (no tool exists for that -
+  // see TOOLS in sarvam-agent.js - so it was 100% invented text, not a
+  // structural safety gap). Caught here: a bare YES/NO-shaped reply with
+  // nothing genuinely pending, immediately preceded by the agent's own
+  // turn containing literal uppercase "YES" and "NO" tokens - the exact,
+  // deliberately-uppercase wording the system prompt requires ONLY for a
+  // genuine checkout relay (kept literal English even mid-translation) -
+  // is a strong signal this just happened. Uppercase specifically (not a
+  // loose "yes"/"no" text match) so an ordinary lowercase "reply yes or no"
+  // question the agent asks about something unrelated isn't caught here -
+  // nothing else in this app's own text ever emits capitalized "YES"/"NO"
+  // together outside that one instructed case.
+  const bareConfirmationDecision = parseOrderConfirmationReply(message.text);
+
+  if (bareConfirmationDecision === "confirm" || bareConfirmationDecision === "cancel") {
+    const history = pendingConversationHistory.peek(message.from);
+    const lastAssistantTurn = [...history].reverse().find((turn) => turn.role === "assistant");
+    const lastReplyText = lastAssistantTurn?.content ?? "";
+
+    if (/\bYES\b/.test(lastReplyText) && /\bNO\b/.test(lastReplyText)) {
+      return "There's no order actually waiting for confirmation right now - I may have jumped the gun. Want me to show your cart, or go ahead and check out for real?";
+    }
+  }
+
   if (!config.nlu.enabled) {
     return PLACEHOLDER_REPLY_TEXT;
   }
