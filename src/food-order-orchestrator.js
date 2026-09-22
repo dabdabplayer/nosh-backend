@@ -12,6 +12,17 @@ const MAX_COUPONS = 5;
 const MIN_USUAL_ORDER_COUNT = 2;
 const MAX_ITEM_RESULTS = 5;
 
+// Real Swiggy Builders Club platform rule, not a Nosh-invented limit -
+// verified against docs/build/recipes/order-food.md, which states this as
+// "Swiggy v1: hard ₹1000 cap on Builders Club orders" (not illustrative
+// sample code) and checks it against the cart's `to_pay` field before
+// place_food_order. Nosh has no client-side visibility into whether Swiggy
+// also enforces this server-side, so this is a real guard, not a redundant
+// one - without it, a cart over the cap would get a full checkout summary
+// and a YES prompt for an order that (as far as Nosh can tell) might never
+// actually be placeable.
+const BUILDERS_CLUB_CART_CAP = 1000;
+
 const CONFIRM_REPLY_PATTERN = /^(yes|y|confirm|confirmed|place( it)?|proceed)$/i;
 const CANCEL_REPLY_PATTERN = /^(no|n|cancel|cancelled|canceled|stop)$/i;
 
@@ -1427,6 +1438,16 @@ async function handleCheckout({
 
   if (!cartData || !Array.isArray(cartData.items) || cartData.items.length === 0) {
     return emptyCartReply(lang);
+  }
+
+  // Checked before spending a getPaymentOptions call on an order that can't
+  // proceed anyway - see BUILDERS_CLUB_CART_CAP's own comment above.
+  if (typeof cartData.pricing?.to_pay === "number" && cartData.pricing.to_pay > BUILDERS_CLUB_CART_CAP) {
+    return pick(lang, {
+      en: `Your cart total is ₹${cartData.pricing.to_pay}, which is over the ₹${BUILDERS_CLUB_CART_CAP} limit Nosh can currently check out. Please remove some items and try again.`,
+      hi: `आपकी कार्ट का कुल ₹${cartData.pricing.to_pay} है, जो Nosh की मौजूदा ₹${BUILDERS_CLUB_CART_CAP} सीमा से ज़्यादा है। कृपया कुछ आइटम हटाकर फिर कोशिश करें।`,
+      hinglish: `Aapki cart ka total ₹${cartData.pricing.to_pay} hai, jo Nosh ki abhi ki ₹${BUILDERS_CLUB_CART_CAP} limit se zyada hai. Kripya kuch items hatakar phir try karein.`,
+    });
   }
 
   let paymentResult;

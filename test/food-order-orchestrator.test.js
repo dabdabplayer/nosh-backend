@@ -1233,6 +1233,47 @@ test("checkout never guesses a payment method when COD isn't available", async (
   assert.equal(pendingOrderConfirmations.peek("sender-1"), undefined);
 });
 
+// Real Swiggy Builders Club platform rule (verified against
+// docs/build/recipes/order-food.md, not invented) - see
+// BUILDERS_CLUB_CART_CAP's own comment in food-order-orchestrator.js.
+test("checkout refuses a cart over the ₹1000 Builders Club cap without spending a getPaymentOptions call", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", cartRestaurantId: "r-1" });
+  const pendingOrderConfirmations = new PendingOrderConfirmations();
+
+  let getPaymentOptionsCalled = false;
+  const client = fakeClient({
+    getFoodCart: async () => cartPayload(cartData({ pricing: { item_total: 950, to_pay: 1050 } })),
+    getPaymentOptions: async () => {
+      getPaymentOptionsCalled = true;
+      return payload({ cod: { available: true, displayName: "Cash on Delivery" } });
+    },
+  });
+
+  const reply = await checkout({ senderId: "sender-1", swiggyFoodClient: client, pendingCartSessions, pendingOrderConfirmations });
+
+  assert.match(reply, /₹1050/);
+  assert.match(reply, /₹1000/);
+  assert.equal(getPaymentOptionsCalled, false);
+  assert.equal(pendingOrderConfirmations.peek("sender-1"), undefined);
+});
+
+test("checkout allows a cart exactly at the ₹1000 cap (strictly-greater-than, not greater-or-equal)", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", cartRestaurantId: "r-1" });
+  const pendingOrderConfirmations = new PendingOrderConfirmations();
+
+  const client = fakeClient({
+    getFoodCart: async () => cartPayload(cartData({ pricing: { item_total: 900, to_pay: 1000 } })),
+    getPaymentOptions: async () => payload({ cod: { available: true, displayName: "Cash on Delivery" } }),
+  });
+
+  const reply = await checkout({ senderId: "sender-1", swiggyFoodClient: client, pendingCartSessions, pendingOrderConfirmations });
+
+  assert.match(reply, /Reply YES to place this order, or NO to cancel/);
+  assert.ok(pendingOrderConfirmations.peek("sender-1"));
+});
+
 test("checkout's order summary keeps the literal uppercase YES/NO tokens in every language - parseOrderConfirmationReply and server.js's own backstop are both English-only by design", async () => {
   for (const lang of ["en", "hi", "hinglish"]) {
     const pendingCartSessions = new PendingCartSessions();
