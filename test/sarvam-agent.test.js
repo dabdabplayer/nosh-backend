@@ -695,3 +695,37 @@ test("runAgentTurn discards a hallucinated final reply and relays recommend_simi
   assert.match(result, /don't have any past orders/i);
   assert.doesNotMatch(result, /chinese/i);
 });
+
+// Structural guard against a fabricated order-summary-shaped reply -
+// confirmed live (2026-09-22, sender 919289388564): "I want a pepsi" then
+// "Yes" produced a full fake order summary (an item that doesn't exist
+// anywhere in the catalog, internally-inconsistent pricing) ending in the
+// exact "Reply YES to place this order, or NO to cancel." wording, with
+// ZERO Swiggy tool calls fired that turn (confirmed via Render's trace).
+// General on purpose: this doesn't mention any specific item - it proves
+// the guard fires on the reserved YES/NO confirmation wording itself,
+// regardless of what invented item/price surrounds it, since checking for
+// that reserved wording is what makes this catchable at all without
+// parsing arbitrary free text for "is this a hallucination."
+test("runAgentTurn discards a fabricated order-summary reply that never came from a real checkout call this turn", async () => {
+  const client = fakeClient(async () =>
+    // No tool call at all - simulates the model answering purely from
+    // invented text, the exact shape of the confirmed live incident.
+    textResponse(
+      "Here's your updated order summary:\n\nMock Place:\n1x Imaginary Item (Mock)\n\nTotal to pay: ₹999\n\nReply YES to place this order, or NO to cancel.",
+    ),
+  );
+
+  const ctx = newContext();
+  const result = await runAgentTurn({
+    message: { from: "sender-1", text: "yes" },
+    swiggyFoodClient: fakeSwiggyClient(),
+    ...ctx,
+    nlu,
+    client,
+  });
+
+  assert.doesNotMatch(result, /Imaginary Item/);
+  assert.doesNotMatch(result, /999/);
+  assert.match(result, /check.?out/i);
+});

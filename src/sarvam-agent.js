@@ -1,4 +1,5 @@
 import { SarvamAIClient } from "sarvamai";
+import { pick } from "./language-preference.js";
 import { searchFood } from "./food-search-orchestrator.js";
 import {
   addToCart,
@@ -64,6 +65,7 @@ const SYSTEM_PROMPT = [
   "If the user rejects a recommendation you already made this conversation (\"something different\", \"no\", \"something else\", etc.), call recommend_similar again and pick a real item you have NOT already offered at any point earlier in this conversation - scan EVERY one of your own prior replies this conversation, not just your most recent one, before picking; a small menu means an item you offered several turns ago can show up again in a fresh recommend_similar result, and re-offering it is exactly as wrong as re-offering your last one. Never re-confirm or re-describe an item you have already offered, at any point this conversation - that is not what \"different\" means. If every real item recommend_similar returns has already been offered (and rejected) earlier this conversation, say so plainly (per the no-hallucination rule) rather than repeating one of them.",
   "If every search this turn genuinely came back empty and you truly have nothing real to recommend, say so plainly and stop there - never invent a cuisine, restaurant, or dish as a consolation suggestion (e.g. mentioning \"Chinese places\" or any other option you did not actually see in a tool result this conversation is a hallucination, not a helpful save). Reporting an honest \"nothing matched\" is always correct; making something up to sound more helpful is never acceptable, no exceptions for this being a disappointing answer.",
   "This applies just as much when a tool call itself succeeds but its result says it found nothing (e.g. search_menu replying \"Couldn't find X at Y\") - that is the SAME empty-result case as above, not a license to state a specific item name or price anyway because the call technically went through. A tool call succeeding only means the request reached Swiggy; it does not mean it found what you were looking for - read what the result actually says before claiming anything from it.",
+  "The exact same rule applies to add_to_cart and remove_from_cart: never tell the user an item was added, removed, or changed, and never describe what's now in their cart, unless that tool's own real result THIS turn actually says so. If the item they asked for genuinely isn't on the real menu at their current restaurant, or the add/remove call comes back saying it couldn't find it, tell them that plainly instead of claiming success anyway - inventing a successful add is exactly as much a hallucination as inventing a restaurant, just about the cart instead of a recommendation. If they then ask to see the cart or check out, call view_cart or checkout rather than describing contents from memory or from what you just (possibly wrongly) claimed.",
   "Never claim their order history is sparse, unavailable, or unhelpful unless you actually called recommend_similar THIS turn and it genuinely came back that way - skipping that call and then saying you \"don't have much to go on\" is the same kind of false claim as inventing a restaurant, just phrased as a limitation instead of a suggestion.",
 ].join(" ");
 
@@ -569,6 +571,41 @@ export async function runAgentTurn({
           hadReasoningContent: Boolean(responseMessage?.reasoning_content),
         });
         return undefined;
+      }
+
+      // Structural guard against a fabricated order/checkout summary -
+      // confirmed live (2026-09-22, sender 919289388564): "I want a pepsi"
+      // then "Yes" produced a full order-summary-shaped reply (fake item,
+      // internally-inconsistent pricing, ending in the exact "Reply YES to
+      // place this order, or NO to cancel." wording) with ZERO Swiggy tool
+      // calls fired that turn (confirmed via Render's tool-call trace) -
+      // i.e. 100% agent-invented text mimicking checkout's own real output.
+      // This branch (no tool_calls this round) means, by construction, that
+      // whatever text the model just wrote did NOT come from a genuine
+      // checkout/view_cart/etc. TERMINAL_TOOLS pass-through this turn - so
+      // if it contains the literal uppercase "YES"/"NO" confirmation
+      // invitation (a token pattern reserved, per the system prompt, for
+      // relaying a real checkout result THIS turn), it is definitionally
+      // fabricated, not a judgment call to prompt-reinforce. A general
+      // check - it doesn't matter what fake item or price is in the text,
+      // only that this exact reserved wording never legitimately appears
+      // outside a real TERMINAL_TOOLS result. Overriding with a safe
+      // redirect (ask them to say "checkout") rather than the model's own
+      // text ensures the user is never shown invented cart contents or
+      // pricing, and steers them toward the one path that DOES call the
+      // real tool. Phrased as intent ("ask me to check out"), not a literal
+      // command keyword - this app has no trigger-word interface (see the
+      // system prompt's first rule), so the redirect must not imply one.
+      if (/\bYES\b/.test(finalText) && /\bNO\b/.test(finalText)) {
+        console.error("Sarvam agent produced a fabricated confirmation-shaped reply with no real tool call this turn.");
+        const safeRedirect = pick(lang, {
+          en: "Let me pull up your actual order for you — ask me to check out and I'll show the real summary and total.",
+          hi: "मैं आपका असली ऑर्डर दिखाता हूं — मुझे checkout करने के लिए कहें और मैं असली सारांश और कुल राशि दिखाऊंगा।",
+          hinglish: "Main aapka actual order dikhata hoon — mujhe checkout karne ke liye kahein aur main real summary aur total dikhaunga.",
+        });
+        pendingConversationHistory.append(senderId, { role: "user", content: message.text });
+        pendingConversationHistory.append(senderId, { role: "assistant", content: safeRedirect });
+        return safeRedirect;
       }
 
       // Structural guard against the "consolation hallucination" pattern
