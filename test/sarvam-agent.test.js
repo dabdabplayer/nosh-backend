@@ -651,3 +651,47 @@ test("runAgentTurn treats recommend_similar's address-disambiguation prompt as t
   assert.ok(pending, "should have recorded the pending address selection");
   assert.equal(pending.kind, "recommend");
 });
+
+// Structural guard against the "consolation hallucination" incidents
+// AGENTS.md documents live: once recommend_similar genuinely finds nothing
+// (no craving match, no usable order history), the model must not be
+// trusted to write its own "nothing found" answer - it could invent a
+// consolation restaurant/cuisine/dish instead (confirmed live twice: fake
+// "Chinese places", a fabricated "Sushi platter / Ramen / Truffle pasta"
+// menu). This mocked completions client deliberately simulates exactly that
+// - a free-text final reply inventing a cuisine no tool ever returned -
+// to prove runAgentTurn discards it and relays recommendSimilar's own
+// honest dead-end text instead.
+test("runAgentTurn discards a hallucinated final reply and relays recommend_similar's own honest dead end when it finds nothing", async () => {
+  const client = fakeClient(async ({ messages }) => {
+    const toolResultAlreadySeen = messages.some((message) => message.role === "tool");
+
+    if (!toolResultAlreadySeen) {
+      return toolCallResponse([{ id: "call_1", function: { name: "recommend_similar", arguments: "{}" } }]);
+    }
+
+    // Simulates the documented hallucination: inventing a cuisine no real
+    // tool result this turn ever mentioned.
+    return textResponse("No luck with your usual spots, but there were some great Chinese places around though!");
+  });
+
+  const ctx = newContext();
+  ctx.pendingCartSessions.set("sender-1", { addressId: "addr-1" });
+  // fakeSwiggyClient only forwards a fixed allowlist of override keys and
+  // has no getFoodOrders slot of its own - build the client directly so the
+  // empty-history mock actually takes effect (recommendSimilar's own
+  // no-craving path calls getFoodOrders, not any of fakeSwiggyClient's
+  // defaults).
+  const swiggyFoodClient = { ...fakeSwiggyClient(), getFoodOrders: async () => ({ structured: { orders: [] } }) };
+
+  const result = await runAgentTurn({
+    message: { from: "sender-1", text: "suggest something" },
+    swiggyFoodClient,
+    ...ctx,
+    nlu,
+    client,
+  });
+
+  assert.match(result, /don't have any past orders/i);
+  assert.doesNotMatch(result, /chinese/i);
+});

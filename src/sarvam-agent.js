@@ -266,6 +266,7 @@ async function executeTool(name, args, ctx) {
     pendingAddressSelections,
     pendingOrderConfirmations,
     searchMenuState,
+    dataAvailabilityState,
     lang,
   } = ctx;
 
@@ -283,6 +284,18 @@ async function executeTool(name, args, ctx) {
         // which branch fires - searchFood itself only actually uses it for
         // the (terminal) address prompt, see its own comment.
         const hadPendingAddress = Boolean(pendingAddressSelections.peek(senderId));
+        // Deliberately not tracked in dataAvailabilityState (see that
+        // state's own comment in runAgentTurn, and recommend_similar's case
+        // below): the documented consolation-hallucination incidents
+        // (inventing a restaurant/cuisine/menu) all happened in the "you
+        // decide" recommend_similar flow, never in an EXPLICIT search_food
+        // dead end ("no open restaurants for X" is already an honest,
+        // sufficient answer on its own, with nothing to invent around it -
+        // there's no craving-translation guess involved here the way there
+        // is in recommend_similar). Scoping the guard narrowly avoids
+        // regressing this tool's normal agent-phrased apology/fallback
+        // behavior for an unrelated failure category (a thrown Swiggy call,
+        // say) that was never part of the documented bug.
         const text = await searchFood(
           senderId,
           args.query,
@@ -296,12 +309,14 @@ async function executeTool(name, args, ctx) {
       }
 
       case "search_menu": {
+        const meta = {};
         const result = await searchMenu({
           senderId,
           restaurantName: args.restaurantName,
           query: args.query,
           swiggyFoodClient,
           pendingCartSessions,
+          meta,
         });
 
         // Marks that a real match was found this turn - checked by the
@@ -313,7 +328,15 @@ async function executeTool(name, args, ctx) {
         // stop - and it doesn't always retry through the SAME tool either
         // (search_menu again the first time, search_food with a different
         // query the second time).
-        if (searchMenuState && result.startsWith("Here's what I found")) {
+        //
+        // Deliberately NOT fed into dataAvailabilityState (see search_food's
+        // comment above for why) - search_menu is only ever reached for an
+        // EXPLICIT dish/restaurant request under the current architecture
+        // (recommend_similar owns the "you decide" flow entirely, see its
+        // own header comment in food-order-orchestrator.js), so there's no
+        // craving to invent a substitute for here; a thrown/empty result
+        // should still let the agent phrase its own honest apology.
+        if (searchMenuState && meta.hasData) {
           searchMenuState.foundMatch = true;
         }
 
@@ -380,6 +403,7 @@ async function executeTool(name, args, ctx) {
         // that specific result must be terminal too, not agent-paraphrased,
         // while an ordinary recommendation stays ordinary (non-terminal).
         const hadPendingAddress = Boolean(pendingAddressSelections.peek(senderId));
+        const meta = {};
         const text = await recommendSimilar({
           swiggyFoodClient,
           senderId,
@@ -387,9 +411,21 @@ async function executeTool(name, args, ctx) {
           pendingAddressSelections,
           craving: typeof args.craving === "string" && args.craving.trim() ? args.craving.trim() : undefined,
           lang,
+          meta,
         });
         const nowPendingAddress = Boolean(pendingAddressSelections.peek(senderId));
-        return { text, terminal: !hadPendingAddress && nowPendingAddress };
+        const terminal = !hadPendingAddress && nowPendingAddress;
+
+        if (!terminal && dataAvailabilityState) {
+          dataAvailabilityState.anyToolCalled = true;
+          if (meta.hasData) {
+            dataAvailabilityState.sawRealData = true;
+          } else {
+            dataAvailabilityState.lastNoDataText = text;
+          }
+        }
+
+        return { text, terminal };
       }
 
       default:
@@ -469,6 +505,29 @@ export async function runAgentTurn({
   // can short-circuit any further search_menu call rather than let the
   // model keep searching past a good answer (see executeTool's comment).
   const searchMenuState = {};
+
+  // Mutable, scoped to this one runAgentTurn call only - tracks, across
+  // every recommend_similar call this turn (and ONLY recommend_similar -
+  // see the "search_food"/"search_menu" cases in executeTool above for why
+  // they're deliberately excluded), whether any call surfaced real
+  // candidate items vs. a genuine, tool-authored dead end (set from the
+  // `meta.hasData` flag recommendSimilar itself marks - never inferred from
+  // the reply text). Consulted below, once a round ends with no further
+  // tool calls: if recommend_similar was called this turn and never found
+  // real candidates, the model has nothing legitimate left to recommend,
+  // and per AGENTS.md's documented "consolation hallucination" incidents
+  // (inventing a cuisine/restaurant/dish, or a fake menu, once every real
+  // search in this flow came back empty - "invented Chinese places",
+  // fabricated "Sushi platter / Ramen / Truffle pasta") it cannot be
+  // trusted to write that "nothing found" answer itself - it's substituted
+  // with the tool's own honest dead-end text instead, the same way
+  // TERMINAL_TOOLS never lets the agent phrase a checkout-adjacent result.
+  // This does NOT fire when recommend_similar was never called this turn
+  // (small talk, an explicit search/cart edit, or a reply drawn from
+  // legitimate conversation memory) - only when the model asked for a
+  // recommendation and came back empty-handed.
+  const dataAvailabilityState = { anyToolCalled: false, sawRealData: false, lastNoDataText: undefined };
+
   const toolCtx = {
     senderId,
     swiggyFoodClient,
@@ -476,6 +535,7 @@ export async function runAgentTurn({
     pendingAddressSelections,
     pendingOrderConfirmations,
     searchMenuState,
+    dataAvailabilityState,
     lang,
   };
 
@@ -510,9 +570,22 @@ export async function runAgentTurn({
         return undefined;
       }
 
+      // Structural guard against the "consolation hallucination" pattern
+      // AGENTS.md documents (inventing a restaurant/cuisine/menu once every
+      // real search this turn came back empty) - see dataAvailabilityState's
+      // own comment above. Only overrides when tools were genuinely called
+      // and every one of them came back with a known, tool-authored "nothing
+      // found" reply; a turn that never called a tool at all is left alone.
+      const safeFinalText =
+        dataAvailabilityState.anyToolCalled &&
+        !dataAvailabilityState.sawRealData &&
+        dataAvailabilityState.lastNoDataText
+          ? dataAvailabilityState.lastNoDataText
+          : finalText;
+
       pendingConversationHistory.append(senderId, { role: "user", content: message.text });
-      pendingConversationHistory.append(senderId, { role: "assistant", content: finalText });
-      return finalText;
+      pendingConversationHistory.append(senderId, { role: "assistant", content: safeFinalText });
+      return safeFinalText;
     }
 
     messages.push({ role: "assistant", content: responseMessage.content ?? null, tool_calls: toolCalls });

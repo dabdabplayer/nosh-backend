@@ -463,7 +463,22 @@ export async function recommendSimilar({
   // of this function's text (the candidate-block instructions) is always
   // agent-facing, never shown to the user directly, so it's unaffected.
   lang = "en",
+  // Optional output object, marked with `hasData: true/false` right before
+  // every return below - the same convention searchFood/runRestaurantSearch
+  // use (food-search-orchestrator.js). Lets executeTool know, structurally,
+  // whether this call surfaced real candidate items vs. a genuine dead end,
+  // without string-matching the returned text. Never set on the
+  // address-prompt branch - that's a separate, already-terminal path (see
+  // executeTool's before/after pendingAddressSelections check) whose
+  // hasData value is never consulted.
+  meta,
 }) {
+  const markData = (hasData) => {
+    if (meta) {
+      meta.hasData = hasData;
+    }
+  };
+
   const existingAddressId = pendingCartSessions?.peek(senderId)?.addressId;
   let addressId = existingAddressId;
 
@@ -472,6 +487,7 @@ export async function recommendSimilar({
     try {
       addressResult = await swiggyFoodClient.getAddresses({});
     } catch {
+      markData(false);
       return GENERIC_FALLBACK_REPLY;
     }
 
@@ -479,10 +495,12 @@ export async function recommendSimilar({
     const addresses = Array.isArray(parsedAddresses?.addresses) ? parsedAddresses.addresses : undefined;
 
     if (addresses === undefined) {
+      markData(false);
       return GENERIC_FALLBACK_REPLY;
     }
 
     if ((typeof parsedAddresses?.total === "number" ? parsedAddresses.total : addresses.length) === 0) {
+      markData(false);
       return NO_SAVED_ADDRESS_REPLY;
     }
 
@@ -509,6 +527,7 @@ export async function recommendSimilar({
     addressId = addresses[0]?.id;
 
     if (!addressId) {
+      markData(false);
       return GENERIC_FALLBACK_REPLY;
     }
   }
@@ -544,6 +563,7 @@ export async function recommendSimilar({
     try {
       searchResult = await swiggyFoodClient.searchRestaurants({ query: craving, addressId });
     } catch {
+      markData(false);
       return GENERIC_FALLBACK_REPLY;
     }
 
@@ -568,6 +588,7 @@ export async function recommendSimilar({
       }
 
       if (blocks.length > 0) {
+        markData(true);
         return [
           `Real menu candidates for "${craving}", from real open restaurants near this user:`,
           ...blocks,
@@ -586,12 +607,14 @@ export async function recommendSimilar({
   try {
     ordersResult = await swiggyFoodClient.getFoodOrders({ addressId });
   } catch {
+    markData(false);
     return GENERIC_FALLBACK_REPLY;
   }
 
   const orders = parseStructuredPayload(ordersResult)?.orders;
 
   if (!Array.isArray(orders)) {
+    markData(false);
     return GENERIC_FALLBACK_REPLY;
   }
 
@@ -599,6 +622,7 @@ export async function recommendSimilar({
   const pastOrders = orders.filter((order) => order?.restaurantId && order.isActiveOrder !== true);
 
   if (pastOrders.length === 0) {
+    markData(false);
     return cravingMissed
       ? `I couldn't find anything open for "${craving}" right now, and there's no order history to fall back on either.`
       : NO_ORDER_HISTORY_REPLY;
@@ -635,6 +659,7 @@ export async function recommendSimilar({
   }
 
   if (blocks.length === 0) {
+    markData(false);
     return cravingMissed
       ? `I couldn't find anything open for "${craving}" right now, and couldn't pull up a real menu from their order history either.`
       : GENERIC_FALLBACK_REPLY;
@@ -647,6 +672,7 @@ export async function recommendSimilar({
     : "Real menu candidates for a recommendation, gathered from this user's actual order history and each " +
       "restaurant's real current menu:";
 
+  markData(true);
   return [header, ...blocks, RECOMMEND_CLOSING_INSTRUCTIONS].join("\n");
 }
 
@@ -1486,10 +1512,21 @@ export async function addToCart({ senderId, query, quantity, restaurantNameHint,
 // this tool). Needs an addressId already established by a prior search_food
 // call in this conversation - this never resolves a delivery address
 // itself, unlike searchFood.
-export async function searchMenu({ senderId, restaurantName, query, swiggyFoodClient, pendingCartSessions }) {
+// `meta`: same optional output object recommendSimilar/searchFood accept
+// (see recommendSimilar's own comment) - marked with `hasData: true/false`
+// right before every return, so executeTool's search_menu case gets a
+// structural signal instead of string-matching the reply.
+export async function searchMenu({ senderId, restaurantName, query, swiggyFoodClient, pendingCartSessions, meta }) {
+  const markData = (hasData) => {
+    if (meta) {
+      meta.hasData = hasData;
+    }
+  };
+
   const session = pendingCartSessions.peek(senderId);
 
   if (!session?.addressId) {
+    markData(false);
     return noActiveOrderReply();
   }
 
@@ -1517,6 +1554,7 @@ export async function searchMenu({ senderId, restaurantName, query, swiggyFoodCl
       knownCandidate ?? (await resolveRestaurant({ swiggyFoodClient, restaurantName, addressId: session.addressId }));
 
     if (!restaurant) {
+      markData(false);
       return `Sorry, I couldn't find a restaurant called "${restaurantName}" near you.`;
     }
 
@@ -1527,9 +1565,11 @@ export async function searchMenu({ senderId, restaurantName, query, swiggyFoodCl
   const items = await findMatchingMenuItems({ swiggyFoodClient, query, addressId: session.addressId, restaurantId });
 
   if (items.length === 0) {
+    markData(false);
     return `Couldn't find "${query}" at ${resolvedRestaurantName ?? "that restaurant"} right now.`;
   }
 
+  markData(true);
   return formatItemSelectionReply(query, resolvedRestaurantName ?? "that restaurant", items);
 }
 
