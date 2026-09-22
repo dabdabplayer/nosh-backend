@@ -420,13 +420,17 @@ async function buildRestaurantCandidateBlock({ swiggyFoodClient, addressId, rest
 
 const RECOMMEND_CLOSING_INSTRUCTIONS =
   "Pick ONE item from the list above that best fits what they tend to like, preferring one not marked as " +
-  "already-ordered-before. Present its real name, restaurant, real price, and (when a restaurant header " +
-  "includes one) its real rating and delivery time, and ask if they want it added - do not call add_to_cart " +
-  "until they say yes. If a restaurant header has no rating/delivery time listed, don't mention either - " +
-  "never invent one. Do not show this raw list to the user or ask them to pick - you decide. If they reject " +
-  "this pick, call recommend_similar again and choose a genuinely different item than the one you already " +
-  "offered (check your own earlier reply in this conversation). Never invent a dish, restaurant, price, " +
-  "rating, or delivery time not listed above.";
+  "already-ordered-before AND one you have not already offered earlier in THIS conversation (scan every one " +
+  "of your own prior replies this conversation, not just your most recent one - a small menu means the same " +
+  "item can resurface a few turns later if you only check the last offer). Present its real name, restaurant, " +
+  "real price, and (when a restaurant header includes one) its real rating and delivery time, and ask if they " +
+  "want it added - do not call add_to_cart until they say yes. If a restaurant header has no rating/delivery " +
+  "time listed, don't mention either - never invent one. Do not show this raw list to the user or ask them to " +
+  "pick - you decide. If they reject this pick, call recommend_similar again and choose an item you have " +
+  "never offered them before in this conversation (check EVERY one of your own earlier replies this " +
+  "conversation, not only your last one). If every real item in the list above has already been offered and " +
+  "rejected this conversation, say so honestly instead of repeating one of them. Never invent a dish, " +
+  "restaurant, price, rating, or delivery time not listed above.";
 
 // Tool implementation for the agent's `recommend_similar` tool (see
 // src/sarvam-agent.js). Does the entire "find something real to suggest"
