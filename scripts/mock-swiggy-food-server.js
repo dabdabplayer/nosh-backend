@@ -450,13 +450,16 @@ const COUPON_CODE = "MOCKSAVE20";
 
 // --- Order history (get_food_orders / get_food_order_details, for testing
 // Nosh's "reorder my usual" feature - see src/food-order-orchestrator.js's
-// buildReorderUsualReply) -------------------------------------------------
+// buildReorderUsualReply - and its recommend_similar "already ordered"
+// exclusion, see recommendSimilar's wasAlreadyOrdered) --------------------
 // Two DELIVERED orders at mock-rest-1 (biryani) so it qualifies as a
 // "usual" (>=2 non-active orders at the same restaurant); one order at
 // mock-rest-2 (pizza) that does NOT qualify on its own, so the
 // per-restaurant counting/tie-break logic has something real to pick
 // between. Listed newest-first, matching get_food_orders' documented order.
-const ORDER_HISTORY = [
+// This is the SEED for a fresh sender's history (see
+// orderHistoryByKey/getOrderHistory below) - never mutated directly.
+const SEED_ORDER_HISTORY = [
   {
     orderId: "mock-order-hist-3",
     restaurantId: "mock-rest-1",
@@ -574,6 +577,64 @@ const ORDER_DETAILS = {
 // variable would race between them.
 const cartsByKey = new Map();
 const cartKeyStorage = new AsyncLocalStorage();
+
+// --- Per-caller in-memory order history -----------------------------------
+// Same AsyncLocalStorage key as cartsByKey above (the request's Authorization
+// bearer token) - keeps each sender's order history isolated from every
+// other sender's, for the same reason carts are isolated (see cartsByKey's
+// own comment). Seeded with a COPY of SEED_ORDER_HISTORY on first access per
+// key, then genuinely appended to by place_food_order below - unlike the
+// original static ORDER_HISTORY constant this replaces, which place_food_order
+// never wrote to. That staleness was a real, confirmed-live bug: with a
+// fixed, never-growing history, recommend_similar's "already ordered"
+// exclusion and restaurant-recency picks could never learn about an order a
+// tester had just placed THROUGH Nosh itself in the same session, so it kept
+// confidently offering items like "something you haven't tried" that the
+// same conversation had, in fact, already ordered and paid for moments
+// earlier - confirmed against a real decrypted transcript (sender
+// 919289388564, 2026-09-21/22) where Chicken Tikka Masala and Peri Peri
+// Chicken Pizza were both really ordered, then kept being re-offered as
+// novel across later sessions.
+const orderHistoryByKey = new Map();
+
+function getOrderHistory() {
+  const key = cartKeyStorage.getStore() ?? "default";
+  let history = orderHistoryByKey.get(key);
+
+  if (!history) {
+    history = [...SEED_ORDER_HISTORY];
+    orderHistoryByKey.set(key, history);
+  }
+
+  return history;
+}
+
+// Called by place_food_order's COD path once an order is genuinely placed -
+// see that handler below. Prepended (newest-first, matching get_food_orders'
+// documented order). Marked DELIVERED/isActiveOrder:false immediately rather
+// than modeling a real in-flight delivery window - a mock-only
+// simplification (this order will never actually be delivered) needed so
+// recommend_similar's history-based logic, which excludes active orders,
+// treats it as real history right away instead of only after some further
+// mocked state transition nothing in this file drives.
+function recordPlacedOrder({ orderId, cartData, addressId }) {
+  const orderedItems = cartData.items.map((item) => `${item.quantity}x ${item.name}`).join(", ");
+
+  getOrderHistory().unshift({
+    orderId,
+    restaurantId: cartData.restaurant?.id,
+    restaurantName: cartData.restaurant?.name,
+    restaurantAreaName: cartData.restaurant?.area ?? "Mock Nagar",
+    orderTotal: String(cartData.pricing.to_pay),
+    orderStatus: "DELIVERED",
+    orderDeliveryStatus: "DELIVERED",
+    orderType: "REGULAR",
+    orderedItems,
+    orderedTime: `${new Date().toLocaleString("en-US", { month: "long", day: "numeric", hour: "numeric", minute: "2-digit", hour12: true })} (Mock)`,
+    isActiveOrder: false,
+    actions: [],
+  });
+}
 
 function freshCart(previousCartId) {
   return {
@@ -998,6 +1059,12 @@ function buildServer() {
         });
       }
 
+      // Record it into THIS sender's order history now, not just return a
+      // response - see recordPlacedOrder's own comment for why this matters
+      // (a confirmed-live bug: without this, get_food_orders never learned
+      // about an order just placed through Nosh itself).
+      recordPlacedOrder({ orderId, cartData, addressId });
+
       return structuredResult({
         orderId,
         status: "CONFIRMED",
@@ -1047,7 +1114,8 @@ function buildServer() {
       inputSchema: { addressId: z.string(), activeOnly: z.boolean().optional() },
     },
     async ({ activeOnly }) => {
-      const orders = activeOnly ? ORDER_HISTORY.filter((order) => order.isActiveOrder) : ORDER_HISTORY;
+      const history = getOrderHistory();
+      const orders = activeOnly ? history.filter((order) => order.isActiveOrder) : history;
       return structuredResult({ orders });
     },
   );
