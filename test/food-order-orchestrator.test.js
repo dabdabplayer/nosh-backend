@@ -561,6 +561,127 @@ test("addToCart names the restaurant when the dish isn't on its menu", async () 
   assert.match(reply, /couldn't find "sushi" at Pizza Hut/);
 });
 
+// Confirmed live (2026-09-22, sender 919289388564): "Add items 1-9" right
+// after Nosh itself listed all 9 as real, in-stock - only the one item
+// already used earlier in conversation actually got added; the other 8
+// (freshly-seen names reproduced across 8 rapid tool calls) all missed
+// search_menu's own substring match, and the model fabricated a stock
+// excuse for what was really its own near-miss. See resolveMenuItem's own
+// comment in food-order-orchestrator.js.
+test("addToCart falls back to a fuzzy match against the full menu when the exact query misses search_menu's own match", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", restaurantName: "Sushi Central" });
+
+  const searchMenuCalls = [];
+  const client = fakeClient({
+    searchMenu: async (params) => {
+      searchMenuCalls.push(params);
+      // First call is the model's own (slightly off) query - misses. Second
+      // call is the fallback's corrected query (the real item name, found
+      // via getRestaurantMenu below) - succeeds.
+      return searchMenuCalls.length === 1
+        ? payload({ items: [] })
+        : payload({ items: [menuItem({ name: "Chicken Katsu Curry", menu_item_id: "item-katsu" })] });
+    },
+    getRestaurantMenu: async () =>
+      payload({ items: [{ id: "item-katsu", name: "Chicken Katsu Curry", price: 419, inStock: 1 }] }),
+    updateFoodCart: async () => cartPayload(cartData({ restaurant: { name: "Sushi Central" } })),
+  });
+
+  const reply = await addToCart({
+    senderId: "sender-1",
+    query: "Katsu Curry",
+    quantity: 1,
+    swiggyFoodClient: client,
+    pendingCartSessions,
+  });
+
+  assert.equal(searchMenuCalls.length, 2);
+  assert.equal(searchMenuCalls[1].query, "Chicken Katsu Curry");
+  assert.match(reply, /Added Chicken Katsu Curry to your cart/);
+});
+
+// The exact dangerous shape caught in review before shipping: a real
+// restaurant (Taco Fiesta) whose real menu has "Veg Tacos (Mock)" but
+// genuinely nothing called "taco" - the live transcript's actual query.
+// A naive substring match (either direction) would silently add Veg Tacos
+// instead of reporting the honest not-found this test locks in.
+test("addToCart still reports not-found for a generic query that loosely matches an unrelated real item - no false positives", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", restaurantName: "Taco Fiesta" });
+
+  const client = fakeClient({
+    searchMenu: async () => payload({ items: [] }),
+    getRestaurantMenu: async () =>
+      payload({
+        items: [
+          { id: "item-1", name: "Veg Tacos (Mock)", price: 219, inStock: 1 },
+          { id: "item-2", name: "Chicken Burrito (Mock)", price: 289, inStock: 1 },
+        ],
+      }),
+  });
+
+  const reply = await addToCart({
+    senderId: "sender-1",
+    query: "taco",
+    quantity: 1,
+    swiggyFoodClient: client,
+    pendingCartSessions,
+  });
+
+  assert.match(reply, /couldn't find "taco"/);
+});
+
+// Ambiguity must also fail closed even when EVERY match is a real,
+// legitimate substring hit (not just an accidental short-query one) -
+// e.g. two size variants of the same dish. Guessing which one the user
+// meant is exactly the kind of invented specificity this file's other
+// hallucination guards already refuse to do.
+test("addToCart reports not-found rather than guessing between two equally-valid fuzzy matches", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", restaurantName: "Test Place" });
+
+  const client = fakeClient({
+    searchMenu: async () => payload({ items: [] }),
+    getRestaurantMenu: async () =>
+      payload({
+        items: [
+          { id: "item-1", name: "Chicken Katsu Curry (Small)", price: 349, inStock: 1 },
+          { id: "item-2", name: "Chicken Katsu Curry (Large)", price: 449, inStock: 1 },
+        ],
+      }),
+  });
+
+  const reply = await addToCart({
+    senderId: "sender-1",
+    query: "Katsu Curry",
+    quantity: 1,
+    swiggyFoodClient: client,
+    pendingCartSessions,
+  });
+
+  assert.match(reply, /couldn't find "Katsu Curry"/);
+});
+
+test("addToCart never calls the fuzzy-fallback menu lookup when the exact query already matched", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", restaurantName: "Sushi Central" });
+
+  let getRestaurantMenuCalled = false;
+  const client = fakeClient({
+    searchMenu: async () => payload({ items: [menuItem({ name: "Miso Ramen" })] }),
+    getRestaurantMenu: async () => {
+      getRestaurantMenuCalled = true;
+      return payload({ items: [] });
+    },
+    updateFoodCart: async () => cartPayload(cartData({ restaurant: { name: "Sushi Central" } })),
+  });
+
+  await addToCart({ senderId: "sender-1", query: "miso ramen", quantity: 1, swiggyFoodClient: client, pendingCartSessions });
+
+  assert.equal(getRestaurantMenuCalled, false);
+});
+
 test("addToCart ignores a restaurant hint once a session restaurant already exists", async () => {
   const pendingCartSessions = new PendingCartSessions();
   pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", restaurantName: "Existing Place" });

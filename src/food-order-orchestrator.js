@@ -951,11 +951,92 @@ async function resolveMenuItem({ swiggyFoodClient, query, addressId, restaurantI
   }
 
   const scopedItems = parseStructuredPayload(scopedResult)?.items;
-  const menuItem = Array.isArray(scopedItems)
-    ? scopedItems.find((item) => item?.inStock !== 0)
-    : undefined;
+  let menuItem = Array.isArray(scopedItems) ? scopedItems.find((item) => item?.inStock !== 0) : undefined;
+
+  // Fuzzy fallback for a query that just missed Swiggy's own substring match
+  // at a restaurant we already know - confirmed live (2026-09-22, sender
+  // 919289388564): a "add items 1-9" turn, moments after Nosh itself had
+  // shown all 9 real, in-stock item names, added only the one item already
+  // used earlier in the conversation - the other 8, each a genuine real
+  // in-stock dish, all missed search_menu's own query match (query text
+  // isn't logged, so the exact mismatch can't be confirmed, but 8 fresh
+  // dish names reproduced across 8 rapid tool calls in one round is the
+  // same transcription-fidelity risk already fixed for restaurant names,
+  // see resolveRestaurant's own fuzzy matching above). The model then
+  // fabricated a stock-related excuse ("might have run out") for what was
+  // actually its own near-miss - this closes the gap the same way: try
+  // once more against every real item at this restaurant, fuzzy-matched,
+  // before reporting not-found.
+  if (!menuItem) {
+    menuItem = await fuzzyResolveMenuItemByName({ swiggyFoodClient, query, addressId, restaurantId: scopedRestaurantId });
+  }
 
   return menuItem ? { menuItem, restaurantId: scopedRestaurantId, restaurantName: scopedRestaurantName } : undefined;
+}
+
+// get_restaurant_menu's item shape has no menu_item_id/variantsV2 (verified
+// against docs/reference/food/get_restaurant_menu.md - it's documented as a
+// "compact browse view" that intentionally omits them, "use search_menu for
+// those instead") - not adaptable directly into the cart-add pipeline. Used
+// here ONLY to find the real, correctly-spelled name of the closest match,
+// then re-run through the ALREADY-WORKING scoped search_menu call (same
+// shape resolveMenuItem's normal path already returns) to get a properly
+// shaped item. Never throws; undefined means "still couldn't find it",
+// same as resolveMenuItem's other empty-result paths.
+async function fuzzyResolveMenuItemByName({ swiggyFoodClient, query, addressId, restaurantId }) {
+  let menuResult;
+  try {
+    menuResult = await swiggyFoodClient.getRestaurantMenu({ addressId, restaurantId });
+  } catch {
+    return undefined;
+  }
+
+  const items = parseStructuredPayload(menuResult)?.items;
+  if (!Array.isArray(items)) {
+    return undefined;
+  }
+
+  // Deliberately ONE-DIRECTIONAL (the real name must contain the query, not
+  // the other way round) and requires a UNIQUE match - caught in review
+  // before shipping: a short, generic query like "taco" is exactly the
+  // real live-transcript case, and the bidirectional check restaurant-name
+  // matching uses (query.includes(name) too) would let "taco" match "Veg
+  // Tacos (Mock)" at a restaurant that genuinely has no taco - silently
+  // adding the wrong real item instead of reporting an honest not-found is
+  // strictly worse than the bug this function exists to fix (a fabricated
+  // excuse becomes a wrong item in a real cart, one confirmation away from
+  // a real order). A transcription near-miss on a real name (the actual
+  // incident: "Katsu Curry" for "Chicken Katsu Curry") still resolves to
+  // exactly one item under both restrictions; a vague/generic query either
+  // matches nothing or matches more than one real item, and either way
+  // this must fail closed to the honest not-found instead of guessing.
+  const queryNormalized = normalizeRestaurantName(query);
+  const matches = items.filter((item) => {
+    if (item?.inStock === 0) {
+      return false;
+    }
+    return normalizeRestaurantName(item?.name).includes(queryNormalized);
+  });
+
+  if (matches.length !== 1) {
+    return undefined;
+  }
+
+  const match = matches[0];
+
+  let correctedResult;
+  try {
+    correctedResult = await swiggyFoodClient.searchMenu({
+      query: match.name,
+      addressId,
+      restaurantIdOfAddedItem: restaurantId,
+    });
+  } catch {
+    return undefined;
+  }
+
+  const correctedItems = parseStructuredPayload(correctedResult)?.items;
+  return Array.isArray(correctedItems) ? correctedItems.find((item) => item?.inStock !== 0) : undefined;
 }
 
 // Once the user has picked a specific restaurant off a shown list, this
