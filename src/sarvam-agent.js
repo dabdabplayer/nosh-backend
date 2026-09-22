@@ -270,6 +270,7 @@ async function executeTool(name, args, ctx) {
     pendingOrderConfirmations,
     searchMenuState,
     dataAvailabilityState,
+    cartMutationState,
     lang,
   } = ctx;
 
@@ -346,30 +347,64 @@ async function executeTool(name, args, ctx) {
         return { text: result, terminal: false };
       }
 
-      case "add_to_cart":
-        return {
-          text: await addToCart({
-            senderId,
-            query: args.query,
-            quantity: Number.isInteger(args.quantity) && args.quantity > 0 ? args.quantity : undefined,
-            restaurantNameHint: typeof args.restaurantName === "string" ? args.restaurantName : undefined,
-            swiggyFoodClient,
-            pendingCartSessions,
-          }),
-          terminal: false,
-        };
+      case "add_to_cart": {
+        const meta = {};
+        const text = await addToCart({
+          senderId,
+          query: args.query,
+          quantity: Number.isInteger(args.quantity) && args.quantity > 0 ? args.quantity : undefined,
+          restaurantNameHint: typeof args.restaurantName === "string" ? args.restaurantName : undefined,
+          swiggyFoodClient,
+          pendingCartSessions,
+          meta,
+        });
 
-      case "remove_from_cart":
-        return {
-          text: await removeFromCart({
-            senderId,
-            query: args.query,
-            quantity: Number.isInteger(args.quantity) && args.quantity > 0 ? args.quantity : undefined,
-            swiggyFoodClient,
-            pendingCartSessions,
-          }),
-          terminal: false,
-        };
+        // Structural signal for cartMutationState (see its own comment in
+        // runAgentTurn) instead of trusting the agent's own free-text claim
+        // about whether the item was actually added. Checked with `===`,
+        // not truthiness: meta.hasData is explicitly `false` only for a
+        // genuine "not found" business result (see addToCart's own
+        // comment) - left `undefined` on a thrown/infra failure, which must
+        // NOT set lastFailureText, or a network hiccup would force
+        // GENERIC_FALLBACK_REPLY's English-only text verbatim onto a
+        // non-English reply instead of letting the agent phrase its own
+        // apology (the same regression already caught once for
+        // search_food/search_menu's thrown-call case, see that case above).
+        if (cartMutationState) {
+          cartMutationState.anyToolCalled = true;
+          if (meta.hasData === true) {
+            cartMutationState.sawSuccess = true;
+          } else if (meta.hasData === false) {
+            cartMutationState.lastFailureText = text;
+          }
+        }
+
+        return { text, terminal: false };
+      }
+
+      case "remove_from_cart": {
+        const meta = {};
+        const text = await removeFromCart({
+          senderId,
+          query: args.query,
+          quantity: Number.isInteger(args.quantity) && args.quantity > 0 ? args.quantity : undefined,
+          swiggyFoodClient,
+          pendingCartSessions,
+          meta,
+        });
+
+        // Same === distinction as add_to_cart above.
+        if (cartMutationState) {
+          cartMutationState.anyToolCalled = true;
+          if (meta.hasData === true) {
+            cartMutationState.sawSuccess = true;
+          } else if (meta.hasData === false) {
+            cartMutationState.lastFailureText = text;
+          }
+        }
+
+        return { text, terminal: false };
+      }
 
       case "view_cart":
         return {
@@ -531,6 +566,21 @@ export async function runAgentTurn({
   // recommendation and came back empty-handed.
   const dataAvailabilityState = { anyToolCalled: false, sawRealData: false, lastNoDataText: undefined };
 
+  // Mutable, scoped to this one runAgentTurn call only - same shape and
+  // purpose as dataAvailabilityState above, for add_to_cart/remove_from_cart
+  // instead of recommend_similar. Confirmed live (2026-09-22, sender
+  // 919289388564): "I want a pepsi" got a fabricated "Done — Pepsi added
+  // too" reply with ZERO tool calls that turn - the YES/NO guard below
+  // closes the fake-summary half of that incident, this closes the other
+  // half: an add/remove call that genuinely fires but fails (item not on
+  // the real menu, ambiguous cart match, a thrown Swiggy call) must not let
+  // the model claim success anyway. Set from `meta.hasData`, which
+  // addToCart/removeFromCart mark at every return point (never inferred
+  // from the reply text) - see executeTool's add_to_cart/remove_from_cart
+  // cases above. Does NOT fire when neither tool was called this turn, or
+  // when at least one call this turn genuinely succeeded.
+  const cartMutationState = { anyToolCalled: false, sawSuccess: false, lastFailureText: undefined };
+
   const toolCtx = {
     senderId,
     swiggyFoodClient,
@@ -539,6 +589,7 @@ export async function runAgentTurn({
     pendingOrderConfirmations,
     searchMenuState,
     dataAvailabilityState,
+    cartMutationState,
     lang,
   };
 
@@ -614,12 +665,23 @@ export async function runAgentTurn({
       // own comment above. Only overrides when tools were genuinely called
       // and every one of them came back with a known, tool-authored "nothing
       // found" reply; a turn that never called a tool at all is left alone.
-      const safeFinalText =
+      const recommendSafeText =
         dataAvailabilityState.anyToolCalled &&
         !dataAvailabilityState.sawRealData &&
         dataAvailabilityState.lastNoDataText
           ? dataAvailabilityState.lastNoDataText
           : finalText;
+
+      // Structural guard against claiming a cart add/remove succeeded when
+      // the tool's own last call this turn actually failed - see
+      // cartMutationState's own comment above. Mirrors the recommend_similar
+      // guard immediately above; applied after it so a (practically
+      // impossible) turn that trips both guards still gets an honest reply
+      // about whichever tool actually ran.
+      const safeFinalText =
+        cartMutationState.anyToolCalled && !cartMutationState.sawSuccess && cartMutationState.lastFailureText
+          ? cartMutationState.lastFailureText
+          : recommendSafeText;
 
       pendingConversationHistory.append(senderId, { role: "user", content: message.text });
       pendingConversationHistory.append(senderId, { role: "assistant", content: safeFinalText });

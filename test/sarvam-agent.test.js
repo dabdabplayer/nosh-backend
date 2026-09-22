@@ -729,3 +729,83 @@ test("runAgentTurn discards a fabricated order-summary reply that never came fro
   assert.doesNotMatch(result, /999/);
   assert.match(result, /check.?out/i);
 });
+
+// Structural guard closing the OTHER half of the same 2026-09-22 incident:
+// the upstream "Done — Pepsi added too" claim itself (the item doesn't
+// exist in the catalog - add_to_cart's own real result says so - but the
+// model claimed success anyway). Generic fake item name on purpose, same
+// reason as the test above: proves the guard fires because add_to_cart's
+// own meta.hasData came back false, not because of anything item-specific.
+test("runAgentTurn discards a fabricated 'added to cart' claim when add_to_cart's own real result found nothing", async () => {
+  const calls = [];
+  const client = fakeClient(async ({ messages }) => {
+    calls.push(messages);
+
+    if (calls.length === 1) {
+      return toolCallResponse([
+        {
+          id: "call_1",
+          function: { name: "add_to_cart", arguments: JSON.stringify({ query: "Nonexistent Snack" }) },
+        },
+      ]);
+    }
+
+    // The model ignores its own tool's honest "couldn't find" result and
+    // claims success anyway - the exact live shape of the incident.
+    return textResponse("Done — Nonexistent Snack added to your cart!");
+  });
+
+  const ctx = newContext();
+  const result = await runAgentTurn({
+    message: { from: "sender-1", text: "add a nonexistent snack" },
+    swiggyFoodClient: fakeSwiggyClient({ searchMenu: async () => ({ structured: { items: [] } }) }),
+    ...ctx,
+    nlu,
+    client,
+  });
+
+  assert.doesNotMatch(result, /Done/);
+  assert.match(result, /couldn't find/i);
+});
+
+// Companion to the test above, checking the OTHER branch of the same guard:
+// a thrown Swiggy call (network blip, not a real "item not found" business
+// result) must NOT force GENERIC_FALLBACK_REPLY's English-only text onto
+// the reply - the agent should still get to phrase its own apology, same
+// precedent already established for search_food/search_menu's thrown-call
+// case just above in this file. Caught in review before shipping: an
+// earlier draft of this guard marked hasData:false on every
+// GENERIC_FALLBACK_REPLY path indiscriminately, which would have made this
+// test fail (forcing the generic English fallback instead of letting the
+// model's own apology through).
+test("runAgentTurn lets the agent phrase its own apology when add_to_cart throws, rather than forcing the generic fallback", async () => {
+  const calls = [];
+  const client = fakeClient(async ({ messages }) => {
+    calls.push(messages);
+
+    if (calls.length === 1) {
+      return toolCallResponse([
+        { id: "call_1", function: { name: "add_to_cart", arguments: JSON.stringify({ query: "Chicken Biryani" }) } },
+      ]);
+    }
+
+    return textResponse("Sorry, something went wrong adding that — want to try again?");
+  });
+
+  const ctx = newContext();
+  const result = await runAgentTurn({
+    message: { from: "sender-1", text: "add chicken biryani" },
+    swiggyFoodClient: {
+      ...fakeSwiggyClient(),
+      flushFoodCart: async () => ({}),
+      updateFoodCart: async () => {
+        throw new Error("network blip");
+      },
+    },
+    ...ctx,
+    nlu,
+    client,
+  });
+
+  assert.equal(result, "Sorry, something went wrong adding that — want to try again?");
+});

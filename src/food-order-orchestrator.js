@@ -1004,6 +1004,11 @@ function formatItemSelectionReply(searchTerm, restaurantName, items) {
 // clean. Flushing whenever the two don't match - including the very first
 // add of a fresh session, when knownCartRestaurantId is simply unset -
 // means a new order never inherits stale contents it didn't ask for.
+// `meta`: same optional output object recommendSimilar/searchMenu accept -
+// marked with `hasData: true/false` right before every return, so
+// executeTool's add_to_cart case gets a structural signal for whether the
+// item genuinely landed in the cart, instead of trusting the agent's own
+// free-text claim (see cartMutationState in sarvam-agent.js).
 async function addResolvedItemToCart({
   senderId,
   swiggyFoodClient,
@@ -1014,7 +1019,25 @@ async function addResolvedItemToCart({
   menuItem,
   quantity,
   knownCartRestaurantId,
+  meta,
 }) {
+  const markData = (hasData) => {
+    if (meta) {
+      meta.hasData = hasData;
+    }
+  };
+
+  // Deliberately left UNMARKED (meta.hasData stays undefined, not false) on
+  // every GENERIC_FALLBACK_REPLY path below - these are thrown/infra
+  // failures (a network hiccup, an unparseable payload), not a genuine
+  // "item not on the real menu" business result. Marking them false would
+  // make cartMutationState's guard in sarvam-agent.js force GENERIC_FALLBACK_
+  // REPLY's English-only text verbatim onto a Hindi/Hinglish conversation
+  // instead of letting the agent phrase its own language-mirrored apology -
+  // the exact regression already caught and fixed once for search_food/
+  // search_menu's own thrown-call case (see executeTool's search_food
+  // comment). Only a real "couldn't find X" business dead end is marked
+  // false; see handleAddToCart's own two returns below for that case.
   if (knownCartRestaurantId !== restaurantId) {
     try {
       await swiggyFoodClient.flushFoodCart({});
@@ -1049,6 +1072,7 @@ async function addResolvedItemToCart({
 
   pendingCartSessions.set(senderId, { restaurantId, restaurantName, addressId, cartRestaurantId: restaurantId });
 
+  markData(true);
   return [`Added ${menuItem.name} to your cart.`, formatCartReply(cartData)].join("\n\n");
 }
 
@@ -1063,7 +1087,14 @@ async function handleAddToCart({
   restaurantId: existingRestaurantId,
   restaurantName: existingRestaurantName,
   cartRestaurantId,
+  meta,
 }) {
+  const markData = (hasData) => {
+    if (meta) {
+      meta.hasData = hasData;
+    }
+  };
+
   let targetRestaurantId = existingRestaurantId;
   let targetRestaurantName = existingRestaurantName;
 
@@ -1074,6 +1105,7 @@ async function handleAddToCart({
     const restaurant = await resolveRestaurant({ swiggyFoodClient, restaurantName: restaurantNameHint, addressId });
 
     if (!restaurant) {
+      markData(false);
       return `Sorry, I couldn't find a restaurant called "${restaurantNameHint}" near you.`;
     }
 
@@ -1089,6 +1121,7 @@ async function handleAddToCart({
   });
 
   if (!resolved) {
+    markData(false);
     return targetRestaurantName
       ? `Sorry, I couldn't find "${query}" at ${targetRestaurantName} right now.`
       : `Sorry, I couldn't find "${query}" on the menu right now.`;
@@ -1107,6 +1140,7 @@ async function handleAddToCart({
     menuItem,
     quantity,
     knownCartRestaurantId: cartRestaurantId,
+    meta,
   });
 }
 
@@ -1165,6 +1199,10 @@ function cartItemVariantsV2(cartItem) {
 // confirmed against a real Swiggy account. Re-verify before trusting this
 // in production, the same way this file's other unconfirmed-live notes ask
 // for.
+// `meta`: same optional output object addResolvedItemToCart accepts above -
+// marked `hasData: true` only on a genuine, unambiguous removal/quantity
+// change; an ambiguous multi-match is marked `false` too, since nothing was
+// actually removed yet and the agent must not claim otherwise.
 async function handleRemoveFromCart({
   swiggyFoodClient,
   addressId,
@@ -1172,7 +1210,20 @@ async function handleRemoveFromCart({
   restaurantName,
   query,
   quantity,
+  meta,
 }) {
+  const markData = (hasData) => {
+    if (meta) {
+      meta.hasData = hasData;
+    }
+  };
+
+  // Deliberately left UNMARKED (meta.hasData stays undefined) on this catch
+  // and the updateFoodCart catch/!updatedCartData path below - see
+  // addResolvedItemToCart's identical comment: these are thrown/infra
+  // failures, not a genuine cart-content business result, so the agent
+  // should still get to phrase its own language-mirrored apology around
+  // GENERIC_FALLBACK_REPLY rather than have it forced through verbatim.
   let cartResult;
   try {
     cartResult = await swiggyFoodClient.getFoodCart({ addressId, restaurantName });
@@ -1183,16 +1234,19 @@ async function handleRemoveFromCart({
   const cartData = unwrapCartPayload(cartResult);
 
   if (!cartData || !Array.isArray(cartData.items) || cartData.items.length === 0) {
+    markData(false);
     return emptyCartReply();
   }
 
   const matches = findMatchingCartItems(cartData, query);
 
   if (matches.length === 0) {
+    markData(false);
     return `Sorry, I couldn't find "${query}" in your cart.`;
   }
 
   if (matches.length > 1) {
+    markData(false);
     const names = matches.map((item) => item.name).join(" and ");
     return `You have a few things matching "${query}" in your cart: ${names}. Which one did you mean? Reply with the full name.`;
   }
@@ -1237,6 +1291,7 @@ async function handleRemoveFromCart({
   const confirmationLine =
     newQuantity === 0 ? `Removed ${cartItem.name} from your cart.` : `Updated ${cartItem.name} to ${newQuantity}x.`;
 
+  markData(true);
   return [confirmationLine, formatCartReply(updatedCartData)].join("\n\n");
 }
 
@@ -1634,7 +1689,16 @@ export async function resolvePendingCartCandidateReply({ message, swiggyFoodClie
 // placeConfirmedOrder above, only reachable via server.js's deterministic
 // YES/NO gate.
 
-export async function addToCart({ senderId, query, quantity, restaurantNameHint, swiggyFoodClient, pendingCartSessions }) {
+// `meta`: see addResolvedItemToCart's own comment above.
+export async function addToCart({
+  senderId,
+  query,
+  quantity,
+  restaurantNameHint,
+  swiggyFoodClient,
+  pendingCartSessions,
+  meta,
+}) {
   const session = pendingCartSessions.peek(senderId);
   return handleAddToCart({
     senderId,
@@ -1647,6 +1711,7 @@ export async function addToCart({ senderId, query, quantity, restaurantNameHint,
     restaurantId: session?.restaurantId,
     restaurantName: session?.restaurantName,
     cartRestaurantId: session?.cartRestaurantId,
+    meta,
   });
 }
 
@@ -1740,10 +1805,14 @@ export async function viewCart({ senderId, swiggyFoodClient, pendingCartSessions
   });
 }
 
-export async function removeFromCart({ senderId, query, quantity, swiggyFoodClient, pendingCartSessions }) {
+// `meta`: see handleRemoveFromCart's own comment above.
+export async function removeFromCart({ senderId, query, quantity, swiggyFoodClient, pendingCartSessions, meta }) {
   const session = pendingCartSessions.peek(senderId);
 
   if (!session) {
+    if (meta) {
+      meta.hasData = false;
+    }
     return noActiveOrderReply();
   }
 
@@ -1754,6 +1823,7 @@ export async function removeFromCart({ senderId, query, quantity, swiggyFoodClie
     restaurantName: session.restaurantName,
     query,
     quantity,
+    meta,
   });
 }
 
