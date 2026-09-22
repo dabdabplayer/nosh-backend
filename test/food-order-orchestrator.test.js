@@ -1736,6 +1736,39 @@ test("recommendSimilar (no craving) returns real, in-stock, not-yet-tried items 
   assert.match(reply, /Never invent a dish, restaurant, price, rating, or delivery time/);
 });
 
+// Explicit user ask (2026-09-22): "I want to use the previous order to
+// suggest something new and not the same thing" - a real transcript showed
+// recommend_similar permanently capped at only the 1-2 restaurants a user
+// has ever ordered from, since Case A used to dedupe order history alone.
+// This proves the fix: a real, open, genuinely-not-yet-ordered-from
+// restaurant (found via one of EXPLORE_CUISINE_TERMS) shows up alongside
+// the history-based one, honestly labeled as new rather than folded into
+// "previously ordered."
+test("recommendSimilar (no craving) also offers a real restaurant outside the user's order history entirely, not just untried dishes at familiar ones", async () => {
+  const client = fakeClient({
+    getFoodOrders: async () =>
+      payload({
+        orders: [orderSummary({ orderId: "o1", restaurantId: "rest-1", restaurantName: "Biryani House", orderedItems: "1x Chicken Biryani" })],
+      }),
+    // Matches whichever explore cuisine term happens to be tried first -
+    // findExploreRestaurants shuffles EXPLORE_CUISINE_TERMS per call, so
+    // this must not depend on a specific term to stay deterministic.
+    searchRestaurants: async () => payload({ restaurants: [{ id: "rest-9", name: "Dragon Wok", availabilityStatus: "OPEN" }] }),
+    getRestaurantMenu: async ({ restaurantId }) =>
+      restaurantId === "rest-1"
+        ? restaurantMenuItemsPayload([{ id: "i1", name: "Chicken Biryani", price: 249, inStock: 1 }])
+        : restaurantMenuItemsPayload([{ id: "i9", name: "Chilli Chicken", price: 259, inStock: 1 }]),
+  });
+
+  const reply = await recommendSimilar({ swiggyFoodClient: client });
+
+  assert.match(reply, /Biryani House/);
+  assert.match(reply, /Dragon Wok/);
+  assert.match(reply, /Chilli Chicken — ₹259/);
+  assert.match(reply, /you haven't ordered from here before/);
+  assert.match(reply, /genuinely new restaurant outside their history/);
+});
+
 test("recommendSimilar (no craving) falls back to a restaurant's top items, marked as already-ordered, when everything there was already tried", async () => {
   const client = fakeClient({
     getFoodOrders: async () =>
@@ -1906,6 +1939,51 @@ test("recommendSimilar falls back to order history when the craving matches noth
   // it can't falsely claim the pick matches what the user asked for.
   assert.match(reply, /Nothing real was open for "sushi"/);
   assert.match(reply, /Do NOT claim any of these satisfies their stated craving/);
+});
+
+// Explicit exclusion, not just a coincidence of empty search results - see
+// recommendSimilar's own comment on why explore must never run on a craving
+// miss (a candidate found via an unrelated shuffled cuisine term sitting in
+// a list captioned "does not satisfy the craving" while the closing
+// instructions separately say to prefer it - a real contradiction caught
+// before shipping, not after).
+test("recommendSimilar never adds an explore restaurant to a craving-miss fallback, even when one would genuinely be found", async () => {
+  const client = fakeClient({
+    // "sushi" (the stated craving) finds nothing; every OTHER query (i.e.
+    // what an explore attempt would search) finds a real, open restaurant -
+    // if explore ran here, it would leak into this list.
+    searchRestaurants: async ({ query }) =>
+      query === "sushi"
+        ? payload({ restaurants: [] })
+        : payload({ restaurants: [{ id: "rest-9", name: "Dragon Wok", availabilityStatus: "OPEN" }] }),
+    getFoodOrders: async () => payload({ orders: [orderSummary({ orderId: "o1", restaurantId: "rest-1", restaurantName: "Biryani House" })] }),
+    getRestaurantMenu: async () => restaurantMenuItemsPayload([{ id: "i1", name: "Chicken Tikka Masala", price: 279, inStock: 1 }]),
+  });
+
+  const reply = await recommendSimilar({ swiggyFoodClient: client, craving: "sushi" });
+
+  assert.doesNotMatch(reply, /Dragon Wok/);
+});
+
+// Structural exclusion (persisted on pendingCartSessions), not left to the
+// term shuffle's luck - see findExploreRestaurants/recommendSimilar's own
+// comments on why chance alone isn't good enough here.
+test("recommendSimilar never re-offers the same explore restaurant twice in one session, even when the shuffled term order would otherwise find it again", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  const client = fakeClient({
+    getFoodOrders: async () => payload({ orders: [orderSummary({ orderId: "o1", restaurantId: "rest-1", restaurantName: "Biryani House" })] }),
+    searchRestaurants: async () => payload({ restaurants: [{ id: "rest-9", name: "Dragon Wok", availabilityStatus: "OPEN" }] }),
+    getRestaurantMenu: async ({ restaurantId }) =>
+      restaurantId === "rest-1"
+        ? restaurantMenuItemsPayload([{ id: "i1", name: "Chicken Biryani", price: 249, inStock: 1 }])
+        : restaurantMenuItemsPayload([{ id: "i9", name: "Chilli Chicken", price: 259, inStock: 1 }]),
+  });
+
+  const first = await recommendSimilar({ swiggyFoodClient: client, senderId: "sender-1", pendingCartSessions });
+  assert.match(first, /Dragon Wok/);
+
+  const second = await recommendSimilar({ swiggyFoodClient: client, senderId: "sender-1", pendingCartSessions });
+  assert.doesNotMatch(second, /Dragon Wok/);
 });
 
 test("recommendSimilar reports honestly when the craving misses AND the order-history fallback also finds nothing usable", async () => {

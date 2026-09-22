@@ -414,15 +414,111 @@ async function buildRestaurantCandidateBlock({ swiggyFoodClient, addressId, rest
   const restaurantFacts = [ratingText ? `⭐${ratingText}` : undefined, etaText].filter(Boolean).join(", ");
   const restaurantHeader = restaurantFacts ? `${restaurantName} — ${restaurantFacts}` : restaurantName;
 
-  const historyNote = orderedItemStrings.length > 0 ? orderedItemStrings.join(", ") : "unknown";
-  return [`${restaurantHeader} (previously ordered: ${historyNote}):`, ...itemLines].join("\n");
+  // Genuinely empty (as opposed to the old, effectively-dead "unknown"
+  // fallback this replaced) now really happens - see findExploreRestaurants
+  // below, whose candidates have no order history by definition. Say so
+  // honestly rather than leaving a vague "unknown" that reads like missing
+  // data rather than "you've truly never ordered here."
+  const historyNote =
+    orderedItemStrings.length > 0
+      ? `previously ordered: ${orderedItemStrings.join(", ")}`
+      : "you haven't ordered from here before - a genuinely new pick";
+  return [`${restaurantHeader} (${historyNote}):`, ...itemLines].join("\n");
+}
+
+// Broad, universal cuisine terms tried so Case A below can offer at least
+// one restaurant genuinely OUTSIDE a user's order history, not just
+// untried dishes at the same restaurants they always order from - explicit
+// user ask (2026-09-22): "I want to use the previous order to suggest
+// something new and not the same thing." Before this, Case A only ever
+// dedupes real order-history restaurants (capped at RECOMMEND_MAX_RESTAURANTS)
+// - for a user who has only ever ordered from 1-2 places, that's a
+// permanent ceiling no amount of "don't repeat" prompting can lift, since
+// there's nothing else in the candidate set to reach for. Verified against
+// Swiggy's own docs (mcp.swiggy.com/builders/docs/reference/food/
+// search_restaurants.md) before adding this: query is required and no
+// empty/"browse everything" query is documented - the docs themselves
+// recommend exactly this pattern ("broad cuisine terms like 'biryani',
+// 'pizza', 'chinese', 'thali'"), so every term here is a real search, never
+// an invented parameter. Deliberately a short, generic list (not tuned to
+// any one catalog, mock or real) - a term matching nothing at a given
+// address is simply skipped, not treated as an error.
+const EXPLORE_CUISINE_TERMS = ["chinese", "italian", "mexican", "south indian", "japanese", "american"];
+const RECOMMEND_MAX_EXPLORE_RESTAURANTS = 1;
+// Real Swiggy calls, one per term tried, all inside this single tool call
+// (no extra Sarvam round-trip either way - see recommendSimilar's own
+// comment on why this whole function exists as ONE call). Capped
+// independently of RECOMMEND_MAX_EXPLORE_RESTAURANTS so a run of terms that
+// keep missing can't turn into 6 sequential real HTTP calls before giving
+// up - AGENTS.md already documents "no one is gonna wait this long" as the
+// reason recommend_similar became a single bulk-gathering call in the first
+// place; this must not quietly reintroduce that latency.
+const EXPLORE_MAX_ATTEMPTS = 3;
+
+// Fisher-Yates - order picked fresh per call so repeated recommendations in
+// the same conversation don't always try (and typically land on) the same
+// first cuisine term, giving genuine turn-to-turn variety in which new
+// restaurant surfaces, not just which dish at it.
+function shuffled(list) {
+  const copy = [...list];
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+}
+
+// Finds up to RECOMMEND_MAX_EXPLORE_RESTAURANTS real, open restaurants NOT
+// already in knownRestaurantIds, by trying up to EXPLORE_MAX_ATTEMPTS of
+// EXPLORE_CUISINE_TERMS (shuffled) - every result is a real
+// search_restaurants call; a term producing nothing (or nothing novel) is
+// skipped, not substituted with anything invented. Stops as soon as enough
+// are found rather than always spending the full attempt budget.
+async function findExploreRestaurants({ swiggyFoodClient, addressId, knownRestaurantIds }) {
+  const found = [];
+  const seenIds = new Set(knownRestaurantIds);
+
+  for (const term of shuffled(EXPLORE_CUISINE_TERMS).slice(0, EXPLORE_MAX_ATTEMPTS)) {
+    if (found.length >= RECOMMEND_MAX_EXPLORE_RESTAURANTS) {
+      break;
+    }
+
+    let searchResult;
+    try {
+      searchResult = await swiggyFoodClient.searchRestaurants({ query: term, addressId });
+    } catch {
+      continue;
+    }
+
+    const restaurants = parseStructuredPayload(searchResult)?.restaurants;
+    if (!Array.isArray(restaurants)) {
+      continue;
+    }
+
+    for (const restaurant of restaurants) {
+      if (found.length >= RECOMMEND_MAX_EXPLORE_RESTAURANTS) {
+        break;
+      }
+      if (restaurant?.availabilityStatus !== "OPEN" || !restaurant?.id || seenIds.has(restaurant.id)) {
+        continue;
+      }
+      seenIds.add(restaurant.id);
+      found.push({ restaurantId: restaurant.id, restaurantName: restaurant.name, orderedItemStrings: [] });
+    }
+  }
+
+  return found;
 }
 
 const RECOMMEND_CLOSING_INSTRUCTIONS =
   "Pick ONE item from the list above that best fits what they tend to like, preferring one not marked as " +
   "already-ordered-before AND one you have not already offered earlier in THIS conversation (scan every one " +
   "of your own prior replies this conversation, not just your most recent one - a small menu means the same " +
-  "item can resurface a few turns later if you only check the last offer). Present its real name, restaurant, " +
+  "item can resurface a few turns later if you only check the last offer). A restaurant marked \"you haven't " +
+  "ordered from here before\" is a genuinely new place, not just a new dish at somewhere familiar - if the " +
+  "user is asking for something new/different, or has already rejected picks from their usual restaurants " +
+  "this conversation, prefer one of those over yet another item at a restaurant they already order from. " +
+  "Present its real name, restaurant, " +
   "real price, and (when a restaurant header includes one) its real rating and delivery time, and ask if they " +
   "want it added - do not call add_to_cart until they say yes. If a restaurant header has no rating/delivery " +
   "time listed, don't mention either - never invent one. Do not show this raw list to the user or ask them to " +
@@ -654,8 +750,54 @@ export async function recommendSimilar({
 
   const candidateRestaurants = [...orderedByRestaurant.values()].slice(0, RECOMMEND_MAX_RESTAURANTS);
 
+  // Genuinely new restaurants, outside this user's order history entirely -
+  // see findExploreRestaurants' own comment for why this exists. Fetched
+  // even when candidateRestaurants is non-empty (not just as a fallback for
+  // "history came up empty") - the whole point is to stop capping every
+  // recommendation at only the restaurants someone has already ordered
+  // from, not just to handle the edge case where history has nothing at
+  // all.
+  //
+  // Deliberately SKIPPED when cravingMissed is true. This branch is also
+  // reached on a craving miss (Case B falling through to Case A) - if
+  // explore ran there too, a candidate found by searching an unrelated
+  // (shuffled) cuisine term would sit in the SAME list this function's own
+  // header text says "do NOT claim satisfies their stated craving," while
+  // RECOMMEND_CLOSING_INSTRUCTIONS separately tells the agent to prefer a
+  // genuinely-new-restaurant pick when the user asked for something new -
+  // two correct-sounding instructions that combine into presenting a
+  // random, non-matching restaurant as if it were relevant. Explore is for
+  // "no craving stated" only; a craving miss already has its own honest
+  // fallback wording.
+  //
+  // exploredRestaurantIds (persisted on pendingCartSessions, same pattern
+  // as addressId below) is ALSO excluded, not just this turn's history -
+  // without it, findExploreRestaurants' term shuffle (for genuine
+  // turn-to-turn cuisine variety) could just as easily re-pick the SAME
+  // restaurant on a later call this conversation, which would read as "it's
+  // still stuck" rather than "it's exploring." Structural exclusion, not
+  // left to chance.
+  const existingSession = pendingCartSessions?.peek(senderId);
+  const alreadyExploredIds = existingSession?.exploredRestaurantIds ?? [];
+
+  const exploreRestaurants = cravingMissed
+    ? []
+    : await findExploreRestaurants({
+        swiggyFoodClient,
+        addressId,
+        knownRestaurantIds: [...orderedByRestaurant.keys(), ...alreadyExploredIds],
+      });
+
+  if (senderId && pendingCartSessions && exploreRestaurants.length > 0) {
+    pendingCartSessions.set(senderId, {
+      ...existingSession,
+      addressId,
+      exploredRestaurantIds: [...alreadyExploredIds, ...exploreRestaurants.map((restaurant) => restaurant.restaurantId)],
+    });
+  }
+
   const blocks = [];
-  for (const restaurant of candidateRestaurants) {
+  for (const restaurant of [...candidateRestaurants, ...exploreRestaurants]) {
     const block = await buildRestaurantCandidateBlock({ swiggyFoodClient, addressId, ...restaurant });
     if (block) {
       blocks.push(block);
@@ -673,8 +815,9 @@ export async function recommendSimilar({
     ? `Nothing real was open for "${craving}", so here are real candidates from this user's actual order history ` +
       "and each restaurant's real current menu instead - tell them honestly that nothing matched what they asked " +
       "for, then offer one of these as an alternative. Do NOT claim any of these satisfies their stated craving:"
-    : "Real menu candidates for a recommendation, gathered from this user's actual order history and each " +
-      "restaurant's real current menu:";
+    : "Real menu candidates for a recommendation, gathered from this user's actual order history AND (where " +
+      "marked 'you haven't ordered from here before') a genuinely new restaurant outside their history - " +
+      "each restaurant's real current menu:";
 
   markData(true);
   return [header, ...blocks, RECOMMEND_CLOSING_INSTRUCTIONS].join("\n");
