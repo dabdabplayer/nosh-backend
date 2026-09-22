@@ -1879,12 +1879,48 @@ test("recommendSimilar with a craving searches real open restaurants for it inst
   assert.match(reply, /Chicken Tikka Masala — ₹279/);
 });
 
-test("recommendSimilar with a craving reports honestly when nothing real is open for it", async () => {
+test("recommendSimilar with a craving reports honestly when nothing real is open for it AND there's no order history to fall back on", async () => {
+  // getFoodOrders defaults to { orders: [] } in fakeClient - no history
+  // fallback available either.
   const client = fakeClient({ searchRestaurants: async () => payload({ restaurants: [] }) });
 
   const reply = await recommendSimilar({ swiggyFoodClient: client, craving: "sushi" });
 
-  assert.match(reply, /couldn't find any open restaurants for "sushi"/);
+  assert.match(reply, /couldn't find anything open for "sushi"/);
+  assert.match(reply, /no order history to fall back on/);
+});
+
+test("recommendSimilar falls back to order history when the craving matches nothing real, instead of dead-ending - confirmed live 2026-09-21, a craving unmatched by a small catalog read as 'everything is closed'", async () => {
+  const client = fakeClient({
+    searchRestaurants: async () => payload({ restaurants: [] }),
+    getFoodOrders: async () => payload({ orders: [orderSummary({ orderId: "o1", restaurantId: "rest-1", restaurantName: "Biryani House" })] }),
+    getRestaurantMenu: async () => restaurantMenuItemsPayload([{ id: "i1", name: "Chicken Tikka Masala", price: 279, inStock: 1 }]),
+  });
+
+  const reply = await recommendSimilar({ swiggyFoodClient: client, craving: "sushi" });
+
+  // Real, usable candidates from history are present...
+  assert.match(reply, /Biryani House/);
+  assert.match(reply, /Chicken Tikka Masala — ₹279/);
+  // ...and the agent is told plainly this doesn't satisfy the craving, so
+  // it can't falsely claim the pick matches what the user asked for.
+  assert.match(reply, /Nothing real was open for "sushi"/);
+  assert.match(reply, /Do NOT claim any of these satisfies their stated craving/);
+});
+
+test("recommendSimilar reports honestly when the craving misses AND the order-history fallback also finds nothing usable", async () => {
+  const client = fakeClient({
+    searchRestaurants: async () => payload({ restaurants: [] }),
+    getFoodOrders: async () => payload({ orders: [orderSummary({ orderId: "o1", restaurantId: "rest-1" })] }),
+    getRestaurantMenu: async () => {
+      throw new Error("boom");
+    },
+  });
+
+  const reply = await recommendSimilar({ swiggyFoodClient: client, craving: "sushi" });
+
+  assert.match(reply, /couldn't find anything open for "sushi"/);
+  assert.match(reply, /couldn't pull up a real menu from their order history either/);
 });
 
 test("recommendSimilar falls back to a generic reply when every candidate restaurant's menu lookup fails", async () => {

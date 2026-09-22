@@ -523,7 +523,22 @@ export async function recommendSimilar({
   // Case B: the user stated a craving/cuisine and the agent translated it
   // into a concrete search term - find real open restaurants matching that,
   // rather than restaurants from history (a stated craving overrides "what
-  // they usually get").
+  // they usually get"). If nothing real matches the craving, this FALLS
+  // THROUGH to Case A (order history) below rather than dead-ending -
+  // confirmed live (2026-09-21) that an unusual/compound craving ("spicy
+  // and umami") against this mock's small 3-restaurant catalog produced
+  // "I couldn't find any open restaurants for X" on every retry, even
+  // across a completely fresh turn, which the user reasonably read as
+  // "everything is closed." A small mock catalog structurally can't match
+  // every craving the way real Swiggy's much larger one would, and this
+  // feature's whole premise ("the user shouldn't have to decide") is
+  // defeated by a hard stop here when a real alternative (their own order
+  // history) is sitting right there. `cravingMissed` tracks whether this
+  // fallback fired, so the returned instructions can tell the agent to be
+  // honest that the craving itself didn't match, rather than silently
+  // presenting a history-based pick as if it satisfied the craving.
+  let cravingMissed = false;
+
   if (craving) {
     let searchResult;
     try {
@@ -537,37 +552,36 @@ export async function recommendSimilar({
       ? restaurants.filter((restaurant) => restaurant?.availabilityStatus === "OPEN").slice(0, RECOMMEND_MAX_RESTAURANTS)
       : [];
 
-    if (openRestaurants.length === 0) {
-      return `I couldn't find any open restaurants for "${craving}" right now.`;
-    }
+    if (openRestaurants.length > 0) {
+      const blocks = [];
+      for (const restaurant of openRestaurants) {
+        const block = await buildRestaurantCandidateBlock({
+          swiggyFoodClient,
+          addressId,
+          restaurantId: restaurant.id,
+          restaurantName: restaurant.name,
+          orderedItemStrings: [],
+        });
+        if (block) {
+          blocks.push(block);
+        }
+      }
 
-    const blocks = [];
-    for (const restaurant of openRestaurants) {
-      const block = await buildRestaurantCandidateBlock({
-        swiggyFoodClient,
-        addressId,
-        restaurantId: restaurant.id,
-        restaurantName: restaurant.name,
-        orderedItemStrings: [],
-      });
-      if (block) {
-        blocks.push(block);
+      if (blocks.length > 0) {
+        return [
+          `Real menu candidates for "${craving}", from real open restaurants near this user:`,
+          ...blocks,
+          RECOMMEND_CLOSING_INSTRUCTIONS,
+        ].join("\n");
       }
     }
 
-    if (blocks.length === 0) {
-      return `I found open restaurants for "${craving}" but couldn't pull up a real menu for any of them right now.`;
-    }
-
-    return [
-      `Real menu candidates for "${craving}", from real open restaurants near this user:`,
-      ...blocks,
-      RECOMMEND_CLOSING_INSTRUCTIONS,
-    ].join("\n");
+    cravingMissed = true;
   }
 
-  // Case A: no stated craving - base the recommendation on real order
-  // history instead.
+  // Case A: no stated craving, OR a stated craving that genuinely matched
+  // nothing real (see cravingMissed above) - base the recommendation on
+  // real order history instead.
   let ordersResult;
   try {
     ordersResult = await swiggyFoodClient.getFoodOrders({ addressId });
@@ -585,7 +599,9 @@ export async function recommendSimilar({
   const pastOrders = orders.filter((order) => order?.restaurantId && order.isActiveOrder !== true);
 
   if (pastOrders.length === 0) {
-    return NO_ORDER_HISTORY_REPLY;
+    return cravingMissed
+      ? `I couldn't find anything open for "${craving}" right now, and there's no order history to fall back on either.`
+      : NO_ORDER_HISTORY_REPLY;
   }
 
   // get_food_orders' own doc says results come back newest-first; dedupe to
@@ -619,15 +635,19 @@ export async function recommendSimilar({
   }
 
   if (blocks.length === 0) {
-    return GENERIC_FALLBACK_REPLY;
+    return cravingMissed
+      ? `I couldn't find anything open for "${craving}" right now, and couldn't pull up a real menu from their order history either.`
+      : GENERIC_FALLBACK_REPLY;
   }
 
-  return [
-    "Real menu candidates for a recommendation, gathered from this user's actual order history and each " +
-      "restaurant's real current menu:",
-    ...blocks,
-    RECOMMEND_CLOSING_INSTRUCTIONS,
-  ].join("\n");
+  const header = cravingMissed
+    ? `Nothing real was open for "${craving}", so here are real candidates from this user's actual order history ` +
+      "and each restaurant's real current menu instead - tell them honestly that nothing matched what they asked " +
+      "for, then offer one of these as an alternative. Do NOT claim any of these satisfies their stated craving:"
+    : "Real menu candidates for a recommendation, gathered from this user's actual order history and each " +
+      "restaurant's real current menu:";
+
+  return [header, ...blocks, RECOMMEND_CLOSING_INSTRUCTIONS].join("\n");
 }
 
 // Auto-picks each variant group's Swiggy-marked default (falling back to the
