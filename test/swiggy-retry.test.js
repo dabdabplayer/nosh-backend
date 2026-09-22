@@ -23,6 +23,25 @@ test("classifySwiggyError: McpError-shaped -32001 (Swiggy's documented auth-fail
   assert.equal(classifySwiggyError({ message: "MCP error -32001: session expired", code: -32001 }), "reauth");
 });
 
+// HTTP 419 (SESSION_REVOKED) - see swiggy-retry.js's own comment: folds
+// into "reauth" alongside 401, per the delegated-auth doc's troubleshooting
+// table (re-verified live, not assumed).
+test("classifySwiggyError: HTTP 419 (session revoked) classifies as reauth", () => {
+  assert.equal(classifySwiggyError({ message: "session revoked", code: 419 }), "reauth");
+});
+
+// HTTP 403 is deliberately NOT reauth, even though errors.md documents a
+// planned INSUFFICIENT_SCOPE/403 meaning - see swiggy-retry.js's own
+// comment: v1 doesn't enforce granular scopes and this app already
+// requests all three uniformly, so a real scope-403 can't happen today; a
+// bare 403 is far more likely an infra/WAF denial, and misclassifying it as
+// reauth would make server.js delete a perfectly valid token. This test is
+// a regression guard against "helpfully" adding 403 back in without
+// re-checking that reasoning.
+test("classifySwiggyError: HTTP 403 does NOT classify as reauth (see swiggy-retry.js's comment)", () => {
+  assert.notEqual(classifySwiggyError({ message: "forbidden", code: 403 }), "reauth");
+});
+
 test("classifySwiggyError: McpError-shaped -32603 classifies as retry-once", () => {
   assert.equal(classifySwiggyError({ message: "MCP error -32603: internal", code: -32603 }), "retry-once");
 });

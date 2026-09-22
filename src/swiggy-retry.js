@@ -1,7 +1,8 @@
 // Retry/error classification for Swiggy MCP tool calls, per
-// https://mcp.swiggy.com/builders/docs/reference/errors.md and
-// https://mcp.swiggy.com/builders/docs/operate/rate-limits.md (both
-// re-verified against their raw content, not a summary).
+// https://mcp.swiggy.com/builders/docs/reference/errors.md,
+// https://mcp.swiggy.com/builders/docs/operate/rate-limits.md, and
+// https://mcp.swiggy.com/builders/docs/start/enterprise/delegated-auth/#error-handling-troubleshooting
+// (all re-verified against their raw content, not a summary).
 //
 // Two @modelcontextprotocol/sdk quirks this depends on (confirmed by reading
 // node_modules/@modelcontextprotocol/sdk/dist/esm/{types,client/streamableHttp}.js
@@ -21,6 +22,7 @@
 // as "planned, not yet emitted" as of v1.0 - classify by message text and
 // HTTP/JSON-RPC status instead:
 //   - HTTP 401 / JSON-RPC -32001 / "No or invalid session credentials" -> reauth
+//   - HTTP 419 (session revoked)                                       -> reauth
 //   - message starts with "Invalid "/"Missing "                        -> terminal
 //   - HTTP 429                                                          -> rate_limited
 //   - HTTP 504, HTTP 502/503, or message containing "timeout"           -> retry
@@ -28,6 +30,36 @@
 // Anything else is terminal rather than guessed at, since a wrong "retry"
 // classification risks re-sending a request Swiggy already rejected for a
 // reason that won't change.
+//
+// 419 folds into the SAME "reauth" classification as 401, not a separate
+// one - the delegated-auth doc's troubleshooting table describes a
+// different underlying cause (401: token expired, silently re-authable;
+// 419: session revoked, needs a full phone+OTP re-auth), but that
+// distinction only matters on SWIGGY's own hosted authorize page, which
+// decides silent-vs-OTP on its own; Nosh's side of the fix is identical for
+// both: drop the stored token and let the next message trigger a fresh
+// /oauth/swiggy/start (see server.js's SwiggyAuthFailureError catch).
+// Confirmed via the delegated-auth doc that 401/419 are real MCP tool-call
+// responses (e.g. calling https://mcp.swiggy.com/food), not OAuth-endpoint
+// errors - this file, which wraps client.callTool, is the right place.
+//
+// HTTP 403 is deliberately NOT classified as reauth, despite errors.md
+// documenting a planned INSUFFICIENT_SCOPE/403 meaning: the delegated-auth
+// doc's own scopes section says v1 access control "is keyed at the user
+// level, not at the application level" and finer-grained scopes "are not
+// enforced today - requesting them has no effect" - and swiggy-oauth.js
+// already requests all three v1 scopes uniformly on every authorize call,
+// so there is no code path in this app that can produce an under-scoped
+// token today. A bare HTTP 403 with no way to confirm it's really
+// INSUFFICIENT_SCOPE (the symbolic error codes are "planned, not yet
+// emitted", so there's no message text to key on either) is far more
+// likely an infra/WAF/IP-allowlist denial (see AGENTS.md's Swiggy
+// Production Access section on static IP/gateway ranges) - classifying
+// that as reauth would make server.js delete a perfectly valid token
+// (swiggyTokenStore.delete on the reauth path) and loop the user through a
+// pointless reconnect on every message. Revisit once Swiggy actually emits
+// the symbolic INSUFFICIENT_SCOPE code, matching on that specifically
+// rather than on bare 403.
 export class SwiggyAuthFailureError extends Error {
   constructor(cause) {
     super("Swiggy rejected the request as unauthenticated.");
@@ -66,7 +98,7 @@ export function classifySwiggyError(error) {
   const status = httpStatusOf(error);
   const rpcCode = jsonRpcCodeOf(error);
 
-  if (status === 401 || rpcCode === -32001 || message.includes("No or invalid session credentials")) {
+  if (status === 401 || status === 419 || rpcCode === -32001 || message.includes("No or invalid session credentials")) {
     return "reauth";
   }
 
