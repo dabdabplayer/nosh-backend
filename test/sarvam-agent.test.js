@@ -856,6 +856,59 @@ test("runAgentTurn discards a fabricated 'added to cart' claim when add_to_cart'
   assert.match(result, /couldn't find/i);
 });
 
+function addToCartSwitchingRestaurant({ cartRestaurantId }) {
+  const client = fakeClient(async ({ messages }) => {
+    if (messages.at(-1).role !== "tool") {
+      return toolCallResponse([
+        {
+          id: "call_1",
+          function: { name: "add_to_cart", arguments: JSON.stringify({ query: "Miso Ramen", restaurantName: "Sushi Central" }) },
+        },
+      ]);
+    }
+    // The model leaves out the cart-replaced line, as seen live.
+    return textResponse("Miso Ramen is in! Ready to check out?");
+  });
+
+  const ctx = newContext();
+  ctx.pendingCartSessions.set("sender-1", {
+    addressId: "addr-1",
+    restaurantId: "r-taco",
+    restaurantName: "Taco Fiesta",
+    cartRestaurantId,
+  });
+
+  return runAgentTurn({
+    message: { from: "sender-1", text: "yes add it" },
+    swiggyFoodClient: {
+      ...fakeSwiggyClient({
+        searchRestaurants: async () => ({
+          structured: { restaurants: [{ id: "r-sushi", name: "Sushi Central", availabilityStatus: "OPEN" }] },
+        }),
+        searchMenu: async () => ({ structured: { items: [{ name: "Miso Ramen", price: 329, inStock: 1 }] } }),
+      }),
+      flushFoodCart: async () => ({}),
+      updateFoodCart: async () => ({ structured: { statusCode: 0, data: { items: [{ name: "Miso Ramen", quantity: 1 }] } } }),
+    },
+    ...ctx,
+    nlu,
+    client,
+  });
+}
+
+test("runAgentTurn always tells the user when adding an item replaced a cart from another restaurant", async () => {
+  const result = await addToCartSwitchingRestaurant({ cartRestaurantId: "r-taco" });
+
+  assert.match(result, /^Miso Ramen is in! Ready to check out\?/);
+  assert.match(result, /items from a different restaurant, so those were removed/);
+});
+
+test("runAgentTurn adds no cart-replaced note when the cart was empty", async () => {
+  const result = await addToCartSwitchingRestaurant({ cartRestaurantId: undefined });
+
+  assert.equal(result, "Miso Ramen is in! Ready to check out?");
+});
+
 // Companion to the test above, checking the OTHER branch of the same guard:
 // a thrown Swiggy call (network blip, not a real "item not found" business
 // result) must NOT force GENERIC_FALLBACK_REPLY's English-only text onto

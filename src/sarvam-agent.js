@@ -403,6 +403,16 @@ async function executeTool(name, args, ctx) {
           } else if (meta.hasData === false) {
             cartMutationState.lastFailureText = text;
           }
+          if (meta.replacedEarlierCart) {
+            cartMutationState.replacedEarlierCart = true;
+          }
+        }
+
+        if (meta.replacedEarlierCart) {
+          return {
+            text: `${text}\n\n(The cart held items from a different restaurant, so those were removed first. Nosh tells the user this itself - don't mention it.)`,
+            terminal: false,
+          };
         }
 
         return { text, terminal: false };
@@ -617,7 +627,24 @@ export async function runAgentTurn({
   // from the reply text) - see executeTool's add_to_cart/remove_from_cart
   // cases above. Does NOT fire when neither tool was called this turn, or
   // when at least one call this turn genuinely succeeded.
-  const cartMutationState = { anyToolCalled: false, sawSuccess: false, lastFailureText: undefined };
+  const cartMutationState = {
+    anyToolCalled: false,
+    sawSuccess: false,
+    lastFailureText: undefined,
+    replacedEarlierCart: false,
+  };
+
+  // Appended in code, not left to the agent - confirmed live that the agent
+  // sometimes drops add_to_cart's "earlier cart was removed" line, silently
+  // losing items the user thinks are still in their cart.
+  const withCartReplacementNote = (text) =>
+    cartMutationState.replacedEarlierCart
+      ? `${text}\n\n${pick(lang, {
+          en: "Heads up: your cart had items from a different restaurant, so those were removed.",
+          hi: "ध्यान दें: आपकी कार्ट में किसी दूसरे रेस्टोरेंट के आइटम थे, इसलिए वे हटा दिए गए।",
+          hinglish: "Heads up: aapki cart mein dusre restaurant ke items the, isliye woh hata diye gaye.",
+        })}`
+      : text;
 
   const toolCtx = {
     senderId,
@@ -687,11 +714,11 @@ export async function runAgentTurn({
       // system prompt's first rule), so the redirect must not imply one.
       if (/\bYES\b/.test(finalText) && /\bNO\b/.test(finalText)) {
         console.error("Sarvam agent produced a fabricated confirmation-shaped reply with no real tool call this turn.");
-        const safeRedirect = pick(lang, {
+        const safeRedirect = withCartReplacementNote(pick(lang, {
           en: "Let me pull up your actual order for you — ask me to check out and I'll show the real summary and total.",
           hi: "मैं आपका असली ऑर्डर दिखाता हूं — मुझे checkout करने के लिए कहें और मैं असली सारांश और कुल राशि दिखाऊंगा।",
           hinglish: "Main aapka actual order dikhata hoon — mujhe checkout karne ke liye kahein aur main real summary aur total dikhaunga.",
-        });
+        }));
         pendingConversationHistory.append(senderId, { role: "user", content: message.text });
         pendingConversationHistory.append(senderId, { role: "assistant", content: safeRedirect });
         return safeRedirect;
@@ -716,10 +743,11 @@ export async function runAgentTurn({
       // guard immediately above; applied after it so a (practically
       // impossible) turn that trips both guards still gets an honest reply
       // about whichever tool actually ran.
-      const safeFinalText =
+      const safeFinalText = withCartReplacementNote(
         cartMutationState.anyToolCalled && !cartMutationState.sawSuccess && cartMutationState.lastFailureText
           ? cartMutationState.lastFailureText
-          : recommendSafeText;
+          : recommendSafeText,
+      );
 
       pendingConversationHistory.append(senderId, { role: "user", content: message.text });
       pendingConversationHistory.append(senderId, { role: "assistant", content: safeFinalText });
@@ -781,9 +809,10 @@ export async function runAgentTurn({
     }
 
     if (terminalResultText !== undefined) {
+      const replyText = withCartReplacementNote(terminalResultText);
       pendingConversationHistory.append(senderId, { role: "user", content: message.text });
-      pendingConversationHistory.append(senderId, { role: "assistant", content: terminalResultText });
-      return terminalResultText;
+      pendingConversationHistory.append(senderId, { role: "assistant", content: replyText });
+      return replyText;
     }
   }
 

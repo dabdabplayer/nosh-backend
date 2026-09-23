@@ -493,6 +493,7 @@ test("addToCart switches to a named restaurant that differs from the session's c
     },
   });
 
+  const meta = {};
   const reply = await addToCart({
     senderId: "sender-1",
     query: "nachos supreme",
@@ -500,11 +501,13 @@ test("addToCart switches to a named restaurant that differs from the session's c
     restaurantNameHint: "Taco Fiesta",
     swiggyFoodClient: client,
     pendingCartSessions,
+    meta,
   });
 
   assert.equal(menuSearchCalls[0].restaurantIdOfAddedItem, "r-taco");
   assert.deepEqual(calls, ["flush", "update:r-taco"]);
-  assert.match(reply, /Added Nachos Supreme to a fresh cart at Taco Fiesta \(Mock\)/);
+  assert.match(reply, /^Added Nachos Supreme to your cart\./);
+  assert.equal(meta.replacedEarlierCart, true);
   assert.equal(pendingCartSessions.peek("sender-1").cartRestaurantId, "r-taco");
 });
 

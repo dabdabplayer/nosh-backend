@@ -1117,6 +1117,7 @@ async function addResolvedItemToCart({
   menuItem,
   quantity,
   knownCartRestaurantId,
+  announceCartReplacement = true,
   meta,
 }) {
   const markData = (hasData) => {
@@ -1170,10 +1171,17 @@ async function addResolvedItemToCart({
 
   pendingCartSessions.set(senderId, { restaurantId, restaurantName, addressId, cartRestaurantId: restaurantId });
 
-  const replacedEarlierCart = knownCartRestaurantId && knownCartRestaurantId !== restaurantId;
-  const addedLine = replacedEarlierCart
-    ? `Added ${menuItem.name} to a fresh cart at ${restaurantName} — your earlier cart's items were removed.`
-    : `Added ${menuItem.name} to your cart.`;
+  const replacedEarlierCart = Boolean(knownCartRestaurantId) && knownCartRestaurantId !== restaurantId;
+  if (meta) {
+    meta.replacedEarlierCart = replacedEarlierCart;
+  }
+
+  // The agent path appends its own fixed note instead (see runAgentTurn),
+  // since the agent can't be trusted to relay this line.
+  const addedLine =
+    replacedEarlierCart && announceCartReplacement
+      ? `Added ${menuItem.name} to a fresh cart at ${restaurantName} — your earlier cart's items were removed.`
+      : `Added ${menuItem.name} to your cart.`;
 
   markData(true);
   return [addedLine, formatCartReply(cartData)].join("\n\n");
@@ -1246,6 +1254,7 @@ async function handleAddToCart({
     menuItem,
     quantity,
     knownCartRestaurantId: cartRestaurantId,
+    announceCartReplacement: false,
     meta,
   });
 }
