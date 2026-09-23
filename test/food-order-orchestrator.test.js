@@ -14,6 +14,7 @@ import {
   removeFromCart,
   resolvePendingCartCandidateReply,
   searchMenu,
+  showRestaurantMenu,
   viewCart,
 } from "../src/food-order-orchestrator.js";
 import { PendingAddressSelections } from "../src/pending-address-selection.js";
@@ -865,6 +866,137 @@ test("searchMenu fuzzy-matches against search_food's own candidate list instead 
   assert.equal(menuSearchCalls[0].restaurantIdOfAddedItem, "r-biryani");
   assert.match(reply, /Chicken Tikka Masala — ₹260/);
   assert.match(reply, /at Test Kitchen Biryani House \(Mock\)/);
+});
+
+// --- showRestaurantMenu (backs the agent's get_restaurant_menu tool) ---
+
+function restaurantMenu(items, restaurant = { id: "r-1", name: "Burger Barn" }) {
+  return payload({ restaurant, items });
+}
+
+test("showRestaurantMenu lists the session restaurant's real in-stock dishes with real prices, numbered", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", restaurantName: "Burger Barn" });
+
+  const menuCalls = [];
+  const client = fakeClient({
+    getRestaurantMenu: async (params) => {
+      menuCalls.push(params);
+      return restaurantMenu([
+        { id: "i-1", name: "Classic Cheeseburger", price: 219, inStock: 1 },
+        { id: "i-2", name: "Sold Out Shake", price: 149, inStock: 0 },
+        { id: "i-3", name: "Loaded Fries", price: 179, inStock: 1 },
+      ]);
+    },
+  });
+
+  const reply = await showRestaurantMenu({ senderId: "sender-1", swiggyFoodClient: client, pendingCartSessions });
+
+  assert.deepEqual(menuCalls, [{ addressId: "addr-1", restaurantId: "r-1" }]);
+  assert.match(reply, /Burger Barn menu:/);
+  assert.match(reply, /1\. Classic Cheeseburger — ₹219/);
+  assert.match(reply, /2\. Loaded Fries — ₹179/);
+  assert.doesNotMatch(reply, /Sold Out Shake/);
+});
+
+test("showRestaurantMenu resolves a named restaurant from search_food's candidates and makes it the session restaurant", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", {
+    addressId: "addr-1",
+    restaurantId: "r-old",
+    restaurantName: "Old Place",
+    cartRestaurantId: "r-old",
+    restaurantCandidates: [{ id: "r-sushi", name: "Sushi Central (Mock)" }],
+    itemCandidates: [menuItem()],
+    searchTerm: "sushi",
+  });
+
+  const menuCalls = [];
+  const client = fakeClient({
+    getRestaurantMenu: async (params) => {
+      menuCalls.push(params);
+      return restaurantMenu([{ id: "i-1", name: "Miso Ramen", price: 329, inStock: 1 }], {
+        id: "r-sushi",
+        name: "Sushi Central (Mock)",
+      });
+    },
+  });
+
+  const reply = await showRestaurantMenu({
+    senderId: "sender-1",
+    restaurantName: "Sushi Central",
+    swiggyFoodClient: client,
+    pendingCartSessions,
+  });
+
+  assert.equal(menuCalls[0].restaurantId, "r-sushi");
+  assert.match(reply, /1\. Miso Ramen — ₹329/);
+  // A later add targets the menu's restaurant; the stale numbered lists are
+  // dropped so a bare "1" can't be misread against them; cartRestaurantId is
+  // kept so the cart only flushes on a real restaurant switch.
+  assert.deepEqual(pendingCartSessions.peek("sender-1"), {
+    addressId: "addr-1",
+    restaurantId: "r-sushi",
+    restaurantName: "Sushi Central (Mock)",
+    cartRestaurantId: "r-old",
+  });
+});
+
+test("showRestaurantMenu caps a long menu and says more dishes exist", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", restaurantName: "Burger Barn" });
+
+  const items = Array.from({ length: 45 }, (_, index) => ({ id: `i-${index}`, name: `Dish ${index + 1}`, price: 100, inStock: 1 }));
+  const client = fakeClient({ getRestaurantMenu: async () => restaurantMenu(items) });
+
+  const reply = await showRestaurantMenu({ senderId: "sender-1", swiggyFoodClient: client, pendingCartSessions });
+
+  assert.match(reply, /40\. Dish 40 — ₹100/);
+  assert.doesNotMatch(reply, /41\. Dish 41/);
+  assert.match(reply, /Showing 40 dishes/);
+});
+
+test("showRestaurantMenu asks which restaurant when none is established or named, without calling Swiggy", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", { addressId: "addr-1" });
+
+  let menuCalled = false;
+  const client = fakeClient({
+    getRestaurantMenu: async () => {
+      menuCalled = true;
+      return restaurantMenu([]);
+    },
+  });
+
+  const reply = await showRestaurantMenu({ senderId: "sender-1", swiggyFoodClient: client, pendingCartSessions });
+
+  assert.match(reply, /Which restaurant's menu/);
+  assert.equal(menuCalled, false);
+});
+
+test("showRestaurantMenu reports no active order when no address has been established", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+
+  const reply = await showRestaurantMenu({ senderId: "sender-1", swiggyFoodClient: fakeClient(), pendingCartSessions });
+
+  assert.equal(reply, noActiveOrderReply());
+});
+
+test("showRestaurantMenu never invents a menu when the lookup fails or comes back empty", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", restaurantName: "Burger Barn" });
+
+  const throwingClient = fakeClient({
+    getRestaurantMenu: async () => {
+      throw new Error("boom");
+    },
+  });
+  const failed = await showRestaurantMenu({ senderId: "sender-1", swiggyFoodClient: throwingClient, pendingCartSessions });
+  assert.doesNotMatch(failed, /\d\. /);
+
+  const emptyClient = fakeClient({ getRestaurantMenu: async () => restaurantMenu([]) });
+  const empty = await showRestaurantMenu({ senderId: "sender-1", swiggyFoodClient: emptyClient, pendingCartSessions });
+  assert.match(empty, /couldn't load Burger Barn's menu/);
 });
 
 test("searchMenu reports a friendly message when the named restaurant can't be found", async () => {

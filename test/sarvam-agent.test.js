@@ -507,8 +507,8 @@ test("runAgentTurn returns checkout's own result directly, unphrased, even when 
   assert.match(result, /don't have an order in progress/);
 });
 
-test("runAgentTurn treats every result from checkout/view_cart/find_coupons/apply_coupon as terminal", async () => {
-  for (const toolName of ["checkout", "view_cart", "find_coupons", "apply_coupon"]) {
+test("runAgentTurn treats every result from checkout/view_cart/find_coupons/apply_coupon/get_restaurant_menu as terminal", async () => {
+  for (const toolName of ["checkout", "view_cart", "find_coupons", "apply_coupon", "get_restaurant_menu"]) {
     const client = fakeClient(async () =>
       toolCallResponse([
         {
@@ -529,6 +529,43 @@ test("runAgentTurn treats every result from checkout/view_cart/find_coupons/appl
 
     assert.ok(typeof result === "string" && result.length > 0, `${toolName} should return a terminal result`);
   }
+});
+
+// Confirmed live: with no menu tool, "show me the menu" got a 9-dish menu the
+// agent wrote itself, 8 of which didn't exist. The real menu must reach the
+// user verbatim, with no second completions call to reword it.
+test("runAgentTurn returns get_restaurant_menu's real menu directly, never an agent-written one", async () => {
+  let completionsCalls = 0;
+  const client = fakeClient(async () => {
+    completionsCalls += 1;
+    return toolCallResponse([{ id: "call_1", function: { name: "get_restaurant_menu", arguments: "{}" } }]);
+  });
+
+  const ctx = newContext();
+  ctx.pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", restaurantName: "Burger Barn" });
+
+  const result = await runAgentTurn({
+    message: { from: "sender-1", text: "show me the menu" },
+    swiggyFoodClient: {
+      ...fakeSwiggyClient(),
+      getRestaurantMenu: async () => ({
+        structured: {
+          restaurant: { id: "r-1", name: "Burger Barn" },
+          items: [
+            { id: "i-1", name: "Classic Cheeseburger", price: 219, inStock: 1 },
+            { id: "i-2", name: "Loaded Fries", price: 179, inStock: 1 },
+          ],
+        },
+      }),
+    },
+    ...ctx,
+    nlu,
+    client,
+  });
+
+  assert.equal(completionsCalls, 1);
+  assert.match(result, /1\. Classic Cheeseburger — ₹219/);
+  assert.match(result, /2\. Loaded Fries — ₹179/);
 });
 
 test("runAgentTurn appends a terminal tool's result to conversation history, same as a normal phrased reply", async () => {

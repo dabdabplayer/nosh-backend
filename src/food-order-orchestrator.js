@@ -1817,6 +1817,26 @@ export async function addToCart({
   });
 }
 
+// Prefer a fuzzy match against the restaurant list search_food already
+// showed for THIS session, if any, before falling back to a fresh
+// Swiggy-side name search. Confirmed live: with only a couple of real
+// restaurants in play, an approximate/paraphrased name the agent passes
+// (rather than copying search_food's result verbatim, despite being told
+// to) can fail a live name search repeatedly, burning the tool-call round
+// budget - this list is the same real, already-fetched candidates from
+// moments earlier in this exact conversation, so matching against it
+// fuzzily first is still 100% real data, just more forgiving of an
+// imprecise name.
+async function findRestaurantByNameHint({ session, restaurantName, swiggyFoodClient }) {
+  const hintNormalized = normalizeRestaurantName(restaurantName);
+  const knownCandidate = session.restaurantCandidates?.find((candidate) => {
+    const candidateNormalized = normalizeRestaurantName(candidate.name);
+    return candidateNormalized.includes(hintNormalized) || hintNormalized.includes(candidateNormalized);
+  });
+
+  return knownCandidate ?? (await resolveRestaurant({ swiggyFoodClient, restaurantName, addressId: session.addressId }));
+}
+
 // Tool implementation for the agent's `search_menu` tool (see
 // src/sarvam-agent.js) - lets the agent find a real dish and its real price
 // at a specific restaurant WITHOUT adding anything to the cart, so it can
@@ -1848,24 +1868,7 @@ export async function searchMenu({ senderId, restaurantName, query, swiggyFoodCl
   let resolvedRestaurantName = session.restaurantName;
 
   if (restaurantName) {
-    // Prefer a fuzzy match against the restaurant list search_food already
-    // showed for THIS session, if any, before falling back to a fresh
-    // Swiggy-side name search. Confirmed live: with only a couple of real
-    // restaurants in play, an approximate/paraphrased name the agent passes
-    // (rather than copying search_food's result verbatim, despite being
-    // told to) can fail a live name search repeatedly, burning the
-    // tool-call round budget - this list is the same real, already-fetched
-    // candidates from moments earlier in this exact conversation, so
-    // matching against it fuzzily first is still 100% real data, just more
-    // forgiving of an imprecise name.
-    const knownCandidate = session.restaurantCandidates?.find((candidate) => {
-      const candidateNormalized = normalizeRestaurantName(candidate.name);
-      const hintNormalized = normalizeRestaurantName(restaurantName);
-      return candidateNormalized.includes(hintNormalized) || hintNormalized.includes(candidateNormalized);
-    });
-
-    const restaurant =
-      knownCandidate ?? (await resolveRestaurant({ swiggyFoodClient, restaurantName, addressId: session.addressId }));
+    const restaurant = await findRestaurantByNameHint({ session, restaurantName, swiggyFoodClient });
 
     if (!restaurant) {
       markData(false);
@@ -1885,6 +1888,107 @@ export async function searchMenu({ senderId, restaurantName, query, swiggyFoodCl
 
   markData(true);
   return formatItemSelectionReply(query, resolvedRestaurantName ?? "that restaurant", items);
+}
+
+// get_restaurant_menu returns up to 150 dishes; a WhatsApp message is capped
+// at 4096 characters, so the list is cut well below both.
+const MAX_MENU_ITEMS = 40;
+
+// TERMINAL_TOOLS tool (see src/sarvam-agent.js) - the result goes straight to
+// the user, so the agent can never reword or invent a menu. Backed by Swiggy's
+// real get_restaurant_menu (docs/reference/food/get_restaurant_menu.md: "Browse
+// a restaurant's complete menu... when users want to explore offerings").
+// That tool is browse-only - its items carry `id`, not the menu_item_id/
+// variantsV2 update_food_cart needs, and the docs say to use search_menu for
+// ordering - so adding a dish from this list still goes through add_to_cart,
+// which already resolves it via search_menu.
+export async function showRestaurantMenu({ senderId, restaurantName, swiggyFoodClient, pendingCartSessions, lang = "en" }) {
+  const session = pendingCartSessions.peek(senderId);
+
+  if (!session?.addressId) {
+    return noActiveOrderReply(lang);
+  }
+
+  let restaurantId = session.restaurantId;
+  let resolvedRestaurantName = session.restaurantName;
+
+  if (restaurantName) {
+    const restaurant = await findRestaurantByNameHint({ session, restaurantName, swiggyFoodClient });
+
+    if (!restaurant) {
+      return pick(lang, {
+        en: `Sorry, I couldn't find a restaurant called "${restaurantName}" near you.`,
+        hi: `माफ़ कीजिए, आपके पास "${restaurantName}" नाम का कोई रेस्टोरेंट नहीं मिला।`,
+        hinglish: `Sorry, aapke paas "${restaurantName}" naam ka koi restaurant nahi mila.`,
+      });
+    }
+
+    restaurantId = restaurant.id;
+    resolvedRestaurantName = restaurant.name;
+  }
+
+  if (!restaurantId) {
+    return pick(lang, {
+      en: "Which restaurant's menu would you like to see?",
+      hi: "आप किस रेस्टोरेंट का मेन्यू देखना चाहेंगे?",
+      hinglish: "Aap kis restaurant ka menu dekhna chahenge?",
+    });
+  }
+
+  let menuResult;
+  try {
+    menuResult = await swiggyFoodClient.getRestaurantMenu({ addressId: session.addressId, restaurantId });
+  } catch {
+    return GENERIC_FALLBACK_REPLY;
+  }
+
+  const parsed = parseStructuredPayload(menuResult);
+  const displayName = parsed?.restaurant?.name ?? resolvedRestaurantName ?? "this restaurant";
+  const inStockItems = (Array.isArray(parsed?.items) ? parsed.items : []).filter((item) => item?.inStock !== 0);
+
+  if (inStockItems.length === 0) {
+    return pick(lang, {
+      en: `I couldn't load ${displayName}'s menu right now.`,
+      hi: `अभी ${displayName} का मेन्यू लोड नहीं हो सका।`,
+      hinglish: `Abhi ${displayName} ka menu load nahi ho saka.`,
+    });
+  }
+
+  // Later adds from this list must target this restaurant. Earlier numbered
+  // lists are dropped so a bare "2" can't be resolved against a stale
+  // restaurant/item list by resolvePendingCartCandidateReply; cartRestaurantId
+  // is kept so add_to_cart only flushes the cart on a genuine restaurant switch.
+  const { restaurantCandidates, itemCandidates, searchTerm, ...rest } = session;
+  pendingCartSessions.set(senderId, { ...rest, restaurantId, restaurantName: displayName });
+
+  const shown = inStockItems.slice(0, MAX_MENU_ITEMS);
+  const lines = shown.map((item, index) => {
+    const price = typeof item.price === "number" ? ` — ₹${item.price}` : "";
+    return `${index + 1}. ${item.name}${price}`;
+  });
+
+  const header = pick(lang, {
+    en: `${displayName} menu:`,
+    hi: `${displayName} का मेन्यू:`,
+    hinglish: `${displayName} ka menu:`,
+  });
+
+  const moreNote =
+    inStockItems.length > shown.length || parsed?.truncated === true
+      ? pick(lang, {
+          en: `Showing ${shown.length} dishes — ask for any other dish by name.`,
+          hi: `${shown.length} डिश दिखाई गई हैं — कोई और डिश नाम से पूछें।`,
+          hinglish: `${shown.length} dishes dikhayi gayi hain — koi aur dish naam se poochein.`,
+        })
+      : undefined;
+
+  const footer = pick(lang, {
+    en: "Tell me what you'd like and I'll add it to your cart.",
+    hi: "बताइए आपको क्या चाहिए, मैं कार्ट में जोड़ दूंगा।",
+    hinglish: "Batayein aapko kya chahiye, main cart mein add kar dunga.",
+  });
+
+  return [header, ...lines, moreNote, footer].filter(Boolean).join("\n");
 }
 
 // lang is threaded through to real detected language here (unlike addToCart/
