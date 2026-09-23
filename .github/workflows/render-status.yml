@@ -1,0 +1,35 @@
+name: Sync Render status to Statuspage
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: render-status
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Mirror Render's Singapore status onto the Backend component
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Sync
+        run: node scripts/sync-render-status.js
+        env:
+          STATUSPAGE_API_KEY: ${{ secrets.STATUSPAGE_API_KEY }}
+          STATUSPAGE_PAGE_ID: 458yl4sv1ydn
+          STATUSPAGE_COMPONENT_BACKEND: frgyj866qkx5
