@@ -465,6 +465,81 @@ test("addToCart honors an explicit restaurant name instead of the cross-restaura
   });
 });
 
+test("addToCart switches to a named restaurant that differs from the session's current one", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", {
+    addressId: "addr-1",
+    restaurantId: "r-biryani",
+    restaurantName: "Test Kitchen Biryani House",
+    cartRestaurantId: "r-biryani",
+  });
+
+  const calls = [];
+  const menuSearchCalls = [];
+  const client = fakeClient({
+    searchRestaurants: async () =>
+      payload({ restaurants: [{ id: "r-taco", name: "Taco Fiesta (Mock)", availabilityStatus: "OPEN" }] }),
+    searchMenu: async (params) => {
+      menuSearchCalls.push(params);
+      return payload({ items: [menuItem({ name: "Nachos Supreme" })] });
+    },
+    flushFoodCart: async () => {
+      calls.push("flush");
+      return payload({ success: true });
+    },
+    updateFoodCart: async (params) => {
+      calls.push(`update:${params.restaurantId}`);
+      return cartPayload(cartData({ restaurant: { name: "Taco Fiesta (Mock)" } }));
+    },
+  });
+
+  const reply = await addToCart({
+    senderId: "sender-1",
+    query: "nachos supreme",
+    quantity: 1,
+    restaurantNameHint: "Taco Fiesta",
+    swiggyFoodClient: client,
+    pendingCartSessions,
+  });
+
+  assert.equal(menuSearchCalls[0].restaurantIdOfAddedItem, "r-taco");
+  assert.deepEqual(calls, ["flush", "update:r-taco"]);
+  assert.match(reply, /Added Nachos Supreme to a fresh cart at Taco Fiesta \(Mock\)/);
+  assert.equal(pendingCartSessions.peek("sender-1").cartRestaurantId, "r-taco");
+});
+
+test("addToCart doesn't re-resolve a named restaurant that matches the session's current one", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", {
+    addressId: "addr-1",
+    restaurantId: "r-1",
+    restaurantName: "Test Restaurant (Mock)",
+    cartRestaurantId: "r-1",
+  });
+
+  let restaurantSearchCalled = false;
+  const client = fakeClient({
+    searchRestaurants: async () => {
+      restaurantSearchCalled = true;
+      return payload({ restaurants: [] });
+    },
+    searchMenu: async () => payload({ items: [menuItem()] }),
+    updateFoodCart: async () => cartPayload(cartData()),
+  });
+
+  const reply = await addToCart({
+    senderId: "sender-1",
+    query: "margherita pizza",
+    quantity: 1,
+    restaurantNameHint: "Test Restaurant",
+    swiggyFoodClient: client,
+    pendingCartSessions,
+  });
+
+  assert.equal(restaurantSearchCalled, false);
+  assert.match(reply, /^Added .* to your cart\./);
+});
+
 test("addToCart skips a sponsored ad ranked ahead of the actual named restaurant", async () => {
   const pendingCartSessions = new PendingCartSessions();
   pendingCartSessions.set("sender-1", { addressId: "addr-1" });
@@ -681,32 +756,6 @@ test("addToCart never calls the fuzzy-fallback menu lookup when the exact query 
   await addToCart({ senderId: "sender-1", query: "miso ramen", quantity: 1, swiggyFoodClient: client, pendingCartSessions });
 
   assert.equal(getRestaurantMenuCalled, false);
-});
-
-test("addToCart ignores a restaurant hint once a session restaurant already exists", async () => {
-  const pendingCartSessions = new PendingCartSessions();
-  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", restaurantName: "Existing Place" });
-
-  let restaurantSearchCalled = false;
-  const client = fakeClient({
-    searchRestaurants: async () => {
-      restaurantSearchCalled = true;
-      return payload({ restaurants: [] });
-    },
-    searchMenu: async () => payload({ items: [menuItem()] }),
-    updateFoodCart: async () => cartPayload(cartData()),
-  });
-
-  await addToCart({
-    senderId: "sender-1",
-    query: "margherita pizza",
-    quantity: 1,
-    restaurantNameHint: "Pizza Hut",
-    swiggyFoodClient: client,
-    pendingCartSessions,
-  });
-
-  assert.equal(restaurantSearchCalled, false);
 });
 
 test("addToCart sends the default variant selection, not an invented one", async () => {

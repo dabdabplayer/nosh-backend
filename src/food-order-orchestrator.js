@@ -867,6 +867,12 @@ function normalizeRestaurantName(name) {
     .toLowerCase();
 }
 
+function restaurantNamesMatch(a, b) {
+  const aNormalized = normalizeRestaurantName(a);
+  const bNormalized = normalizeRestaurantName(b);
+  return aNormalized.includes(bNormalized) || bNormalized.includes(aNormalized);
+}
+
 // Resolves a restaurant name the user named (e.g. "from Pizza Hut") to an
 // actual open restaurant via search_restaurants. Confirmed live: a named
 // restaurant often doesn't even appear in a cross-restaurant dish search's
@@ -1164,8 +1170,13 @@ async function addResolvedItemToCart({
 
   pendingCartSessions.set(senderId, { restaurantId, restaurantName, addressId, cartRestaurantId: restaurantId });
 
+  const replacedEarlierCart = knownCartRestaurantId && knownCartRestaurantId !== restaurantId;
+  const addedLine = replacedEarlierCart
+    ? `Added ${menuItem.name} to a fresh cart at ${restaurantName} — your earlier cart's items were removed.`
+    : `Added ${menuItem.name} to your cart.`;
+
   markData(true);
-  return [`Added ${menuItem.name} to your cart.`, formatCartReply(cartData)].join("\n\n");
+  return [addedLine, formatCartReply(cartData)].join("\n\n");
 }
 
 async function handleAddToCart({
@@ -1190,10 +1201,13 @@ async function handleAddToCart({
   let targetRestaurantId = existingRestaurantId;
   let targetRestaurantName = existingRestaurantName;
 
-  // A restaurant the user explicitly named takes priority over whatever
-  // dish search would otherwise turn up - never silently substitute a
-  // different restaurant than the one they asked for.
-  if (!targetRestaurantId && restaurantNameHint) {
+  // A named restaurant takes priority over both dish search and the
+  // session's current restaurant - never silently substitute a different
+  // restaurant than the one asked for.
+  const hintNamesAnotherRestaurant =
+    restaurantNameHint && !(existingRestaurantName && restaurantNamesMatch(existingRestaurantName, restaurantNameHint));
+
+  if (hintNamesAnotherRestaurant) {
     const restaurant = await resolveRestaurant({ swiggyFoodClient, restaurantName: restaurantNameHint, addressId });
 
     if (!restaurant) {

@@ -108,7 +108,8 @@ const ADD_TO_CART_TOOL = Object.freeze({
   type: "function",
   function: {
     name: "add_to_cart",
-    description: "Add a dish to the user's cart, at the restaurant already established in this conversation.",
+    description:
+      "Add a dish to the user's cart. Uses the restaurant already established in this conversation unless restaurantName names a different one.",
     parameters: {
       type: "object",
       properties: {
@@ -116,7 +117,8 @@ const ADD_TO_CART_TOOL = Object.freeze({
         quantity: { type: "integer", description: "How many, if stated. Defaults to 1." },
         restaurantName: {
           type: "string",
-          description: "The restaurant the user explicitly named, if they named one. Omit if they didn't say.",
+          description:
+            "The restaurant this dish is from: the one the user named, or the one a tool result (e.g. a recommendation) showed this dish at. Copy the name exactly as shown. Omit only if neither applies.",
         },
       },
       required: ["query"],
