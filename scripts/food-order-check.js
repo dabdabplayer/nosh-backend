@@ -5,21 +5,21 @@
 //
 // This replicates src/server.js's buildReplyText dispatch order (pending
 // order confirmation -> deterministic address/candidate short-circuits ->
-// the Sarvam agent) message by message, the same decision logic
+// the Qwen agent) message by message, the same decision logic
 // scripts/oauth-connect-check.js uses for its interactive/real-OAuth flow -
 // just non-interactive, and swapping the real per-sender OAuth token for
 // the same SWIGGY_FOOD_TEST_TOKEN dev bypass.
 //
-// Requires NLU_API_KEY (real Sarvam) - the agent decides on its own which
+// Requires AGENT_API_KEY + AGENT_BASE_URL (real Qwen) - the agent decides on its own which
 // tool to call, there's no more literal "find X" trigger. A bare numeric
 // restaurant/item pick (e.g. "1") is the one exception; it's still resolved
 // deterministically, no agent call needed.
 //
 // Usage:
-//   SWIGGY_FOOD_MCP_URL=... SWIGGY_FOOD_TEST_TOKEN=... NLU_API_KEY=... \
+//   SWIGGY_FOOD_MCP_URL=... SWIGGY_FOOD_TEST_TOKEN=... AGENT_API_KEY=... AGENT_BASE_URL=... \
 //     node scripts/food-order-check.js \
 //     "I want biryani" "1" "add a margherita pizza" "checkout" "yes"
-//   SWIGGY_FOOD_MCP_URL=... SWIGGY_FOOD_TEST_TOKEN=... NLU_API_KEY=... \
+//   SWIGGY_FOOD_MCP_URL=... SWIGGY_FOOD_TEST_TOKEN=... AGENT_API_KEY=... AGENT_BASE_URL=... \
 //     node scripts/food-order-check.js "reorder my usual" "checkout" "yes"
 
 import { config } from "../src/config.js";
@@ -33,7 +33,7 @@ import { PendingAddressSelections } from "../src/pending-address-selection.js";
 import { PendingCartSessions } from "../src/pending-cart-sessions.js";
 import { PendingConversationHistory } from "../src/pending-conversation-history.js";
 import { PendingOrderConfirmations } from "../src/pending-order-confirmations.js";
-import { runAgentTurn } from "../src/sarvam-agent.js";
+import { runAgentTurn } from "../src/agent.js";
 import { createSwiggyFoodClient } from "../src/swiggy-food-client.js";
 
 const messages = process.argv.slice(2);
@@ -57,10 +57,10 @@ if (messages.length === 0) {
   const pendingOrderConfirmations = new PendingOrderConfirmations();
   const pendingConversationHistory = new PendingConversationHistory();
 
-  if (!config.nlu.enabled) {
+  if (!config.agent.enabled) {
     console.warn(
-      "The NLU provider isn't configured (no NLU_API_KEY) - only numeric restaurant/item picks will work. " +
-        "Set NLU_API_KEY (see .env.example) to exercise the agent.",
+      "The agent isn't configured (no AGENT_API_KEY) - only numeric restaurant/item picks will work. " +
+        "Set AGENT_API_KEY and AGENT_BASE_URL (see .env.example) to exercise the agent.",
     );
   }
 
@@ -131,7 +131,7 @@ if (messages.length === 0) {
       pendingOrderConfirmations,
       pendingAddressSelections,
       pendingConversationHistory,
-      nlu: config.nlu,
+      agent: config.agent,
     });
 
     return reply ?? "(no reply — placeholder would be used)";

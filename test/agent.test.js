@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { runAgentTurn, TOOLS } from "../src/sarvam-agent.js";
+import { runAgentTurn, TOOLS } from "../src/agent.js";
+import { createSarvamTranslator } from "../src/sarvam-translator.js";
 import { PendingAddressSelections } from "../src/pending-address-selection.js";
 import { PendingCartSessions } from "../src/pending-cart-sessions.js";
 import { PendingConversationHistory } from "../src/pending-conversation-history.js";
 import { PendingOrderConfirmations } from "../src/pending-order-confirmations.js";
 
-const nlu = Object.freeze({ apiKey: "test-key", baseUrl: "https://example.test", model: "sarvam-105b", timeoutMs: 1000, reasoningEffort: "low" });
+const agent = Object.freeze({ apiKey: "test-key", baseUrl: "https://example.test", model: "qwen3.8-flash", timeoutMs: 1000, thinkingBudget: 1024 });
 
 function toolCallResponse(toolCalls) {
   return { choices: [{ message: { tool_calls: toolCalls } }] };
@@ -47,7 +48,7 @@ function newContext(overrides = {}) {
 
 // Structural safety net: the agent must never be able to place or confirm
 // an order directly - see AGENTS.md's Commerce Safety rule and the comment
-// on CHECKOUT_TOOL in src/sarvam-agent.js.
+// on CHECKOUT_TOOL in src/agent.js.
 test("TOOLS never exposes place_food_order or confirm_order", () => {
   const names = TOOLS.map((tool) => tool.function.name);
   assert.ok(!names.includes("place_food_order"));
@@ -62,7 +63,7 @@ test("runAgentTurn returns the model's final content when it calls no tool", asy
     message: { from: "sender-1", text: "hi" },
     swiggyFoodClient: fakeSwiggyClient(),
     ...ctx,
-    nlu,
+    agent,
     client,
   });
 
@@ -77,7 +78,7 @@ test("runAgentTurn returns undefined when the model returns empty content and no
     message: { from: "sender-1", text: "whatever" },
     swiggyFoodClient: fakeSwiggyClient(),
     ...ctx,
-    nlu,
+    agent,
     client,
   });
 
@@ -103,7 +104,7 @@ test("runAgentTurn executes a tool call and feeds the result back for the final 
     message: { from: "sender-1", text: "I want biryani" },
     swiggyFoodClient: fakeSwiggyClient(),
     ...ctx,
-    nlu,
+    agent,
     client,
   });
 
@@ -142,7 +143,7 @@ test("runAgentTurn routes a search_menu tool call without touching the cart", as
     message: { from: "sender-1", text: "what should I get" },
     swiggyFoodClient: fakeSwiggyClient(),
     ...ctx,
-    nlu,
+    agent,
     client,
   });
 
@@ -203,7 +204,7 @@ test("runAgentTurn short-circuits a second search_menu call once the first alrea
     message: { from: "sender-1", text: "what should I get" },
     swiggyFoodClient,
     ...ctx,
-    nlu,
+    agent,
     client,
   });
 
@@ -263,7 +264,7 @@ test("runAgentTurn short-circuits a search_food call too once search_menu alread
     message: { from: "sender-1", text: "what should I get" },
     swiggyFoodClient,
     ...ctx,
-    nlu,
+    agent,
     client,
   });
 
@@ -320,7 +321,7 @@ test("runAgentTurn short-circuits ANY tool call once search_menu already found a
     message: { from: "sender-1", text: "what should I get" },
     swiggyFoodClient,
     ...ctx,
-    nlu,
+    agent,
     client,
   });
 
@@ -338,7 +339,7 @@ test("runAgentTurn appends the exchange to conversation history on success", asy
     message: { from: "sender-1", text: "hi" },
     swiggyFoodClient: fakeSwiggyClient(),
     ...ctx,
-    nlu,
+    agent,
     client,
   });
 
@@ -360,7 +361,7 @@ test("runAgentTurn does not touch conversation history when the model returns no
     message: { from: "sender-1", text: "hi" },
     swiggyFoodClient: fakeSwiggyClient(),
     ...ctx,
-    nlu,
+    agent,
     client,
   });
 
@@ -371,7 +372,7 @@ test("runAgentTurn caps tool-call rounds and returns undefined rather than loopi
   let callCount = 0;
   const client = fakeClient(async () => {
     callCount += 1;
-    // A non-terminal tool (see TERMINAL_TOOLS in sarvam-agent.js) - the
+    // A non-terminal tool (see TERMINAL_TOOLS in agent.js) - the
     // point of this test is the round cap on genuine looping, which a
     // terminal tool would never reach (it short-circuits on round 1).
     return toolCallResponse([
@@ -388,7 +389,7 @@ test("runAgentTurn caps tool-call rounds and returns undefined rather than loopi
     message: { from: "sender-1", text: "keep going" },
     swiggyFoodClient: fakeSwiggyClient(),
     ...ctx,
-    nlu,
+    agent,
     client,
   });
 
@@ -431,7 +432,7 @@ test("runAgentTurn survives a Swiggy call throwing inside a non-terminal tool, f
     pendingOrderConfirmations: ctx.pendingOrderConfirmations,
     pendingAddressSelections: ctx.pendingAddressSelections,
     pendingConversationHistory: ctx.pendingConversationHistory,
-    nlu,
+    agent,
     client,
   });
 
@@ -442,7 +443,7 @@ test("runAgentTurn survives a Swiggy call throwing inside a non-terminal tool, f
 // search_food's address-disambiguation prompt): 2026-09-21 product
 // decision - the agent only ever DECIDES to call these, it never phrases,
 // translates, or adds commentary to what they say. See TERMINAL_TOOLS in
-// sarvam-agent.js and AGENTS.md's hallucinated-order-confirmation gotcha.
+// agent.js and AGENTS.md's hallucinated-order-confirmation gotcha.
 
 test("runAgentTurn returns a terminal tool's own result directly, with no second completions call to phrase it", async () => {
   let completionsCallCount = 0;
@@ -458,7 +459,7 @@ test("runAgentTurn returns a terminal tool's own result directly, with no second
     message: { from: "sender-1", text: "what's in my cart" },
     swiggyFoodClient: fakeSwiggyClient({ getFoodCart: async () => ({ structured: { statusCode: 0, data: { items: [] } } }) }),
     ...ctx,
-    nlu,
+    agent,
     client,
   });
 
@@ -478,7 +479,7 @@ test("runAgentTurn threads lang through to a terminal tool's result", async () =
     message: { from: "sender-1", text: "mera cart dikhao" },
     swiggyFoodClient: fakeSwiggyClient({ getFoodCart: async () => ({ structured: { statusCode: 0, data: { items: [] } } }) }),
     ...ctx,
-    nlu,
+    agent,
     client,
     lang: "hi",
   });
@@ -499,7 +500,7 @@ test("runAgentTurn returns checkout's own result directly, unphrased, even when 
     message: { from: "sender-1", text: "checkout" },
     swiggyFoodClient: fakeSwiggyClient(),
     ...ctx,
-    nlu,
+    agent,
     client,
   });
 
@@ -523,7 +524,7 @@ test("runAgentTurn treats every result from checkout/view_cart/find_coupons/appl
       message: { from: "sender-1", text: "go" },
       swiggyFoodClient: fakeSwiggyClient(),
       ...ctx,
-      nlu,
+      agent,
       client,
     });
 
@@ -570,7 +571,7 @@ test("runAgentTurn does not run a terminal tool bundled with ordinary tool calls
       },
     },
     ...ctx,
-    nlu,
+    agent,
     client,
   });
 
@@ -610,7 +611,7 @@ test("runAgentTurn returns get_restaurant_menu's real menu directly, never an ag
       }),
     },
     ...ctx,
-    nlu,
+    agent,
     client,
   });
 
@@ -627,7 +628,7 @@ test("runAgentTurn appends a terminal tool's result to conversation history, sam
     message: { from: "sender-1", text: "checkout" },
     swiggyFoodClient: fakeSwiggyClient(),
     ...ctx,
-    nlu,
+    agent,
     client,
   });
 
@@ -662,7 +663,7 @@ test("runAgentTurn treats an ordinary search_food restaurant list as non-termina
     message: { from: "sender-1", text: "I want biryani" },
     swiggyFoodClient: fakeSwiggyClient(),
     ...ctx,
-    nlu,
+    agent,
     client,
   });
 
@@ -696,7 +697,7 @@ test("runAgentTurn treats search_food's address-disambiguation prompt as termina
     message: { from: "sender-1", text: "I want biryani" },
     swiggyFoodClient,
     ...ctx,
-    nlu,
+    agent,
     client,
   });
 
@@ -729,7 +730,7 @@ test("runAgentTurn treats recommend_similar's address-disambiguation prompt as t
     message: { from: "sender-1", text: "suggest something" },
     swiggyFoodClient,
     ...ctx,
-    nlu,
+    agent,
     client,
   });
 
@@ -776,7 +777,7 @@ test("runAgentTurn discards a hallucinated final reply and relays recommend_simi
     message: { from: "sender-1", text: "suggest something" },
     swiggyFoodClient,
     ...ctx,
-    nlu,
+    agent,
     client,
   });
 
@@ -809,7 +810,7 @@ test("runAgentTurn discards a fabricated order-summary reply that never came fro
     message: { from: "sender-1", text: "yes" },
     swiggyFoodClient: fakeSwiggyClient(),
     ...ctx,
-    nlu,
+    agent,
     client,
   });
 
@@ -848,7 +849,7 @@ test("runAgentTurn discards a fabricated 'added to cart' claim when add_to_cart'
     message: { from: "sender-1", text: "add a nonexistent snack" },
     swiggyFoodClient: fakeSwiggyClient({ searchMenu: async () => ({ structured: { items: [] } }) }),
     ...ctx,
-    nlu,
+    agent,
     client,
   });
 
@@ -891,7 +892,7 @@ function addToCartSwitchingRestaurant({ cartRestaurantId }) {
       updateFoodCart: async () => ({ structured: { statusCode: 0, data: { items: [{ name: "Miso Ramen", quantity: 1 }] } } }),
     },
     ...ctx,
-    nlu,
+    agent,
     client,
   });
 }
@@ -944,9 +945,186 @@ test("runAgentTurn lets the agent phrase its own apology when add_to_cart throws
       },
     },
     ...ctx,
-    nlu,
+    agent,
     client,
   });
 
   assert.equal(result, "Sorry, something went wrong adding that — want to try again?");
+});
+
+function fakeSarvam(translateImpl) {
+  const calls = [];
+  const translator = createSarvamTranslator({
+    client: {
+      text: {
+        translate: async (request) => {
+          calls.push(request);
+          return translateImpl(request);
+        },
+      },
+    },
+  });
+  return { translator, calls };
+}
+
+test("runAgentTurn sends Qwen's thinking controls and never tool_choice or reasoning_effort", async () => {
+  const requests = [];
+  const client = fakeClient(async (request) => {
+    requests.push(request);
+    return textResponse("Hi!");
+  });
+
+  await runAgentTurn({ message: { from: "sender-1", text: "hi" }, swiggyFoodClient: fakeSwiggyClient(), ...newContext(), agent, client });
+  await runAgentTurn({
+    message: { from: "sender-1", text: "hi" },
+    swiggyFoodClient: fakeSwiggyClient(),
+    ...newContext(),
+    agent: { ...agent, thinkingBudget: 0 },
+    client,
+  });
+
+  assert.equal(requests[0].model, "qwen3.8-flash");
+  assert.equal(requests[0].enable_thinking, true);
+  assert.equal(requests[0].thinking_budget, 1024);
+  assert.equal(requests[1].enable_thinking, false);
+  assert.equal("thinking_budget" in requests[1], false);
+  for (const request of requests) {
+    assert.equal("tool_choice" in request, false);
+    assert.equal("reasoning_effort" in request, false);
+  }
+});
+
+test("runAgentTurn translates a Hindi message to English for the model and the reply back to Hindi", async () => {
+  const seenByModel = [];
+  const client = fakeClient(async ({ messages }) => {
+    seenByModel.push(messages.at(-1).content);
+    return textResponse("Sure, what would you like?");
+  });
+  const { translator, calls } = fakeSarvam(async (request) => ({
+    translated_text: request.target_language_code === "en-IN" ? "I want to order food" : "ज़रूर, आपको क्या चाहिए?",
+  }));
+
+  const ctx = newContext();
+  const result = await runAgentTurn({
+    message: { from: "sender-1", text: "मुझे खाना ऑर्डर करना है" },
+    swiggyFoodClient: fakeSwiggyClient(),
+    ...ctx,
+    agent,
+    client,
+    translator,
+    lang: "hi",
+  });
+
+  assert.equal(seenByModel[0], "I want to order food");
+  assert.equal(result, "ज़रूर, आपको क्या चाहिए?");
+  assert.equal(calls[0].source_language_code, "hi-IN");
+  assert.equal(calls[1].target_language_code, "hi-IN");
+  assert.deepEqual(
+    ctx.pendingConversationHistory.peek("sender-1").map((turn) => turn.content),
+    ["I want to order food", "Sure, what would you like?"],
+  );
+});
+
+test("runAgentTurn makes no Sarvam calls for an English conversation", async () => {
+  const { translator, calls } = fakeSarvam(async () => ({ translated_text: "unused" }));
+
+  const result = await runAgentTurn({
+    message: { from: "sender-1", text: "show me pizza places" },
+    swiggyFoodClient: fakeSwiggyClient(),
+    ...newContext(),
+    agent,
+    client: fakeClient(async () => textResponse("Here you go.")),
+    translator,
+    lang: "en",
+  });
+
+  assert.equal(result, "Here you go.");
+  assert.equal(calls.length, 0);
+});
+
+test("runAgentTurn replies in Hinglish as romanized code-mixed text", async () => {
+  const { translator, calls } = fakeSarvam(async (request) => ({
+    translated_text: request.target_language_code === "en-IN" ? "show my options" : "Yeh rahe aapke options.",
+  }));
+
+  const result = await runAgentTurn({
+    message: { from: "sender-1", text: "mujhe options dikhao" },
+    swiggyFoodClient: fakeSwiggyClient(),
+    ...newContext(),
+    agent,
+    client: fakeClient(async () => textResponse("Here are your options.")),
+    translator,
+    lang: "hinglish",
+  });
+
+  assert.equal(result, "Yeh rahe aapke options.");
+  assert.equal(calls[0].source_language_code, "auto");
+  assert.deepEqual(
+    { target: calls[1].target_language_code, mode: calls[1].mode, script: calls[1].output_script },
+    { target: "hi-IN", mode: "code-mixed", script: "roman" },
+  );
+});
+
+test("runAgentTurn never re-translates a terminal tool's already-localized reply", async () => {
+  const { translator, calls } = fakeSarvam(async (request) => ({
+    translated_text: request.target_language_code === "en-IN" ? "show my cart" : "SHOULD NOT APPEAR",
+  }));
+  const cart = { structured: { statusCode: 0, data: { items: [{ name: "Chicken Biryani", quantity: 1, total: 249 }] } } };
+
+  const ctx = newContext();
+  ctx.pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r1", restaurantName: "Test Biryani House" });
+
+  const result = await runAgentTurn({
+    message: { from: "sender-1", text: "मेरी कार्ट दिखाओ" },
+    swiggyFoodClient: { ...fakeSwiggyClient(), getFoodCart: async () => cart },
+    ...ctx,
+    agent,
+    client: fakeClient(async () => toolCallResponse([{ id: "call_1", function: { name: "view_cart", arguments: "{}" } }])),
+    translator,
+    lang: "hi",
+  });
+
+  assert.doesNotMatch(result, /SHOULD NOT APPEAR/);
+  assert.match(result, /Chicken Biryani/);
+  assert.equal(calls.filter((call) => call.target_language_code !== "en-IN").length, 0);
+});
+
+test("runAgentTurn never translates the fabricated-confirmation redirect, so YES/NO handling stays in code", async () => {
+  const { translator, calls } = fakeSarvam(async () => ({ translated_text: "translated" }));
+
+  const result = await runAgentTurn({
+    message: { from: "sender-1", text: "ok" },
+    swiggyFoodClient: fakeSwiggyClient(),
+    ...newContext(),
+    agent,
+    client: fakeClient(async () => textResponse("Order summary: 1x Pepsi. Reply YES to place it or NO to cancel.")),
+    translator,
+    lang: "hinglish",
+  });
+
+  assert.match(result, /checkout/);
+  assert.equal(calls.length, 0);
+});
+
+test("runAgentTurn falls back to the untranslated text when Sarvam fails", async () => {
+  const { translator } = fakeSarvam(async () => {
+    throw new Error("sarvam down");
+  });
+  const seenByModel = [];
+
+  const result = await runAgentTurn({
+    message: { from: "sender-1", text: "मुझे बिरयानी चाहिए" },
+    swiggyFoodClient: fakeSwiggyClient(),
+    ...newContext(),
+    agent,
+    client: fakeClient(async ({ messages }) => {
+      seenByModel.push(messages.at(-1).content);
+      return textResponse("Let me look for biryani.");
+    }),
+    translator,
+    lang: "hi",
+  });
+
+  assert.equal(seenByModel[0], "मुझे बिरयानी चाहिए");
+  assert.equal(result, "Let me look for biryani.");
 });

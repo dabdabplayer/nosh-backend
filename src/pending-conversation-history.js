@@ -1,5 +1,5 @@
 // In-memory, per-process store of a WhatsApp sender's recent conversation
-// turns with the Sarvam agent (src/sarvam-agent.js) - gives the agent
+// turns with the Sarvam agent (src/agent.js) - gives the agent
 // context across a whole ordering session (e.g. "the biryani place" still
 // resolving correctly two messages later) without re-deriving it from
 // scratch every turn. No TTL, no persistence across restarts, same

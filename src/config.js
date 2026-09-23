@@ -11,61 +11,22 @@ const DEFAULT_SWIGGY_OAUTH_BASE_URL = "https://mcp.swiggy.com/auth";
 const DEFAULT_SWIGGY_OAUTH_CLIENT_ID = "swiggy-mcp";
 const DEFAULT_SWIGGY_OAUTH_REDIRECT_URI = "https://whatsapp-test-webhook-low-latency.onrender.com/oauth/swiggy/callback";
 const DEFAULT_SWIGGY_TOKEN_STORE_PATH = "data/swiggy-tokens.json";
-// Sarvam AI's chat completions - https://docs.sarvam.ai/api/api-guides-tutorials/chat-completion/overview
-// V1 endpoint (not the beta V2) serves sarvam-105b; confirmed via that doc's
-// own worked tool-calling example, which matches this app's request shape
-// (tools + tool_choice: "auto", message.tool_calls with stringified JSON
-// arguments) field-for-field. This must be the bare origin, NOT
-// "https://api.sarvam.ai/v1" - the sarvamai SDK's ChatClient appends
-// "v1/chat/completions" to whatever baseUrl it's given itself (see
-// node_modules/sarvamai/dist/cjs/api/resources/chat/client/Client.js and
-// its own default in environments.js, SarvamAIEnvironment.Production.base).
-// Including "/v1" here produces "https://api.sarvam.ai/v1/v1/chat/completions",
-// a real 404 confirmed live in production right after the sarvam-agent.js
-// rollout (Render logs: { name: 'SarvamAIError', message: 'Status code:
-// 404\nBody: {"error":{"message":"Not Found","code":"not_found_error"}}' })
-// - a regression from the old nlu-client.js, which built this URL with a
-// plain fetch and needed "/v1" baked into the base for that reason; the SDK
-// does not.
+// Sarvam is now used only to translate Hindi/Hinglish to English for the
+// agent and the agent's English replies back (src/sarvam-translator.js).
 const DEFAULT_NLU_BASE_URL = "https://api.sarvam.ai";
-const DEFAULT_NLU_MODEL = "sarvam-105b";
-// The prior NVIDIA NIM provider had real, sometimes multi-second latency in
-// production (an 8s timeout was aborting almost every classification call,
-// later raised to 25s). A hanging call is still worse than one that fails
-// closed - see AGENTS.md's rate-limit gotcha on why runAgentTurn never
-// retries a Sarvam-call failure itself.
-// Raised 25s -> 35s on 2026-09-21: confirmed live via Render logs
-// (`SarvamAIError, message: '"timeout"'`) - this is per-completions-call,
-// not a cumulative per-turn budget (the SDK applies it per HTTP request,
-// confirmed by reading its Client.js), but a LATER round in a multi-tool
-// agent turn carries more accumulated context (system prompt + growing
-// tool-result history) than an early one, so later rounds are more likely
-// to run long - and reasoning_effort was just raised to "medium" and
-// MAX_TOOL_ROUNDS to 8 in this same session, both of which make a slow
-// later-round call more likely, not less. Two timeouts were observed
-// across one day of testing (one before the reasoning_effort change, one
-// after) - a real but occasional failure, not a chronic one; this raise
-// gives genuinely slow responses more room without changing the
-// fail-closed behavior on a call that's actually stuck.
-const DEFAULT_NLU_TIMEOUT_MS = 35_000;
-// The prior NVIDIA NIM classifier disabled reasoning entirely (single-shot
-// intent classification gained nothing from it). The Sarvam agent
-// (src/sarvam-agent.js) does real multi-step reasoning - tool sequencing,
-// judging what's "similar but not identical" for a recommendation.
-// Raised from "low" to "medium" on 2026-09-21 after live testing: with
-// "low", several prompt-only instructions (language-mirroring the LATEST
-// message, not hallucinating a consolation option, reply brevity) weren't
-// holding reliably even after being stated explicitly - by the time this
-// changed, the system prompt had grown to 9 dense rules, which "low" may
-// simply not have the budget to reliably juggle all of at once. This is a
-// genuine experiment, not a confirmed fix - "medium" costs more latency
-// per turn and eats further into the 40 req/min Starter-tier budget (see
-// the rate-limit gotcha below), and hasn't itself been verified live yet.
-// If instruction-following is still unreliable after this, that's real
-// signal the system prompt itself needs trimming/restructuring, not that
-// reasoning_effort should keep climbing.
-const DEFAULT_NLU_REASONING_EFFORT = "medium";
-const VALID_REASONING_EFFORTS = new Set(["low", "medium", "high"]);
+const DEFAULT_NLU_TIMEOUT_MS = 15_000;
+
+// The agent (src/agent.js) runs on Qwen via Alibaba Cloud Model Studio's
+// OpenAI-compatible Chat Completions endpoint. There is deliberately no
+// default base URL: the endpoint is per region/workspace, and the region
+// decides where users' messages, carts and addresses are processed.
+const DEFAULT_AGENT_MODEL = "qwen3.8-flash";
+// Per completions call, not per turn - later rounds of a multi-tool turn
+// carry more context and run longer.
+const DEFAULT_AGENT_TIMEOUT_MS = 35_000;
+// qwen3.8-flash thinks by default; the budget caps reasoning tokens per
+// call (documented range 1-32768). 0 turns thinking off.
+const DEFAULT_AGENT_THINKING_BUDGET = 2048;
 
 function readPort(value) {
   if (value === undefined || value === "") {
@@ -173,39 +134,40 @@ function readTestModeFlag(value) {
 
 const swiggyTestModeEnabled = readTestModeFlag(process.env.SWIGGY_TEST_MODE);
 
+function readNonNegativeInteger(value, name, defaultValue, { allowZero = false } = {}) {
+  if (value === undefined || value === "") {
+    return defaultValue;
+  }
+
+  const parsed = Number(value);
+
+  if (!Number.isInteger(parsed) || parsed < 0 || (!allowZero && parsed === 0)) {
+    throw new Error(`${name} must be a ${allowZero ? "non-negative" : "positive"} integer.`);
+  }
+
+  return parsed;
+}
+
 const nluApiKey = readOptionalSecret(process.env.NLU_API_KEY, "NLU_API_KEY");
 const nluBaseUrl = readOptionalSecret(process.env.NLU_BASE_URL, "NLU_BASE_URL") ?? DEFAULT_NLU_BASE_URL;
-const nluModel = readOptionalSecret(process.env.NLU_MODEL, "NLU_MODEL") ?? DEFAULT_NLU_MODEL;
+const nluTimeoutMs = readNonNegativeInteger(process.env.NLU_TIMEOUT_MS, "NLU_TIMEOUT_MS", DEFAULT_NLU_TIMEOUT_MS);
 
-function readNluTimeoutMs(value) {
-  if (value === undefined || value === "") {
-    return DEFAULT_NLU_TIMEOUT_MS;
-  }
+const agentApiKey = readOptionalSecret(process.env.AGENT_API_KEY, "AGENT_API_KEY");
+const agentBaseUrl = readOptionalSecret(process.env.AGENT_BASE_URL, "AGENT_BASE_URL");
+const agentModel = readOptionalSecret(process.env.AGENT_MODEL, "AGENT_MODEL") ?? DEFAULT_AGENT_MODEL;
+const agentTimeoutMs = readNonNegativeInteger(process.env.AGENT_TIMEOUT_MS, "AGENT_TIMEOUT_MS", DEFAULT_AGENT_TIMEOUT_MS);
+const agentThinkingBudget = readNonNegativeInteger(
+  process.env.AGENT_THINKING_BUDGET,
+  "AGENT_THINKING_BUDGET",
+  DEFAULT_AGENT_THINKING_BUDGET,
+  { allowZero: true },
+);
 
-  const timeoutMs = Number(value);
-
-  if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
-    throw new Error("NLU_TIMEOUT_MS must be a positive integer.");
-  }
-
-  return timeoutMs;
+if (agentApiKey && !agentBaseUrl) {
+  throw new Error(
+    "AGENT_BASE_URL is required when AGENT_API_KEY is set - use the Model Studio Chat Completions endpoint for your region/workspace (ending in /compatible-mode/v1).",
+  );
 }
-
-const nluTimeoutMs = readNluTimeoutMs(process.env.NLU_TIMEOUT_MS);
-
-function readReasoningEffort(value) {
-  if (value === undefined || value === "") {
-    return DEFAULT_NLU_REASONING_EFFORT;
-  }
-
-  if (!VALID_REASONING_EFFORTS.has(value)) {
-    throw new Error('NLU_REASONING_EFFORT must be "low", "medium", or "high".');
-  }
-
-  return value;
-}
-
-const nluReasoningEffort = readReasoningEffort(process.env.NLU_REASONING_EFFORT);
 
 const swiggyOAuthClientId =
   readOptionalSecret(process.env.SWIGGY_OAUTH_CLIENT_ID, "SWIGGY_OAUTH_CLIENT_ID") ??
@@ -295,13 +257,19 @@ export const config = Object.freeze({
     testToken: swiggyFoodTestToken,
     testModeEnabled: swiggyTestModeEnabled,
   }),
-  nlu: Object.freeze({
+  translation: Object.freeze({
     apiKey: nluApiKey,
     baseUrl: nluBaseUrl,
     enabled: Boolean(nluApiKey),
-    model: nluModel,
     timeoutMs: nluTimeoutMs,
-    reasoningEffort: nluReasoningEffort,
+  }),
+  agent: Object.freeze({
+    apiKey: agentApiKey,
+    baseUrl: agentBaseUrl,
+    enabled: Boolean(agentApiKey),
+    model: agentModel,
+    timeoutMs: agentTimeoutMs,
+    thinkingBudget: agentThinkingBudget,
   }),
   swiggyOAuth: Object.freeze({
     authBaseUrl: swiggyOAuthBaseUrl,

@@ -24,7 +24,7 @@ export const PRIVACY_POLICY_HTML = `<!doctype html>
 </head>
 <body>
 <h1>Nosh Privacy Policy</h1>
-<p class="updated">Last updated: 20 September 2026</p>
+<p class="updated">Last updated: 23 September 2026</p>
 
 <p>Nosh Labs ("Nosh", "we", "us") operates Nosh, a WhatsApp-based conversational
 assistant that helps you search for restaurants, build a cart, and place
@@ -47,8 +47,9 @@ message Nosh on WhatsApp and how we handle it.</p>
   <li>To understand what you're asking for and carry out the requests you
   make in the conversation - searching restaurants, updating your cart,
   applying coupons, and placing orders you explicitly confirm.</li>
-  <li>Message text is sent to a third-party AI service we use to interpret
-  your requests (see "Third parties" below).</li>
+  <li>Message text, and the Swiggy data needed to answer it, is sent to
+  third-party AI services we use to interpret your requests, translate
+  between languages, and write replies (see "Third parties" below).</li>
   <li><strong>Troubleshooting.</strong> We keep a short-lived, encrypted log
   of your messages to Nosh and Nosh's replies, so that if you report
   something went wrong, we can look at what actually happened in that
@@ -69,9 +70,15 @@ message Nosh on WhatsApp and how we handle it.</p>
   data; Nosh only accesses what's needed to act on your request, and Swiggy's
   own terms prohibit us from using that data for training, profiling, or any
   purpose beyond fulfilling it.</li>
-  <li><strong>Sarvam AI</strong> - processes the text of your message
-  in real time to help Nosh understand your request. Sarvam AI is not given
-  your Swiggy account data.</li>
+  <li><strong>Alibaba Cloud (Qwen)</strong> - the AI model that interprets
+  your request, decides what to look up on Swiggy, and writes Nosh's replies.
+  To do that it receives the text of your messages and the Swiggy data
+  needed for the current request, such as restaurant and menu results, your
+  cart, and the labels of your saved addresses.</li>
+  <li><strong>Sarvam AI</strong> - translates messages you write in Hindi or
+  Hinglish into English for the model above, and translates Nosh's replies
+  back into your language. It receives only the text being translated, which
+  can include restaurant names, dishes, and prices from Nosh's replies.</li>
 </ul>
 <p>We do not sell your data, and we do not share it with any other third
 party.</p>
@@ -99,7 +106,7 @@ conversation with Nosh on WhatsApp, or general questions about this policy,
 contact us using the details below.</p>
 
 <h2>6. Security</h2>
-<p>Data in transit between Nosh, WhatsApp, Swiggy, and our AI processor is
+<p>Data in transit between Nosh, WhatsApp, Swiggy, and our AI processors is
 encrypted. Access to stored connection tokens and the troubleshooting log
 described above is limited to what Nosh's service needs to operate, and
 both are encrypted at rest, with your phone number stored only in

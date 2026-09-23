@@ -32,7 +32,7 @@ import { PendingConversationHistory } from "../src/pending-conversation-history.
 import { PendingOAuthExchanges } from "../src/pending-oauth-exchanges.js";
 import { PendingOrderConfirmations } from "../src/pending-order-confirmations.js";
 import { PendingPostAuthActions } from "../src/pending-post-auth-actions.js";
-import { runAgentTurn } from "../src/sarvam-agent.js";
+import { runAgentTurn } from "../src/agent.js";
 import { createSwiggyFoodClient } from "../src/swiggy-food-client.js";
 import { buildConnectReplyText, resolveSwiggyAccessToken } from "../src/swiggy-auth-flow.js";
 import {
@@ -184,7 +184,7 @@ if (!config.swiggyFood.enabled) {
         pendingOrderConfirmations,
         pendingAddressSelections,
         pendingConversationHistory,
-        nlu: config.nlu,
+        agent: config.agent,
       });
       return reply ?? "(no reply — placeholder would be used)";
     } finally {

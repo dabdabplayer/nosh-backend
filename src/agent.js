@@ -1,5 +1,5 @@
-import { SarvamAIClient } from "sarvamai";
-import { pick } from "./language-preference.js";
+import { createQwenClient } from "./qwen-client.js";
+import { detectLanguage, pick } from "./language-preference.js";
 import { searchFood } from "./food-search-orchestrator.js";
 import {
   addToCart,
@@ -17,7 +17,7 @@ import {
 // History: this was raised from 4 -> 6 -> 8 because a recommendation turn
 // used to need recommend_similar (text-only) + agent-driven search_food +
 // one-or-more agent-driven search_menu retries + a final text round - each
-// retry was a full Sarvam round-trip, and REJECTING a recommendation needed
+// retry was a full model round-trip, and REJECTING a recommendation needed
 // even more room to avoid every dish already tried this conversation. That
 // entire multi-round shape is gone: recommendSimilar (in
 // food-order-orchestrator.js) now does the address/history-or-craving
@@ -27,24 +27,14 @@ import {
 // Left at 8 rather than lowered, since no other flow (explicit search,
 // cart edits, checkout) was ever the source of a round-cap failure in
 // Render's logs - there's no evidence a smaller cap is needed elsewhere,
-// and 8 only matters as a ceiling, not a typical cost. Revisit downward if
-// Sarvam round-trip latency (not round *count*) is still the bottleneck
-// after this change - see AGENTS.md's rate-limit math note for the req/min
-// tradeoff either way.
+// and 8 only matters as a ceiling, not a typical cost.
 const MAX_TOOL_ROUNDS = 8;
 
-// Sarvam's default max_tokens is 2048, and with reasoning_effort enabled,
-// reasoning tokens are billed against that SAME budget as completion tokens
-// (docs.sarvam.ai/api/api-guides-tutorials/chat-completion/overview) - a low
-// budget can be consumed entirely by reasoning, leaving finish_reason:
-// "length" with empty content and only reasoning_content populated. This app
-// sends a system prompt + tool schemas + up to 20 turns of history on every
-// call, so the default budget is not generous enough to reliably leave room
-// for both reasoning and a full cart/restaurant-list reply. Set explicitly,
-// generously, rather than silently inheriting the default.
-const MAX_TOKENS = 4096;
+// Explicit and generous: with thinking on, a small budget can be used up
+// by reasoning and leave an empty reply (see the !finalText branch below).
+const MAX_TOKENS = 8192;
 
-// The custom Sarvam agent's role. Per the user's own instruction ("tell it
+// The agent's role. Per the user's own instruction ("tell it
 // it's role"): a real e-commerce assistant for deciding what to eat via
 // Swiggy, never guessing - only ever stating facts a tool actually
 // returned. Every rule below maps to a specific requirement/safety
@@ -55,11 +45,11 @@ const SYSTEM_PROMPT = [
   "You decide on your own which tool (if any) to call based on what the user actually wants - never rely on keyword/trigger-word matching, and never call a tool the user's message doesn't call for.",
   "You exist only to help with Swiggy food ordering - deciding what to eat, searching, recommending, managing a cart, checking out, coupons, and order-adjacent questions. A greeting, thanks, or a short question about who you are or what you can help with is still in scope - answer those normally and briefly, the same as any other reply. But never answer a SUBSTANTIVE request for something else, under any circumstance: general knowledge, trivia, homework, coding help, personal/medical/legal/financial advice, roleplay, or especially adult/sexual/explicit/violent content, however the request is phrased, translated, framed as a joke or hypothetical, or disguised as something else. Do not comply even partially before redirecting - decline in one short sentence (same brevity as everywhere else in this prompt) and steer back to food, without lecturing or over-explaining why. The boundary is what the request is actually asking for, not the specific wording used to ask it - so this holds in every language and phrasing, the same principle as never relying on keyword/trigger-word matching above. The examples above are illustrative of the category (anything unrelated to deciding what to eat and ordering it), not an exhaustive list - if a new kind of off-topic request slips through, the operative rule is the principle in this sentence, not a missing example.",
   "Do not guess. Never state a price, availability, ETA, restaurant name, dish name, order status, or any other fact unless it came from a tool result in this conversation. If you don't know, call a tool to find out, or say you don't know.",
-  "Mirror the language of the user's MOST RECENT message specifically, not the conversation's overall history - reply in Hindi only if their latest message is in Hindi (Devanagari) script, in Hinglish only if their latest message is Latin-script code-mixed Hindi/English, and in English otherwise. If they switch languages mid-conversation, switch your reply immediately to match - do not let an earlier turn's language (even several recent ones) carry over once they've moved on. Match their tone, not just their vocabulary.",
+  "Always write your reply in plain, casual English, even if earlier messages in this conversation are in Hindi or Hinglish. A separate step translates the user's messages to English before you see them and translates your reply back into their language, so never translate anything yourself. Keep restaurant names, dish names, numbers and prices exactly as the tools gave them.",
   "Vary your phrasing turn to turn - do not reuse the same sentence structure or stock phrases repeatedly; this should read like a real conversation, not a form letter.",
   "Keep every reply SHORT - this is WhatsApp, read on a phone, not email. One to three short sentences for most replies. Say the point first, skip preamble (\"Sorry\", \"Hmm\", \"Honestly\", \"I'm really sorry\" as an opener), skip restating the situation before getting to it, and skip padding the end with extra alternatives/options unless the user actually asked for options. When you genuinely have nothing to offer, one short sentence saying so is enough - do not also explain why, apologize at length, or list several fallback suggestions nobody asked for.",
-  "When a tool's result contains a numbered list (a restaurant search or a menu search), translate/adapt it into the user's language and tone, but keep every number, name, and price EXACTLY as given, in the exact same order - never renumber, reorder, merge, or drop an item. Exception: recommend_similar's candidate list (see below) - do not show that list to the user at all, you pick from it yourself.",
-  "checkout, view_cart, find_coupons, apply_coupon, and get_restaurant_menu are different from every other tool: their real result goes straight to the user, verbatim, the moment you call them - you will never see that result, and anything you write in that same turn is discarded, never shown to anyone. So don't bother composing a summary, a translation, or a confirmation-style ending around calling one of these - just call the right one when the user's request calls for it (checking out, seeing their cart, finding or applying a coupon, seeing a restaurant's menu) and your turn is done. Never list a restaurant's dishes yourself - when the user asks what a restaurant has or to see its menu, call get_restaurant_menu. This also means you can NEVER see or state real cart contents, prices, or coupon status yourself - if the user asks what's in their cart or wants a price check, call view_cart or find_coupons rather than answering from memory of an earlier turn, which may be stale.",
+  "When a tool's result contains a numbered list (a restaurant search or a menu search), relay it in your own words, but keep every number, name, and price EXACTLY as given, in the exact same order - never renumber, reorder, merge, or drop an item. Exception: recommend_similar's candidate list (see below) - do not show that list to the user at all, you pick from it yourself.",
+  "checkout, view_cart, find_coupons, apply_coupon, and get_restaurant_menu are different from every other tool: their real result goes straight to the user, verbatim, the moment you call them - you will never see that result, and anything you write in that same turn is discarded, never shown to anyone. So don't bother composing a summary or a confirmation-style ending around calling one of these - just call the right one when the user's request calls for it (checking out, seeing their cart, finding or applying a coupon, seeing a restaurant's menu) and your turn is done. Never list a restaurant's dishes yourself - when the user asks what a restaurant has or to see its menu, call get_restaurant_menu. This also means you can NEVER see or state real cart contents, prices, or coupon status yourself - if the user asks what's in their cart or wants a price check, call view_cart or find_coupons rather than answering from memory of an earlier turn, which may be stale.",
   "You can never place or confirm an order yourself, under any circumstance - there is no tool available to you that does that, and you never even see checkout's own result (see above) to relay it. Only the user replying literally \"YES\" to an order summary already shown by checkout can place an order, through a separate part of this app you have no visibility into. You have no way to know whether an order was ever placed, confirmed, or is being tracked, or what its ETA is - never say or imply any of that, under any circumstance, including right after a user says \"yes\"/\"confirm\" to you (that alone proves nothing - the real confirmation, if any, happened entirely outside this conversation). If asked about order status, say you can't check that here and suggest they look in the Swiggy app, or offer to show their cart.",
   "Never tell the user you can't place their order, that ordering isn't possible from here, or that they need to check out in the Swiggy app instead - that's false and a different mistake from the one above: you genuinely CAN show them a real order summary and a YES/NO prompt to actually place it, by calling checkout, you just can't complete the placement yourself once they say yes. When their message means \"I'm ready to order\" (\"order it\", \"place it\", \"checkout\", \"buy it\", or the same idea in any language/phrasing), call checkout - don't decline, redirect them elsewhere, or guess at a limitation instead of trying the real tool you actually have.",
   "The general rule for whether the user has to pick a restaurant themselves: did they name a SPECIFIC dish or restaurant (\"biryani\", \"from Pizza Hut\", \"margherita pizza\")? If so, search normally and let them choose from real results - there's genuine ambiguity there. If they only described a craving, mood, or cuisine with no specific dish or restaurant named (\"I want to eat something good\", \"what should I get\", \"I want something spicy\", \"mujhe kuch teekha khana hai\", \"surprise me\") - in ANY language or phrasing, not just these exact examples - that is a request for YOU to decide; the user should never have to pick from a list in that case.",
@@ -281,7 +271,7 @@ const TERMINAL_TOOLS = new Set(["checkout", "view_cart", "find_coupons", "apply_
 // Every tool call is executed here, never left to the model to reach
 // Swiggy directly. Never throws - a failure inside a tool becomes a tool
 // RESULT the agent can react to gracefully, distinct from a failure of the
-// Sarvam API call itself (which propagates up out of runAgentTurn
+// model API call itself (which propagates up out of runAgentTurn
 // unchanged, since that's the "NLU provider is down" case the caller
 // already knows how to handle).
 //
@@ -518,7 +508,7 @@ async function executeTool(name, args, ctx) {
         return { text: "That action isn't available.", terminal: false };
     }
   } catch (error) {
-    console.error("Sarvam agent tool execution failed.", { tool: name, name: error?.name });
+    console.error("Agent tool execution failed.", { tool: name, name: error?.name });
     return {
       text: "Something went wrong doing that just now. Let the user know and suggest trying again in a bit.",
       terminal: false,
@@ -535,27 +525,37 @@ function parseToolArgs(toolCall) {
 }
 
 let cachedClient;
-function getClient(nlu) {
-  // Cached across calls (same apiKey/baseUrl for the process lifetime, per
-  // config.js) rather than constructed per turn - matches the SDK's own
-  // intended usage (one client per app).
+function getClient(agent) {
   if (!cachedClient) {
-    cachedClient = new SarvamAIClient({
-      apiSubscriptionKey: nlu.apiKey,
-      baseUrl: nlu.baseUrl,
-      timeoutInSeconds: Math.ceil(nlu.timeoutMs / 1000),
-    });
+    cachedClient = createQwenClient({ apiKey: agent.apiKey, baseUrl: agent.baseUrl, timeoutMs: agent.timeoutMs });
   }
   return cachedClient;
 }
 
+// Qwen's thinking controls are top-level body fields, not reasoning_effort
+// (https://www.alibabacloud.com/help/en/model-studio/deep-thinking).
+// tool_choice is left out on purpose: "auto" is the default, and Alibaba's
+// function-calling docs say sending it in thinking mode keeps the model
+// returning tool calls when it should be writing its reply.
+function thinkingOptions(agent) {
+  return agent.thinkingBudget > 0
+    ? { enable_thinking: true, thinking_budget: agent.thinkingBudget }
+    : { enable_thinking: false };
+}
+
 // Runs one full agentic turn: the model decides which real Swiggy tools (if
 // any) to call, tool results are fed back, and it loops (capped at
-// MAX_TOOL_ROUNDS - see src/config.js's NLU rate-limit note) until it
-// returns a plain natural-language reply. That final reply IS the phrased,
-// language-mirrored response - no separate "translate this" call needed.
+// MAX_TOOL_ROUNDS) until it returns a plain English reply.
 //
-// Never catches a failure of the Sarvam API call itself - that propagates
+// The agent works in English only. When a translator is given, a Hindi or
+// Hinglish message is translated to English before the model sees it, and
+// the model's free-form reply is translated back into `lang`. Text that is
+// already localized (TERMINAL_TOOLS results, the fake-confirmation redirect,
+// the cart-replaced note) is never passed through translation, so the
+// literal English YES/NO tokens the confirmation gate depends on are never
+// touched. Conversation history is kept in English.
+//
+// Never catches a failure of the model API call itself - that propagates
 // up to the caller (server.js), same as any other unexpected error in the
 // reply-building path, so it's visible wherever failures are already being
 // watched. Returns undefined only when the model completes with empty
@@ -568,22 +568,23 @@ export async function runAgentTurn({
   pendingOrderConfirmations,
   pendingAddressSelections,
   pendingConversationHistory,
-  nlu,
-  client = getClient(nlu),
-  // Only consulted by the deterministic TERMINAL_TOOLS results (checkout,
-  // view_cart, find_coupons, apply_coupon) and the terminal address-prompt
-  // branches of search_food/recommend_similar - see executeTool above. Every
-  // other reply the agent phrases itself mirrors the user's language on its
-  // own, per the system prompt, and ignores this.
+  agent,
+  client = getClient(agent),
+  translator,
+  // The user's language: used by the localized TERMINAL_TOOLS results and
+  // as the target when translating the agent's reply.
   lang = "en",
 }) {
   const senderId = message.from;
   const history = pendingConversationHistory.peek(senderId);
 
+  const userText = translator ? await translator.toEnglish(message.text, detectLanguage(message.text)) : message.text;
+  const toUserLanguage = (text) => (translator ? translator.fromEnglish(text, lang) : text);
+
   const messages = [
     { role: "system", content: SYSTEM_PROMPT },
     ...history.map((turn) => ({ role: turn.role, content: turn.content })),
-    { role: "user", content: message.text },
+    { role: "user", content: userText },
   ];
 
   // Mutable, scoped to this one runAgentTurn call only - tracks whether
@@ -660,11 +661,10 @@ export async function runAgentTurn({
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const response = await client.chat.completions({
-      model: nlu.model,
+      model: agent.model,
       messages,
       tools: TOOLS,
-      tool_choice: "auto",
-      reasoning_effort: nlu.reasoningEffort,
+      ...thinkingOptions(agent),
       temperature: 0.4,
       max_tokens: MAX_TOKENS,
     });
@@ -682,7 +682,7 @@ export async function runAgentTurn({
         // nothing to say" - the two look identical to the caller
         // (undefined), but only the first is a real problem worth grepping
         // Render logs for.
-        console.error("Sarvam agent turn produced no usable final content.", {
+        console.error("Agent turn produced no usable final content.", {
           finishReason: response.choices?.[0]?.finish_reason,
           hadReasoningContent: Boolean(responseMessage?.reasoning_content),
         });
@@ -713,13 +713,13 @@ export async function runAgentTurn({
       // command keyword - this app has no trigger-word interface (see the
       // system prompt's first rule), so the redirect must not imply one.
       if (/\bYES\b/.test(finalText) && /\bNO\b/.test(finalText)) {
-        console.error("Sarvam agent produced a fabricated confirmation-shaped reply with no real tool call this turn.");
+        console.error("Agent produced a fabricated confirmation-shaped reply with no real tool call this turn.");
         const safeRedirect = withCartReplacementNote(pick(lang, {
           en: "Let me pull up your actual order for you — ask me to check out and I'll show the real summary and total.",
           hi: "मैं आपका असली ऑर्डर दिखाता हूं — मुझे checkout करने के लिए कहें और मैं असली सारांश और कुल राशि दिखाऊंगा।",
           hinglish: "Main aapka actual order dikhata hoon — mujhe checkout karne ke liye kahein aur main real summary aur total dikhaunga.",
         }));
-        pendingConversationHistory.append(senderId, { role: "user", content: message.text });
+        pendingConversationHistory.append(senderId, { role: "user", content: userText });
         pendingConversationHistory.append(senderId, { role: "assistant", content: safeRedirect });
         return safeRedirect;
       }
@@ -743,15 +743,14 @@ export async function runAgentTurn({
       // guard immediately above; applied after it so a (practically
       // impossible) turn that trips both guards still gets an honest reply
       // about whichever tool actually ran.
-      const safeFinalText = withCartReplacementNote(
+      const safeFinalText =
         cartMutationState.anyToolCalled && !cartMutationState.sawSuccess && cartMutationState.lastFailureText
           ? cartMutationState.lastFailureText
-          : recommendSafeText,
-      );
+          : recommendSafeText;
 
-      pendingConversationHistory.append(senderId, { role: "user", content: message.text });
+      pendingConversationHistory.append(senderId, { role: "user", content: userText });
       pendingConversationHistory.append(senderId, { role: "assistant", content: safeFinalText });
-      return safeFinalText;
+      return withCartReplacementNote(await toUserLanguage(safeFinalText));
     }
 
     messages.push({ role: "assistant", content: responseMessage.content ?? null, tool_calls: toolCalls });
@@ -810,7 +809,7 @@ export async function runAgentTurn({
 
     if (terminalResultText !== undefined) {
       const replyText = withCartReplacementNote(terminalResultText);
-      pendingConversationHistory.append(senderId, { role: "user", content: message.text });
+      pendingConversationHistory.append(senderId, { role: "user", content: userText });
       pendingConversationHistory.append(senderId, { role: "assistant", content: replyText });
       return replyText;
     }
@@ -818,6 +817,6 @@ export async function runAgentTurn({
 
   // Hit the round cap without a final answer - fail closed rather than loop
   // forever or burn more of the 40 req/min Starter budget on one message.
-  console.error("Sarvam agent exceeded the tool-call round cap.", { rounds: MAX_TOOL_ROUNDS });
+  console.error("Agent exceeded the tool-call round cap.", { rounds: MAX_TOOL_ROUNDS });
   return undefined;
 }

@@ -18,7 +18,8 @@ import { PendingOrderConfirmations } from "./pending-order-confirmations.js";
 import { PendingPostAuthActions } from "./pending-post-auth-actions.js";
 import { PRIVACY_POLICY_HTML } from "./privacy-policy.js";
 import { isSenderInRollout } from "./rollout.js";
-import { runAgentTurn } from "./sarvam-agent.js";
+import { runAgentTurn } from "./agent.js";
+import { createSarvamTranslator } from "./sarvam-translator.js";
 import { createSwiggyFoodClient } from "./swiggy-food-client.js";
 // Not a typo: this dev/test-only mock lives under scripts/, not src/ - see
 // SWIGGY_TEST_MODE in config.js. Importing it never starts its own listener
@@ -47,6 +48,9 @@ import {
 const serviceName = "nosh-backend";
 const swiggyOAuthOrigin = new URL(config.swiggyOAuth.redirectUri).origin;
 const processedMessageIds = new InProcessMessageIdempotency();
+// Without a Sarvam key the agent still works; it just sees and answers in
+// the user's raw language instead of translated English.
+const translator = config.translation.enabled ? createSarvamTranslator(config.translation) : undefined;
 const pendingAddressSelections = new PendingAddressSelections();
 const pendingOAuthExchanges = new PendingOAuthExchanges();
 const pendingConnectLinks = new PendingConnectLinks();
@@ -272,14 +276,14 @@ async function buildReplyText(message) {
 
   // Deterministic backstop, not the primary fix (see the system prompt's
   // new "never invite a YES/NO reply unless relaying checkout's own result"
-  // rule in sarvam-agent.js): confirmed live that the agent can still
+  // rule in agent.js): confirmed live that the agent can still
   // append a checkout-style "reply YES to confirm" ending onto some OTHER
   // tool's result (e.g. after apply_coupon) without ever actually calling
   // checkout - pendingOrderConfirmations never gets set in that case, so a
   // literal "yes" reply falls straight through to a fresh agent turn, which
   // then hallucinated a full "your order is confirmed, arriving in 25-30
   // mins" reply with no real order ever placed (no tool exists for that -
-  // see TOOLS in sarvam-agent.js - so it was 100% invented text, not a
+  // see TOOLS in agent.js - so it was 100% invented text, not a
   // structural safety gap). Caught here: a bare YES/NO-shaped reply with
   // nothing genuinely pending, immediately preceded by the agent's own
   // turn containing literal uppercase "YES" and "NO" tokens - the exact,
@@ -306,7 +310,7 @@ async function buildReplyText(message) {
     }
   }
 
-  if (!config.nlu.enabled) {
+  if (!config.agent.enabled) {
     return PLACEHOLDER_REPLY_TEXT;
   }
 
@@ -364,7 +368,8 @@ async function buildReplyText(message) {
       pendingOrderConfirmations,
       pendingAddressSelections,
       pendingConversationHistory,
-      nlu: config.nlu,
+      agent: config.agent,
+      translator,
       lang,
     });
 

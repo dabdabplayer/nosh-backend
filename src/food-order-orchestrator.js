@@ -224,7 +224,7 @@ function buildReorderCartItems(orderItems) {
 }
 
 // Tool implementation for the agent's `reorder_usual` tool (see
-// src/sarvam-agent.js) - the agent calls this when the user wants to repeat
+// src/agent.js) - the agent calls this when the user wants to repeat
 // a past order without naming a specific dish/restaurant. Calls
 // get_food_orders live every time - no caching - per this feature's design.
 //
@@ -540,7 +540,7 @@ const RECOMMEND_CLOSING_INSTRUCTIONS =
   "restaurant, price, rating, or delivery time not listed above.";
 
 // Tool implementation for the agent's `recommend_similar` tool (see
-// src/sarvam-agent.js). Does the entire "find something real to suggest"
+// src/agent.js). Does the entire "find something real to suggest"
 // job in ONE tool call - resolving the address, reading real order history
 // (or, if `craving` is given, running a real restaurant search for that
 // craving instead), and fetching each candidate restaurant's real, live
@@ -569,7 +569,7 @@ export async function recommendSimilar({
   craving,
   // Only used for this function's own address-disambiguation prompt below
   // (terminal when reached via the agent's recommend_similar tool call - see
-  // executeTool's "recommend_similar" case in sarvam-agent.js) - same split
+  // executeTool's "recommend_similar" case in agent.js) - same split
   // as searchFood's own lang param in food-search-orchestrator.js. The rest
   // of this function's text (the candidate-block instructions) is always
   // agent-facing, never shown to the user directly, so it's unaffected.
@@ -1106,7 +1106,7 @@ function formatItemSelectionReply(searchTerm, restaurantName, items) {
 // marked with `hasData: true/false` right before every return, so
 // executeTool's add_to_cart case gets a structural signal for whether the
 // item genuinely landed in the cart, instead of trusting the agent's own
-// free-text claim (see cartMutationState in sarvam-agent.js).
+// free-text claim (see cartMutationState in agent.js).
 async function addResolvedItemToCart({
   senderId,
   swiggyFoodClient,
@@ -1130,7 +1130,7 @@ async function addResolvedItemToCart({
   // every GENERIC_FALLBACK_REPLY path below - these are thrown/infra
   // failures (a network hiccup, an unparseable payload), not a genuine
   // "item not on the real menu" business result. Marking them false would
-  // make cartMutationState's guard in sarvam-agent.js force GENERIC_FALLBACK_
+  // make cartMutationState's guard in agent.js force GENERIC_FALLBACK_
   // REPLY's English-only text verbatim onto a Hindi/Hinglish conversation
   // instead of letting the agent phrase its own language-mirrored apology -
   // the exact regression already caught and fixed once for search_food/
@@ -1814,7 +1814,7 @@ export async function resolvePendingCartCandidateReply({ message, swiggyFoodClie
 // current cart session (addressId/restaurantId/restaurantName/
 // cartRestaurantId) and delegates to the deterministic Swiggy-calling
 // helpers above, unchanged - the only difference from the old
-// classifyOrderIntent-driven dispatch is that the AGENT (src/sarvam-agent.js)
+// classifyOrderIntent-driven dispatch is that the AGENT (src/agent.js)
 // decides when to call these, not app-code branching on a pre-classified
 // intent. None of these ever call placeFoodOrder/confirmOrder - see
 // placeConfirmedOrder above, only reachable via server.js's deterministic
@@ -1867,7 +1867,7 @@ async function findRestaurantByNameHint({ session, restaurantName, swiggyFoodCli
 }
 
 // Tool implementation for the agent's `search_menu` tool (see
-// src/sarvam-agent.js) - lets the agent find a real dish and its real price
+// src/agent.js) - lets the agent find a real dish and its real price
 // at a specific restaurant WITHOUT adding anything to the cart, so it can
 // quote a real price and ask "want me to add it?" before committing, for an
 // EXPLICIT dish/restaurant request (recommend_similar handles the "you
@@ -1923,7 +1923,7 @@ export async function searchMenu({ senderId, restaurantName, query, swiggyFoodCl
 // at 4096 characters, so the list is cut well below both.
 const MAX_MENU_ITEMS = 40;
 
-// TERMINAL_TOOLS tool (see src/sarvam-agent.js) - the result goes straight to
+// TERMINAL_TOOLS tool (see src/agent.js) - the result goes straight to
 // the user, so the agent can never reword or invent a menu. Backed by Swiggy's
 // real get_restaurant_menu (docs/reference/food/get_restaurant_menu.md: "Browse
 // a restaurant's complete menu... when users want to explore offerings").
@@ -2024,7 +2024,7 @@ export async function showRestaurantMenu({ senderId, restaurantName, swiggyFoodC
 // removeFromCart/searchMenu above) because view_cart is a TERMINAL_TOOLS tool
 // - its result becomes the final reply directly, with no agent phrasing/
 // translation pass in between. See AGENTS.md's "place order and get address
-// should be hardcoded" decision and src/sarvam-agent.js's TERMINAL_TOOLS.
+// should be hardcoded" decision and src/agent.js's TERMINAL_TOOLS.
 export async function viewCart({ senderId, swiggyFoodClient, pendingCartSessions, lang = "en" }) {
   const session = pendingCartSessions.peek(senderId);
 

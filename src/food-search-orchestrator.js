@@ -138,17 +138,17 @@ async function runRestaurantSearch(swiggyFoodClient, searchTerm, addressId, send
 }
 
 // Tool implementation for the agent's `search_food` tool (see
-// src/sarvam-agent.js) - the agent calls this whenever it decides the user
+// src/agent.js) - the agent calls this whenever it decides the user
 // wants to find/order a dish, cuisine, or restaurant, with no keyword
 // trigger involved; it's the model's judgment call, not a regex's. Resolves
 // the delivery address (asking which one, if more than one is saved) and
 // then searches restaurants, returning already-good English text that the
 // agent is expected to relay/translate into the user's own language rather
-// than repeat verbatim - see the system prompt in sarvam-agent.js.
+// than repeat verbatim - see the system prompt in agent.js.
 // `lang` is used ONLY for this function's own address-disambiguation prompt
 // (the one branch below that's actually terminal when reached via the
 // agent's search_food tool call - see executeTool's "search_food" case in
-// sarvam-agent.js). It is deliberately NEVER forwarded to runRestaurantSearch
+// agent.js). It is deliberately NEVER forwarded to runRestaurantSearch
 // below (always "en" there): a restaurant list reached via the agent's own
 // search_food call is never terminal - the agent itself translates it per
 // the system prompt - so pre-translating it here would be a silent behavior
