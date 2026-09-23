@@ -531,6 +531,57 @@ test("runAgentTurn treats every result from checkout/view_cart/find_coupons/appl
   }
 });
 
+// Confirmed live: "add one of everything" bundled view_cart with other tool
+// calls in one round, view_cart's result ended the turn, and the user just got
+// their unchanged cart back. A terminal tool in a mixed round must not run.
+test("runAgentTurn does not run a terminal tool bundled with ordinary tool calls, so the other calls aren't swallowed", async () => {
+  const calls = [];
+  const client = fakeClient(async ({ messages }) => {
+    calls.push(messages);
+
+    if (calls.length === 1) {
+      return toolCallResponse([
+        { id: "call_1", function: { name: "add_to_cart", arguments: JSON.stringify({ query: "Chicken Biryani" }) } },
+        { id: "call_2", function: { name: "view_cart", arguments: "{}" } },
+      ]);
+    }
+
+    return toolCallResponse([{ id: "call_3", function: { name: "view_cart", arguments: "{}" } }]);
+  });
+
+  const swiggyCalls = [];
+  const cart = { structured: { statusCode: 0, data: { items: [{ name: "Chicken Biryani", quantity: 1, total: 249 }] } } };
+
+  const ctx = newContext();
+  ctx.pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r1", restaurantName: "Test Biryani House" });
+
+  const result = await runAgentTurn({
+    message: { from: "sender-1", text: "add a chicken biryani and show my cart" },
+    swiggyFoodClient: {
+      ...fakeSwiggyClient(),
+      flushFoodCart: async () => ({}),
+      updateFoodCart: async () => {
+        swiggyCalls.push("updateFoodCart");
+        return cart;
+      },
+      getFoodCart: async () => {
+        swiggyCalls.push("getFoodCart");
+        return cart;
+      },
+    },
+    ...ctx,
+    nlu,
+    client,
+  });
+
+  // The add ran; the bundled view_cart didn't - it only ran once, alone, in round 2.
+  assert.deepEqual(swiggyCalls, ["updateFoodCart", "getFoodCart"]);
+  assert.equal(calls.length, 2);
+  const deferredNote = calls[1].find((m) => m.role === "tool" && m.tool_call_id === "call_2");
+  assert.match(deferredNote.content, /Not run/);
+  assert.match(result, /Chicken Biryani/);
+});
+
 // Confirmed live: with no menu tool, "show me the menu" got a 9-dish menu the
 // agent wrote itself, 8 of which didn't exist. The real menu must reach the
 // user verbatim, with no second completions call to reword it.

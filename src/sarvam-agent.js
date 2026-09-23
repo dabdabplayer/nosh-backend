@@ -736,6 +736,15 @@ export async function runAgentTurn({
     // phrase, translate, or add commentary around it.
     let terminalResultText;
 
+    // A TERMINAL_TOOLS call bundled with ordinary tool calls in the same round
+    // is NOT run at all - otherwise its result ends the turn and whatever the
+    // other calls were doing for the user is silently dropped (confirmed live:
+    // "add one of everything" bundled view_cart with a menu search, and the
+    // user just got their unchanged cart back). Not running it, rather than
+    // running it and discarding the text, matters: checkout and apply_coupon
+    // have side effects. The agent sees why and can call it alone next round.
+    const hasOrdinaryCall = toolCalls.some((toolCall) => !TERMINAL_TOOLS.has(toolCall.function?.name));
+
     for (const toolCall of toolCalls) {
       // Checked before EVERY tool call this turn, not just search_food/
       // search_menu specifically - once search_menu has found a real match,
@@ -747,12 +756,20 @@ export async function runAgentTurn({
       // too - the system prompt already requires waiting for the user's
       // yes on a LATER turn before calling it, so it should never
       // legitimately fire in the SAME turn a match was just found either.
-      const result = searchMenuState.foundMatch
-        ? {
-            text: "You already found a real, in-stock item earlier this turn - present that one as your recommendation now instead of calling another tool.",
-            terminal: false,
-          }
-        : await executeTool(toolCall.function.name, parseToolArgs(toolCall), toolCtx);
+      let result;
+      if (searchMenuState.foundMatch) {
+        result = {
+          text: "You already found a real, in-stock item earlier this turn - present that one as your recommendation now instead of calling another tool.",
+          terminal: false,
+        };
+      } else if (hasOrdinaryCall && TERMINAL_TOOLS.has(toolCall.function.name)) {
+        result = {
+          text: "Not run: this tool's result goes straight to the user and ends your turn, so it can't be combined with other tool calls. Finish the other tool calls first, then call this one again on its own if it's still needed.",
+          terminal: false,
+        };
+      } else {
+        result = await executeTool(toolCall.function.name, parseToolArgs(toolCall), toolCtx);
+      }
 
       messages.push({ role: "tool", tool_call_id: toolCall.id, content: result.text });
 
