@@ -84,8 +84,13 @@ function formatRestaurantReply(searchTerm, restaurants, lang = "en") {
 // the address or make the user pick a restaurant by number first -
 // food-order-orchestrator.js fills in the restaurant on the first add.
 async function runRestaurantSearch(swiggyFoodClient, searchTerm, addressId, senderId, pendingCartSessions, lang = "en") {
+  // A search doesn't touch the live cart, so which restaurant it holds must
+  // survive - otherwise the next add treats the cart as unknown and empties
+  // it without telling the user.
+  const cartRestaurantId = pendingCartSessions?.peek(senderId)?.cartRestaurantId;
+
   if (senderId && pendingCartSessions) {
-    pendingCartSessions.set(senderId, { addressId });
+    pendingCartSessions.set(senderId, { addressId, cartRestaurantId });
   }
 
   let searchResult;
@@ -123,6 +128,7 @@ async function runRestaurantSearch(swiggyFoodClient, searchTerm, addressId, send
   if (senderId && pendingCartSessions) {
     pendingCartSessions.set(senderId, {
       addressId,
+      cartRestaurantId,
       searchTerm,
       restaurantCandidates: openRestaurants.map((restaurant) => ({ id: restaurant.id, name: restaurant.name })),
     });

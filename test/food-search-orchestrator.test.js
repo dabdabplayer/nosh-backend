@@ -90,6 +90,29 @@ test("searchFood searches immediately with a single unambiguous address", async 
   assert.match(reply, /⭐4.5/);
 });
 
+test("searchFood keeps the record of which restaurant the live cart holds", async () => {
+  const pending = new PendingAddressSelections();
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", {
+    addressId: "addr-1",
+    restaurantId: "r-biryani",
+    restaurantName: "Biryani House",
+    cartRestaurantId: "r-biryani",
+  });
+
+  for (const restaurants of [[], [restaurant({ id: "r-thai", name: "Thai Place" })]]) {
+    await searchFood(
+      "sender-1",
+      "pad thai",
+      fakeSwiggyFoodClient({ searchRestaurants: async () => payload({ restaurants }) }),
+      pending,
+      pendingCartSessions,
+    );
+
+    assert.equal(pendingCartSessions.peek("sender-1").cartRestaurantId, "r-biryani");
+  }
+});
+
 test("searchFood records the shown restaurant list as selectable candidates on the cart session", async () => {
   const pending = new PendingAddressSelections();
   const pendingCartSessions = new PendingCartSessions();
@@ -112,6 +135,7 @@ test("searchFood records the shown restaurant list as selectable candidates on t
   // reads this field.
   assert.deepEqual(pendingCartSessions.peek("sender-1"), {
     addressId: "addr-1",
+    cartRestaurantId: undefined,
     searchTerm: "chicken wings",
     restaurantCandidates: [
       { id: "r-1", name: "Louis Burger" },

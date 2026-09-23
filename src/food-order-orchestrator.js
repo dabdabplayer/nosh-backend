@@ -1784,6 +1784,7 @@ export async function resolvePendingCartCandidateReply({ message, swiggyFoodClie
       if (items.length > 0) {
         pendingCartSessions.set(message.from, {
           addressId: session.addressId,
+          cartRestaurantId: session.cartRestaurantId,
           restaurantId: restaurant.id,
           restaurantName: restaurant.name,
           itemCandidates: items,
@@ -1791,7 +1792,12 @@ export async function resolvePendingCartCandidateReply({ message, swiggyFoodClie
         return { handled: true, replyText: formatItemSelectionReply(session.searchTerm, restaurant.name, items) };
       }
 
-      pendingCartSessions.set(message.from, { addressId: session.addressId, restaurantId: restaurant.id, restaurantName: restaurant.name });
+      pendingCartSessions.set(message.from, {
+        addressId: session.addressId,
+        cartRestaurantId: session.cartRestaurantId,
+        restaurantId: restaurant.id,
+        restaurantName: restaurant.name,
+      });
       const gotItReply = pick(lang, {
         en: `Got it — what would you like from ${restaurant.name}?`,
         hi: `ठीक है — ${restaurant.name} से आपको क्या चाहिए?`,

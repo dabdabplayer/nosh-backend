@@ -174,6 +174,7 @@ test("resolvePendingCartCandidateReply: a bare number picks the restaurant off t
   assert.equal(outcome.replyText, "Got it — what would you like from KFC (Ad)?");
   assert.deepEqual(pendingCartSessions.peek("sender-1"), {
     addressId: "addr-1",
+    cartRestaurantId: undefined,
     restaurantId: "r-kfc",
     restaurantName: "KFC (Ad)",
   });
