@@ -20,6 +20,7 @@ import { PRIVACY_POLICY_HTML } from "./privacy-policy.js";
 import { isSenderInRollout } from "./rollout.js";
 import { runAgentTurn } from "./agent.js";
 import { createSarvamTranslator } from "./sarvam-translator.js";
+import { configureStatusReporter, createStatusReporter } from "./status-reporter.js";
 import { createSwiggyFoodClient } from "./swiggy-food-client.js";
 // Not a typo: this dev/test-only mock lives under scripts/, not src/ - see
 // SWIGGY_TEST_MODE in config.js. Importing it never starts its own listener
@@ -51,6 +52,19 @@ const processedMessageIds = new InProcessMessageIdempotency();
 // Without a Sarvam key the agent still works; it just sees and answers in
 // the user's raw language instead of translated English.
 const translator = config.translation.enabled ? createSarvamTranslator(config.translation) : undefined;
+if (config.statuspage.enabled) {
+  configureStatusReporter(
+    createStatusReporter({
+      apiKey: config.statuspage.apiKey,
+      pageId: config.statuspage.pageId,
+      // In test mode Swiggy calls go to the in-process mock, which says
+      // nothing about Swiggy's real health.
+      componentIds: config.swiggyFood.testModeEnabled
+        ? { ...config.statuspage.componentIds, swiggy: undefined }
+        : config.statuspage.componentIds,
+    }),
+  );
+}
 const pendingAddressSelections = new PendingAddressSelections();
 const pendingOAuthExchanges = new PendingOAuthExchanges();
 const pendingConnectLinks = new PendingConnectLinks();

@@ -6,6 +6,7 @@ import {
   parseToolResult,
   SwiggyFoodToolError,
 } from "../src/swiggy-food-client.js";
+import { configureStatusReporter } from "../src/status-reporter.js";
 
 function fakeClient({ callTool, close = async () => {} }) {
   return { connect: async () => {}, callTool, close };
@@ -223,4 +224,36 @@ test("close() closes an established connection and allows reconnecting", async (
 
   assert.equal(closeCount, 1);
   assert.equal(connectCount, 2);
+});
+
+test("reports Swiggy health, but never counts one user's expired login as an outage", async () => {
+  const outcomes = [];
+  configureStatusReporter({ success: (component) => outcomes.push([component, "ok"]), failure: (component) => outcomes.push([component, "fail"]) });
+
+  try {
+    const ok = createSwiggyFoodClient({
+      mcpUrl: "https://example.invalid/food",
+      token: "test-token",
+      createClient: () => fakeClient({ callTool: async () => ({ content: [] }) }),
+      createTransport: () => ({}),
+    });
+    await ok.searchRestaurants({ query: "biryani" });
+
+    const expired = createSwiggyFoodClient({
+      mcpUrl: "https://example.invalid/food",
+      token: "test-token",
+      createClient: () =>
+        fakeClient({
+          callTool: async () => {
+            throw Object.assign(new Error("No or invalid session credentials"), { code: 401 });
+          },
+        }),
+      createTransport: () => ({}),
+    });
+    await assert.rejects(expired.searchRestaurants({ query: "biryani" }));
+
+    assert.deepEqual(outcomes, [["swiggy", "ok"]]);
+  } finally {
+    configureStatusReporter(undefined);
+  }
 });

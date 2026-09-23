@@ -1,4 +1,5 @@
 import { SarvamAIClient } from "sarvamai";
+import { COMPONENTS, isOutageStatus, reportFailure, reportSuccess } from "./status-reporter.js";
 
 // mayura:v1 is the Sarvam translate model that supports source "auto",
 // code-mixed mode and romanized output (see TranslationRequest in the
@@ -67,8 +68,12 @@ export function createSarvamTranslator({ apiKey, baseUrl, timeoutMs, client }) {
         const response = await sarvam.text.translate({ input: chunk, model: MODEL, ...options });
         parts.push(response.translated_text);
       }
+      reportSuccess(COMPONENTS.translation);
       return parts.join("\n");
     } catch (error) {
+      if (isOutageStatus(error?.statusCode)) {
+        reportFailure(COMPONENTS.translation);
+      }
       console.error("Sarvam translation failed; using the untranslated text.", { name: error?.name });
       return text;
     }

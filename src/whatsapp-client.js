@@ -1,3 +1,5 @@
+import { COMPONENTS, isOutageStatus, reportFailure, reportSuccess } from "./status-reporter.js";
+
 export class WhatsAppSendError extends Error {
   constructor(status, cause) {
     super(`WhatsApp send message request failed with status ${status ?? "unknown"}.`);
@@ -37,10 +39,16 @@ export async function sendTextMessage({
       },
     );
   } catch (error) {
+    reportFailure(COMPONENTS.whatsapp);
     throw new WhatsAppSendError(undefined, error);
   }
 
   if (!response.ok) {
+    // Other 4xx responses are about this one message (e.g. outside the 24h
+    // window), not a WhatsApp outage.
+    if (isOutageStatus(response.status)) {
+      reportFailure(COMPONENTS.whatsapp);
+    }
     let body;
     try {
       body = await response.json();
@@ -51,6 +59,7 @@ export async function sendTextMessage({
     throw new WhatsAppSendError(response.status, body);
   }
 
+  reportSuccess(COMPONENTS.whatsapp);
   const body = await response.json();
   const message = body?.messages?.[0];
 

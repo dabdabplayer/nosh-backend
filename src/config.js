@@ -163,6 +163,24 @@ const agentThinkingBudget = readNonNegativeInteger(
   { allowZero: true },
 );
 
+// Optional: pushes Swiggy/Qwen/Sarvam/WhatsApp health to an Atlassian
+// Statuspage page (src/status-reporter.js). Each component id is the one
+// shown for that component in the Statuspage dashboard; any left unset is
+// simply not reported.
+const statuspageApiKey = readOptionalSecret(process.env.STATUSPAGE_API_KEY, "STATUSPAGE_API_KEY");
+const statuspagePageId = readOptionalSecret(process.env.STATUSPAGE_PAGE_ID, "STATUSPAGE_PAGE_ID");
+
+if (Boolean(statuspageApiKey) !== Boolean(statuspagePageId)) {
+  throw new Error("STATUSPAGE_API_KEY and STATUSPAGE_PAGE_ID must be set together.");
+}
+
+const statuspageComponentIds = Object.freeze({
+  swiggy: readOptionalSecret(process.env.STATUSPAGE_COMPONENT_SWIGGY, "STATUSPAGE_COMPONENT_SWIGGY"),
+  agent: readOptionalSecret(process.env.STATUSPAGE_COMPONENT_AGENT, "STATUSPAGE_COMPONENT_AGENT"),
+  translation: readOptionalSecret(process.env.STATUSPAGE_COMPONENT_TRANSLATION, "STATUSPAGE_COMPONENT_TRANSLATION"),
+  whatsapp: readOptionalSecret(process.env.STATUSPAGE_COMPONENT_WHATSAPP, "STATUSPAGE_COMPONENT_WHATSAPP"),
+});
+
 if (agentApiKey && !agentBaseUrl) {
   throw new Error(
     "AGENT_BASE_URL is required when AGENT_API_KEY is set - use the Model Studio Chat Completions endpoint for your region/workspace (ending in /compatible-mode/v1).",
@@ -262,6 +280,12 @@ export const config = Object.freeze({
     baseUrl: nluBaseUrl,
     enabled: Boolean(nluApiKey),
     timeoutMs: nluTimeoutMs,
+  }),
+  statuspage: Object.freeze({
+    enabled: Boolean(statuspageApiKey),
+    apiKey: statuspageApiKey,
+    pageId: statuspagePageId,
+    componentIds: statuspageComponentIds,
   }),
   agent: Object.freeze({
     apiKey: agentApiKey,

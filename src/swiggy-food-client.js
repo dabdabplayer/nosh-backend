@@ -1,6 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { SwiggyAuthFailureError, SwiggyRateLimitedError, withSwiggyRetry } from "./swiggy-retry.js";
+import { COMPONENTS, reportFailure, reportSuccess } from "./status-reporter.js";
 
 const CLIENT_NAME = "nosh-backend";
 const CLIENT_VERSION = "0.1.0";
@@ -99,6 +100,10 @@ export function createSwiggyFoodClient({
         return client.callTool({ name, arguments: args });
       });
     } catch (error) {
+      // One user's expired login isn't a Swiggy outage.
+      if (!(error instanceof SwiggyAuthFailureError)) {
+        reportFailure(COMPONENTS.swiggy);
+      }
       console.error("Swiggy Food tool call failed.", {
         toolName: name,
         durationMs: Date.now() - startedAt,
@@ -117,6 +122,7 @@ export function createSwiggyFoodClient({
       throw new SwiggyFoodToolError(name, result);
     }
 
+    reportSuccess(COMPONENTS.swiggy);
     console.info("Swiggy Food tool call succeeded.", {
       toolName: name,
       durationMs: Date.now() - startedAt,
