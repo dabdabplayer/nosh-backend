@@ -47,6 +47,7 @@ test("createGeminiClient reads the error status when Gemini wraps the error in a
     timeoutMs: 1000,
     fetchImpl: async () =>
       new Response(JSON.stringify([{ error: { code: 429, status: "RESOURCE_EXHAUSTED", message: "quota" } }]), { status: 429 }),
+    sleep: async () => {},
   });
 
   await assert.rejects(client.chat.completions({}), (error) => {
@@ -54,4 +55,65 @@ test("createGeminiClient reads the error status when Gemini wraps the error in a
     assert.equal(error.code, "RESOURCE_EXHAUSTED");
     return true;
   });
+});
+
+function sequenceClient(responses, calls = []) {
+  return createGeminiClient({
+    apiKey: "key-1",
+    baseUrl: "https://example.test/v1beta/openai",
+    timeoutMs: 1000,
+    sleep: async () => {},
+    fetchImpl: async () => {
+      const next = responses[calls.length];
+      calls.push(next);
+      if (next instanceof Error) {
+        throw next;
+      }
+      return new Response(JSON.stringify(next.body ?? {}), { status: next.status });
+    },
+  });
+}
+
+test("createGeminiClient retries once after a 503 and returns the successful answer", async () => {
+  const calls = [];
+  const client = sequenceClient([{ status: 503 }, { status: 200, body: { choices: [{ message: { content: "ok" } }] } }], calls);
+
+  const response = await client.chat.completions({});
+
+  assert.equal(response.choices[0].message.content, "ok");
+  assert.equal(calls.length, 2);
+});
+
+test("createGeminiClient retries a failure at most once", async () => {
+  const calls = [];
+  const client = sequenceClient([{ status: 503 }, { status: 503 }, { status: 200 }], calls);
+
+  await assert.rejects(client.chat.completions({}), (error) => error.status === 503);
+  assert.equal(calls.length, 2);
+});
+
+test("createGeminiClient doesn't retry a request Gemini rejected", async () => {
+  const calls = [];
+  const client = sequenceClient([{ status: 400 }, { status: 200 }], calls);
+
+  await assert.rejects(client.chat.completions({}), (error) => error.status === 400);
+  assert.equal(calls.length, 1);
+});
+
+test("createGeminiClient retries a network error but not a timeout", async () => {
+  const networkCalls = [];
+  const recovering = sequenceClient(
+    [new TypeError("fetch failed"), { status: 200, body: { choices: [] } }],
+    networkCalls,
+  );
+  await recovering.chat.completions({});
+  assert.equal(networkCalls.length, 2);
+
+  const timeoutCalls = [];
+  const timingOut = sequenceClient(
+    [Object.assign(new Error("timed out"), { name: "TimeoutError" }), { status: 200 }],
+    timeoutCalls,
+  );
+  await assert.rejects(timingOut.chat.completions({}), (error) => error.name === "TimeoutError");
+  assert.equal(timeoutCalls.length, 1);
 });

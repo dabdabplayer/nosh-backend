@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { SwiggyFoodToolError } from "../src/swiggy-food-client.js";
 import {
   classifySwiggyError,
+  isTransientSwiggyFailure,
   SwiggyAuthFailureError,
   SwiggyRateLimitedError,
   withSwiggyRetry,
@@ -181,4 +183,27 @@ test("withSwiggyRetry: throws SwiggyRateLimitedError after exhausting attempts o
   );
 
   assert.equal(calls, 2);
+});
+
+test("isTransientSwiggyFailure separates temporary failures from real refusals", () => {
+  assert.equal(isTransientSwiggyFailure(new SwiggyFoodToolError("x", Object.assign(new Error("boom"), { code: 503 }))), true);
+  assert.equal(isTransientSwiggyFailure(new SwiggyFoodToolError("x", new Error("request timeout"))), true);
+  assert.equal(isTransientSwiggyFailure(new SwiggyRateLimitedError(new Error("429"))), true);
+  assert.equal(isTransientSwiggyFailure(new SwiggyFoodToolError("x", { isError: true })), false);
+  assert.equal(isTransientSwiggyFailure(new SwiggyFoodToolError("x", new Error("Invalid addressId"))), false);
+  assert.equal(isTransientSwiggyFailure(new SwiggyAuthFailureError(new Error("401"))), false);
+});
+
+test("withSwiggyRetry makes a single attempt on an internal error when limited to one", async () => {
+  let calls = 0;
+  await assert.rejects(
+    withSwiggyRetry(
+      async () => {
+        calls += 1;
+        throw Object.assign(new Error("internal"), { code: 500 });
+      },
+      { maxAttempts: 1 },
+    ),
+  );
+  assert.equal(calls, 1);
 });

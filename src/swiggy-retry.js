@@ -161,7 +161,7 @@ export async function withSwiggyRetry(fn, { maxAttempts = 4, rateLimitWaitMs = F
         continue;
       }
 
-      const attemptLimit = classification === "retry-once" ? 2 : maxAttempts;
+      const attemptLimit = classification === "retry-once" ? Math.min(2, maxAttempts) : maxAttempts;
       const isRetryable = classification === "retry" || classification === "retry-once";
 
       if (!isRetryable || attempt >= attemptLimit) {
@@ -173,4 +173,23 @@ export async function withSwiggyRetry(fn, { maxAttempts = 4, rateLimitWaitMs = F
       await new Promise((resolve) => setTimeout(resolve, baseMs + jitterMs));
     }
   }
+}
+
+// True when a failed call may not have reached Swiggy or may have been
+// dropped on the way back (timeouts, 5xx, rate limiting), so checking and
+// possibly retrying makes sense. False for auth failures and for Swiggy
+// answering with a real refusal (bad input, or a domain failure such as out
+// of stock), which a retry can't change.
+export function isTransientSwiggyFailure(error) {
+  if (error instanceof SwiggyAuthFailureError) {
+    return false;
+  }
+  if (error instanceof SwiggyRateLimitedError) {
+    return true;
+  }
+  const cause = error?.name === "SwiggyFoodToolError" ? error.cause : error;
+  if (cause?.isError) {
+    return false;
+  }
+  return ["retry", "retry-once", "rate_limited"].includes(classifySwiggyError(cause));
 }

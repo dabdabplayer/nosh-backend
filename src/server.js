@@ -129,6 +129,12 @@ async function resolveSwiggyFoodAuth(senderId) {
 
 // Fallback reply for messages that don't trigger a Swiggy Food search (no
 // NLU/intent layer yet) and for when Swiggy Food isn't configured at all.
+const AGENT_TROUBLE_REPLY = {
+  en: "Sorry, I'm having trouble right now. Please try again in a minute.",
+  hi: "माफ़ कीजिए, अभी मुझे कुछ दिक्कत हो रही है। कृपया एक मिनट में फिर कोशिश करें।",
+  hinglish: "Sorry, abhi mujhe thodi dikkat ho rahi hai. Ek minute mein phir try karein.",
+};
+
 const PLACEHOLDER_REPLY_TEXT =
   "Thanks for messaging Nosh! We're still setting things up — full replies are coming soon.";
 
@@ -375,19 +381,34 @@ async function buildReplyText(message) {
       return candidateOutcome.replyText ?? PLACEHOLDER_REPLY_TEXT;
     }
 
-    const reply = await runAgentTurn({
-      message,
-      swiggyFoodClient,
-      pendingCartSessions,
-      pendingOrderConfirmations,
-      pendingAddressSelections,
-      pendingConversationHistory,
-      agent: config.agent,
-      translator,
-      lang,
-    });
+    let reply;
+    try {
+      reply = await runAgentTurn({
+        message,
+        swiggyFoodClient,
+        pendingCartSessions,
+        pendingOrderConfirmations,
+        pendingAddressSelections,
+        pendingConversationHistory,
+        agent: config.agent,
+        translator,
+        lang,
+      });
+    } catch (error) {
+      if (error instanceof SwiggyAuthFailureError) {
+        throw error;
+      }
+      // The AI call failed even after its retry. A short honest reply beats
+      // silence; nothing was ordered or changed by a failed model call.
+      console.error("Agent turn failed; sending the temporary-trouble reply.", {
+        name: error?.name,
+        status: error?.status,
+        code: error?.code,
+      });
+      return pick(lang, AGENT_TROUBLE_REPLY);
+    }
 
-    return reply ?? PLACEHOLDER_REPLY_TEXT;
+    return reply ?? pick(lang, AGENT_TROUBLE_REPLY);
   } catch (error) {
     if (error instanceof SwiggyAuthFailureError) {
       // Swiggy rejected the token mid-conversation even though our locally

@@ -7,6 +7,7 @@ import {
 } from "./food-search-orchestrator.js";
 import { pick } from "./language-preference.js";
 import { parseStructuredPayload } from "./swiggy-food-client.js";
+import { isTransientSwiggyFailure } from "./swiggy-retry.js";
 
 const MAX_COUPONS = 5;
 const MIN_USUAL_ORDER_COUNT = 2;
@@ -1621,7 +1622,19 @@ const PLACE_ORDER_FAILED_REPLY = {
   hinglish: "Sorry, main abhi wo order place nahi kar saka. Thodi der mein phir try karein.",
 };
 
-export async function placeConfirmedOrder({ swiggyFoodClient, confirmation, lang = "en" }) {
+// Swiggy's guidance after a 5xx or network error on order placement: wait
+// 2-5 seconds, check get_food_orders, treat a new order as success, and
+// only retry the original call if none appeared.
+// https://mcp.swiggy.com/builders/docs/build/ship-to-production.md
+const ORDER_CHECK_DELAY_MS = 3000;
+const MAX_PLACE_ORDER_ATTEMPTS = 2;
+
+export async function placeConfirmedOrder({
+  swiggyFoodClient,
+  confirmation,
+  lang = "en",
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+}) {
   let orderId = confirmation.orderId;
   let lat = confirmation.lat;
   let lng = confirmation.lng;
@@ -1638,23 +1651,38 @@ export async function placeConfirmedOrder({ swiggyFoodClient, confirmation, lang
     }
 
     let placeResult;
-    try {
-      placeResult = await swiggyFoodClient.placeFoodOrder({
-        addressId: confirmation.addressId,
-        paymentMethod: confirmation.paymentMethod,
-      });
-    } catch {
-      const newOrder = priorOrderIds
-        ? await findOrderPlacedSinceSnapshot(swiggyFoodClient, confirmation.addressId, priorOrderIds)
-        : undefined;
+    for (let attempt = 1; attempt <= MAX_PLACE_ORDER_ATTEMPTS; attempt += 1) {
+      try {
+        placeResult = await swiggyFoodClient.placeFoodOrder({
+          addressId: confirmation.addressId,
+          paymentMethod: confirmation.paymentMethod,
+        });
+        break;
+      } catch (error) {
+        // Without a baseline there's no way to tell whether the order went
+        // through, so it is never retried.
+        if (!priorOrderIds) {
+          return { status: "failed", replyText: pick(lang, PLACE_ORDER_FAILED_REPLY) };
+        }
 
-      if (!newOrder) {
-        return { status: "failed", replyText: pick(lang, PLACE_ORDER_FAILED_REPLY) };
+        const transient = isTransientSwiggyFailure(error);
+        if (transient) {
+          await sleep(ORDER_CHECK_DELAY_MS);
+        }
+        const newOrder = await findOrderPlacedSinceSnapshot(swiggyFoodClient, confirmation.addressId, priorOrderIds);
+
+        if (newOrder) {
+          // It actually went through despite the error - fall through to
+          // confirm_order below instead of telling the user it failed.
+          orderId = newOrder.orderId;
+          break;
+        }
+
+        if (!transient || attempt === MAX_PLACE_ORDER_ATTEMPTS) {
+          return { status: "failed", replyText: pick(lang, PLACE_ORDER_FAILED_REPLY) };
+        }
+        console.warn("Retrying place_food_order after confirming no order was created.");
       }
-
-      // It actually went through despite the error - fall through to
-      // confirm_order below instead of telling the user it failed.
-      orderId = newOrder.orderId;
     }
 
     if (!orderId) {

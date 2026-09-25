@@ -18,6 +18,7 @@ import {
   viewCart,
 } from "../src/food-order-orchestrator.js";
 import { PendingAddressSelections } from "../src/pending-address-selection.js";
+import { SwiggyFoodToolError } from "../src/swiggy-food-client.js";
 import { PendingCartSessions } from "../src/pending-cart-sessions.js";
 import { PendingOrderConfirmations } from "../src/pending-order-confirmations.js";
 
@@ -2470,4 +2471,126 @@ test("recommendSimilar reuses an already-established session address without ask
   await recommendSimilar({ swiggyFoodClient: client, senderId: "sender-1", pendingAddressSelections, pendingCartSessions });
 
   assert.equal(getAddressesCalled, false);
+});
+
+function transientSwiggyError() {
+  return new SwiggyFoodToolError("place_food_order", Object.assign(new Error("Upstream error"), { code: 503 }));
+}
+
+function orderClient({ placeFoodOrder, ordersAfterFailure = [] }) {
+  const calls = [];
+  let orderListCalls = 0;
+  return {
+    calls,
+    client: {
+      getFoodOrders: async () => {
+        orderListCalls += 1;
+        calls.push("list");
+        return payload({ orders: orderListCalls === 1 ? [{ orderId: "old-1" }] : [{ orderId: "old-1" }, ...ordersAfterFailure] });
+      },
+      placeFoodOrder: async () => {
+        calls.push("place");
+        return placeFoodOrder(calls.filter((call) => call === "place").length);
+      },
+      confirmOrder: async () => {
+        calls.push("confirm");
+        return payload({ result: "success" });
+      },
+      flushFoodCart: async () => payload({ success: true }),
+    },
+  };
+}
+
+const noWait = async () => {};
+
+test("placeConfirmedOrder retries once after a transient failure when no order was created", async () => {
+  const { client, calls } = orderClient({
+    placeFoodOrder: (attempt) => {
+      if (attempt === 1) {
+        throw transientSwiggyError();
+      }
+      return payload({ orderId: "order-2", lat: 1, lng: 2 });
+    },
+  });
+
+  const result = await placeConfirmedOrder({
+    swiggyFoodClient: client,
+    confirmation: { addressId: "addr-1", cartId: 1, paymentMethod: "Cash" },
+    sleep: noWait,
+  });
+
+  assert.equal(result.status, "confirmed");
+  assert.deepEqual(calls, ["list", "place", "list", "place", "confirm"]);
+});
+
+test("placeConfirmedOrder never places a second order when the first one went through despite the error", async () => {
+  const { client, calls } = orderClient({
+    placeFoodOrder: () => {
+      throw transientSwiggyError();
+    },
+    ordersAfterFailure: [{ orderId: "order-new" }],
+  });
+
+  const result = await placeConfirmedOrder({
+    swiggyFoodClient: client,
+    confirmation: { addressId: "addr-1", cartId: 1, paymentMethod: "Cash" },
+    sleep: noWait,
+  });
+
+  assert.equal(result.status, "confirmed");
+  assert.equal(calls.filter((call) => call === "place").length, 1);
+});
+
+test("placeConfirmedOrder gives up after the second transient failure", async () => {
+  const { client, calls } = orderClient({
+    placeFoodOrder: () => {
+      throw transientSwiggyError();
+    },
+  });
+
+  const result = await placeConfirmedOrder({
+    swiggyFoodClient: client,
+    confirmation: { addressId: "addr-1", cartId: 1, paymentMethod: "Cash" },
+    sleep: noWait,
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(calls.filter((call) => call === "place").length, 2);
+});
+
+test("placeConfirmedOrder doesn't retry when Swiggy refuses the order", async () => {
+  const { client, calls } = orderClient({
+    placeFoodOrder: () => {
+      throw new SwiggyFoodToolError("place_food_order", { isError: true, content: [] });
+    },
+  });
+
+  const result = await placeConfirmedOrder({
+    swiggyFoodClient: client,
+    confirmation: { addressId: "addr-1", cartId: 1, paymentMethod: "Cash" },
+    sleep: noWait,
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(calls.filter((call) => call === "place").length, 1);
+});
+
+test("placeConfirmedOrder never retries when it couldn't record the order list first", async () => {
+  let placeCalls = 0;
+  const result = await placeConfirmedOrder({
+    swiggyFoodClient: {
+      getFoodOrders: async () => {
+        throw new Error("down");
+      },
+      placeFoodOrder: async () => {
+        placeCalls += 1;
+        throw transientSwiggyError();
+      },
+    },
+    confirmation: { addressId: "addr-1", cartId: 1, paymentMethod: "Cash" },
+    sleep: noWait,
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(placeCalls, 1);
 });

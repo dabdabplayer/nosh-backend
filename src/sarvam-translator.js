@@ -55,6 +55,10 @@ export function createSarvamTranslator({ apiKey, baseUrl, timeoutMs, client }) {
       apiSubscriptionKey: apiKey,
       baseUrl,
       timeoutInSeconds: Math.ceil(timeoutMs / 1000),
+      // The SDK retries 408/429/5xx on its own (default 2, with waits of up
+      // to 60s). One retry is enough for a chat reply; translation falls
+      // back to the untranslated text anyway.
+      maxRetries: 1,
     });
 
   async function translate(text, options) {

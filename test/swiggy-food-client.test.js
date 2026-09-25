@@ -257,3 +257,28 @@ test("reports Swiggy health, but never counts one user's expired login as an out
     configureStatusReporter(undefined);
   }
 });
+
+test("place_food_order is sent once even on a retryable error, while reads are retried", async () => {
+  const counts = { place_food_order: 0, get_addresses: 0 };
+  const client = createSwiggyFoodClient({
+    mcpUrl: "https://example.invalid/food",
+    token: "test-token",
+    createClient: () =>
+      fakeClient({
+        callTool: async ({ name }) => {
+          counts[name] += 1;
+          if (name === "place_food_order" || counts[name] === 1) {
+            throw Object.assign(new Error("Upstream error"), { code: 503 });
+          }
+          return { content: [] };
+        },
+      }),
+    createTransport: () => ({}),
+  });
+
+  await assert.rejects(client.placeFoodOrder({ addressId: "a" }));
+  await client.getAddresses({});
+
+  assert.equal(counts.place_food_order, 1);
+  assert.equal(counts.get_addresses, 2);
+});

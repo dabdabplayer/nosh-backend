@@ -67,6 +67,14 @@ export function parseStructuredPayload(toolResult) {
 // Wraps the official MCP SDK client so callers only depend on this
 // project's interface. `createClient`/`createTransport` are injectable for
 // testing without a real network connection.
+// Swiggy's production guide: reads and cart mutations are safe to retry
+// (cart updates are idempotent on the session), but order placement is
+// "not safe to blind-retry". These are called exactly once here, and
+// placeConfirmedOrder (food-order-orchestrator.js) checks get_food_orders
+// before ever trying again.
+// https://mcp.swiggy.com/builders/docs/build/ship-to-production.md
+const SINGLE_ATTEMPT_TOOLS = new Set(["place_food_order", "confirm_order"]);
+
 export function createSwiggyFoodClient({
   mcpUrl,
   token,
@@ -95,10 +103,13 @@ export function createSwiggyFoodClient({
 
     let result;
     try {
-      result = await withSwiggyRetry(async () => {
-        const client = await ensureConnected();
-        return client.callTool({ name, arguments: args });
-      });
+      result = await withSwiggyRetry(
+        async () => {
+          const client = await ensureConnected();
+          return client.callTool({ name, arguments: args });
+        },
+        SINGLE_ATTEMPT_TOOLS.has(name) ? { maxAttempts: 1 } : undefined,
+      );
     } catch (error) {
       // One user's expired login isn't a Swiggy outage.
       if (!(error instanceof SwiggyAuthFailureError)) {
