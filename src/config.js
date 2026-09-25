@@ -16,17 +16,18 @@ const DEFAULT_SWIGGY_TOKEN_STORE_PATH = "data/swiggy-tokens.json";
 const DEFAULT_NLU_BASE_URL = "https://api.sarvam.ai";
 const DEFAULT_NLU_TIMEOUT_MS = 15_000;
 
-// The agent (src/agent.js) runs on Qwen via Alibaba Cloud Model Studio's
-// OpenAI-compatible Chat Completions endpoint. There is deliberately no
-// default base URL: the endpoint is per region/workspace, and the region
-// decides where users' messages, carts and addresses are processed.
-const DEFAULT_AGENT_MODEL = "qwen3.8-flash";
+// The agent (src/agent.js) runs on Gemini through the Gemini API's
+// OpenAI-compatible Chat Completions endpoint
+// (https://ai.google.dev/gemini-api/docs/openai).
+const DEFAULT_AGENT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai";
+const DEFAULT_AGENT_MODEL = "gemini-3.8-flash";
 // Per completions call, not per turn - later rounds of a multi-tool turn
 // carry more context and run longer.
 const DEFAULT_AGENT_TIMEOUT_MS = 35_000;
-// qwen3.8-flash thinks by default; the budget caps reasoning tokens per
-// call (documented range 1-32768). 0 turns thinking off.
-const DEFAULT_AGENT_THINKING_BUDGET = 2048;
+// Sent as reasoning_effort; "medium" is gemini-3.8-flash's own default.
+// Higher effort means slower first replies, which matters on WhatsApp.
+const DEFAULT_AGENT_REASONING_EFFORT = "medium";
+const VALID_AGENT_REASONING_EFFORTS = new Set(["minimal", "low", "medium", "high"]);
 
 function readPort(value) {
   if (value === undefined || value === "") {
@@ -134,15 +135,15 @@ function readTestModeFlag(value) {
 
 const swiggyTestModeEnabled = readTestModeFlag(process.env.SWIGGY_TEST_MODE);
 
-function readNonNegativeInteger(value, name, defaultValue, { allowZero = false } = {}) {
+function readPositiveInteger(value, name, defaultValue) {
   if (value === undefined || value === "") {
     return defaultValue;
   }
 
   const parsed = Number(value);
 
-  if (!Number.isInteger(parsed) || parsed < 0 || (!allowZero && parsed === 0)) {
-    throw new Error(`${name} must be a ${allowZero ? "non-negative" : "positive"} integer.`);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${name} must be a positive integer.`);
   }
 
   return parsed;
@@ -150,20 +151,19 @@ function readNonNegativeInteger(value, name, defaultValue, { allowZero = false }
 
 const nluApiKey = readOptionalSecret(process.env.NLU_API_KEY, "NLU_API_KEY");
 const nluBaseUrl = readOptionalSecret(process.env.NLU_BASE_URL, "NLU_BASE_URL") ?? DEFAULT_NLU_BASE_URL;
-const nluTimeoutMs = readNonNegativeInteger(process.env.NLU_TIMEOUT_MS, "NLU_TIMEOUT_MS", DEFAULT_NLU_TIMEOUT_MS);
+const nluTimeoutMs = readPositiveInteger(process.env.NLU_TIMEOUT_MS, "NLU_TIMEOUT_MS", DEFAULT_NLU_TIMEOUT_MS);
 
 const agentApiKey = readOptionalSecret(process.env.AGENT_API_KEY, "AGENT_API_KEY");
-const agentBaseUrl = readOptionalSecret(process.env.AGENT_BASE_URL, "AGENT_BASE_URL");
+const agentBaseUrl = readOptionalSecret(process.env.AGENT_BASE_URL, "AGENT_BASE_URL") ?? DEFAULT_AGENT_BASE_URL;
 const agentModel = readOptionalSecret(process.env.AGENT_MODEL, "AGENT_MODEL") ?? DEFAULT_AGENT_MODEL;
-const agentTimeoutMs = readNonNegativeInteger(process.env.AGENT_TIMEOUT_MS, "AGENT_TIMEOUT_MS", DEFAULT_AGENT_TIMEOUT_MS);
-const agentThinkingBudget = readNonNegativeInteger(
-  process.env.AGENT_THINKING_BUDGET,
-  "AGENT_THINKING_BUDGET",
-  DEFAULT_AGENT_THINKING_BUDGET,
-  { allowZero: true },
-);
+const agentTimeoutMs = readPositiveInteger(process.env.AGENT_TIMEOUT_MS, "AGENT_TIMEOUT_MS", DEFAULT_AGENT_TIMEOUT_MS);
+const agentReasoningEffort = process.env.AGENT_REASONING_EFFORT || DEFAULT_AGENT_REASONING_EFFORT;
 
-// Optional: pushes Swiggy/Qwen/Sarvam/WhatsApp health to an Atlassian
+if (!VALID_AGENT_REASONING_EFFORTS.has(agentReasoningEffort)) {
+  throw new Error('AGENT_REASONING_EFFORT must be "minimal", "low", "medium", or "high".');
+}
+
+// Optional: pushes Swiggy/Gemini/Sarvam/WhatsApp health to an Atlassian
 // Statuspage page (src/status-reporter.js). Each component id is the one
 // shown for that component in the Statuspage dashboard; any left unset is
 // simply not reported.
@@ -180,12 +180,6 @@ const statuspageComponentIds = Object.freeze({
   translation: readOptionalSecret(process.env.STATUSPAGE_COMPONENT_TRANSLATION, "STATUSPAGE_COMPONENT_TRANSLATION"),
   whatsapp: readOptionalSecret(process.env.STATUSPAGE_COMPONENT_WHATSAPP, "STATUSPAGE_COMPONENT_WHATSAPP"),
 });
-
-if (agentApiKey && !agentBaseUrl) {
-  throw new Error(
-    "AGENT_BASE_URL is required when AGENT_API_KEY is set - use the Model Studio Chat Completions endpoint for your region/workspace (ending in /compatible-mode/v1).",
-  );
-}
 
 const swiggyOAuthClientId =
   readOptionalSecret(process.env.SWIGGY_OAUTH_CLIENT_ID, "SWIGGY_OAUTH_CLIENT_ID") ??
@@ -293,7 +287,7 @@ export const config = Object.freeze({
     enabled: Boolean(agentApiKey),
     model: agentModel,
     timeoutMs: agentTimeoutMs,
-    thinkingBudget: agentThinkingBudget,
+    reasoningEffort: agentReasoningEffort,
   }),
   swiggyOAuth: Object.freeze({
     authBaseUrl: swiggyOAuthBaseUrl,

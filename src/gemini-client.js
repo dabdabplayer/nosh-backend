@@ -1,19 +1,19 @@
 import { COMPONENTS, isOutageStatus, reportFailure, reportSuccess } from "./status-reporter.js";
 
-// Minimal client for Alibaba Cloud Model Studio's OpenAI-compatible Chat
-// Completions endpoint (https://www.alibabacloud.com/help/en/model-studio/compatibility-of-openai-with-dashscope).
-// Exposes the same `chat.completions(request)` shape runAgentTurn calls, so
-// tests can inject a fake client.
-export class QwenApiError extends Error {
+// Minimal client for the Gemini API's OpenAI-compatible Chat Completions
+// endpoint (https://ai.google.dev/gemini-api/docs/openai). Exposes the same
+// `chat.completions(request)` shape runAgentTurn calls, so tests can inject
+// a fake client.
+export class GeminiApiError extends Error {
   constructor(status, code) {
-    super(`Qwen chat completion failed with status ${status}${code ? ` (${code})` : ""}.`);
-    this.name = "QwenApiError";
+    super(`Gemini chat completion failed with status ${status}${code ? ` (${code})` : ""}.`);
+    this.name = "GeminiApiError";
     this.status = status;
     this.code = code;
   }
 }
 
-export function createQwenClient({ apiKey, baseUrl, timeoutMs, fetchImpl = fetch }) {
+export function createGeminiClient({ apiKey, baseUrl, timeoutMs, fetchImpl = fetch }) {
   const url = `${baseUrl.replace(/\/+$/, "")}/chat/completions`;
 
   return {
@@ -41,13 +41,16 @@ export function createQwenClient({ apiKey, baseUrl, timeoutMs, fetchImpl = fetch
           }
           // Only the status and the provider's error code are surfaced - the
           // error body can echo request content, which stays out of logs.
+          // Gemini sometimes wraps the error object in a one-element array.
           let code;
           try {
-            code = (await response.json())?.error?.code;
+            const body = await response.json();
+            const error = Array.isArray(body) ? body[0]?.error : body?.error;
+            code = error?.status ?? error?.code;
           } catch {
             code = undefined;
           }
-          throw new QwenApiError(response.status, typeof code === "string" ? code : undefined);
+          throw new GeminiApiError(response.status, typeof code === "string" ? code : undefined);
         }
 
         reportSuccess(COMPONENTS.agent);

@@ -1,4 +1,4 @@
-import { createQwenClient } from "./qwen-client.js";
+import { createGeminiClient } from "./gemini-client.js";
 import { detectLanguage, pick } from "./language-preference.js";
 import { searchFood } from "./food-search-orchestrator.js";
 import {
@@ -527,20 +527,9 @@ function parseToolArgs(toolCall) {
 let cachedClient;
 function getClient(agent) {
   if (!cachedClient) {
-    cachedClient = createQwenClient({ apiKey: agent.apiKey, baseUrl: agent.baseUrl, timeoutMs: agent.timeoutMs });
+    cachedClient = createGeminiClient({ apiKey: agent.apiKey, baseUrl: agent.baseUrl, timeoutMs: agent.timeoutMs });
   }
   return cachedClient;
-}
-
-// Qwen's thinking controls are top-level body fields, not reasoning_effort
-// (https://www.alibabacloud.com/help/en/model-studio/deep-thinking).
-// tool_choice is left out on purpose: "auto" is the default, and Alibaba's
-// function-calling docs say sending it in thinking mode keeps the model
-// returning tool calls when it should be writing its reply.
-function thinkingOptions(agent) {
-  return agent.thinkingBudget > 0
-    ? { enable_thinking: true, thinking_budget: agent.thinkingBudget }
-    : { enable_thinking: false };
 }
 
 // Runs one full agentic turn: the model decides which real Swiggy tools (if
@@ -664,8 +653,9 @@ export async function runAgentTurn({
       model: agent.model,
       messages,
       tools: TOOLS,
-      ...thinkingOptions(agent),
-      temperature: 0.4,
+      reasoning_effort: agent.reasoningEffort,
+      // No temperature: Google recommends Gemini 3's default of 1.0, since
+      // lower values can cause looping on reasoning-heavy turns.
       max_tokens: MAX_TOKENS,
     });
 
@@ -753,6 +743,9 @@ export async function runAgentTurn({
       return withCartReplacementNote(await toUserLanguage(safeFinalText));
     }
 
+    // tool_calls must go back exactly as received: each carries Gemini's
+    // thought signature (extra_content.google.thought_signature), and a
+    // missing one fails the next request with a 400.
     messages.push({ role: "assistant", content: responseMessage.content ?? null, tool_calls: toolCalls });
 
     // Set the moment any tool call this round comes back terminal (see

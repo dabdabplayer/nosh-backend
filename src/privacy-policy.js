@@ -24,7 +24,7 @@ export const PRIVACY_POLICY_HTML = `<!doctype html>
 </head>
 <body>
 <h1>Nosh Privacy Policy</h1>
-<p class="updated">Last updated: 23 September 2026</p>
+<p class="updated">Last updated: 25 September 2026</p>
 
 <p>Nosh Labs ("Nosh", "we", "us") operates Nosh, a WhatsApp-based conversational
 assistant that helps you search for restaurants, build a cart, and place
@@ -70,11 +70,12 @@ message Nosh on WhatsApp and how we handle it.</p>
   data; Nosh only accesses what's needed to act on your request, and Swiggy's
   own terms prohibit us from using that data for training, profiling, or any
   purpose beyond fulfilling it.</li>
-  <li><strong>Alibaba Cloud (Qwen)</strong> - the AI model that interprets
+  <li><strong>Google (Gemini API)</strong> - the AI model that interprets
   your request, decides what to look up on Swiggy, and writes Nosh's replies.
   To do that it receives the text of your messages and the Swiggy data
   needed for the current request, such as restaurant and menu results, your
-  cart, and the labels of your saved addresses.</li>
+  cart, and the labels of your saved addresses. We use Google's paid service,
+  under which Google does not use this data to improve its products.</li>
   <li><strong>Sarvam AI</strong> - translates messages you write in Hindi or
   Hinglish into English for the model above, and translates Nosh's replies
   back into your language. It receives only the text being translated, which

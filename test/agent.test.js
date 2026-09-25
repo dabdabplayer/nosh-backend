@@ -7,7 +7,7 @@ import { PendingCartSessions } from "../src/pending-cart-sessions.js";
 import { PendingConversationHistory } from "../src/pending-conversation-history.js";
 import { PendingOrderConfirmations } from "../src/pending-order-confirmations.js";
 
-const agent = Object.freeze({ apiKey: "test-key", baseUrl: "https://example.test", model: "qwen3.8-flash", timeoutMs: 1000, thinkingBudget: 1024 });
+const agent = Object.freeze({ apiKey: "test-key", baseUrl: "https://example.test", model: "gemini-3.8-flash", timeoutMs: 1000, reasoningEffort: "low" });
 
 function toolCallResponse(toolCalls) {
   return { choices: [{ message: { tool_calls: toolCalls } }] };
@@ -967,7 +967,7 @@ function fakeSarvam(translateImpl) {
   return { translator, calls };
 }
 
-test("runAgentTurn sends Qwen's thinking controls and never tool_choice or reasoning_effort", async () => {
+test("runAgentTurn sends Gemini's reasoning_effort and leaves temperature and tool_choice at their defaults", async () => {
   const requests = [];
   const client = fakeClient(async (request) => {
     requests.push(request);
@@ -975,23 +975,30 @@ test("runAgentTurn sends Qwen's thinking controls and never tool_choice or reaso
   });
 
   await runAgentTurn({ message: { from: "sender-1", text: "hi" }, swiggyFoodClient: fakeSwiggyClient(), ...newContext(), agent, client });
-  await runAgentTurn({
-    message: { from: "sender-1", text: "hi" },
-    swiggyFoodClient: fakeSwiggyClient(),
-    ...newContext(),
-    agent: { ...agent, thinkingBudget: 0 },
-    client,
+
+  assert.equal(requests[0].model, "gemini-3.8-flash");
+  assert.equal(requests[0].reasoning_effort, "low");
+  assert.equal("temperature" in requests[0], false);
+  assert.equal("tool_choice" in requests[0], false);
+});
+
+test("runAgentTurn sends each tool call back exactly as received, so Gemini's thought signature survives", async () => {
+  const requests = [];
+  const toolCall = {
+    id: "call_1",
+    type: "function",
+    function: { name: "search_food", arguments: JSON.stringify({ query: "biryani" }) },
+    extra_content: { google: { thought_signature: "opaque-signature" } },
+  };
+  const client = fakeClient(async (request) => {
+    requests.push(structuredClone(request));
+    return requests.length === 1 ? toolCallResponse([toolCall]) : textResponse("Found some places.");
   });
 
-  assert.equal(requests[0].model, "qwen3.8-flash");
-  assert.equal(requests[0].enable_thinking, true);
-  assert.equal(requests[0].thinking_budget, 1024);
-  assert.equal(requests[1].enable_thinking, false);
-  assert.equal("thinking_budget" in requests[1], false);
-  for (const request of requests) {
-    assert.equal("tool_choice" in request, false);
-    assert.equal("reasoning_effort" in request, false);
-  }
+  await runAgentTurn({ message: { from: "sender-1", text: "biryani" }, swiggyFoodClient: fakeSwiggyClient(), ...newContext(), agent, client });
+
+  const replayed = requests[1].messages.find((message) => message.role === "assistant" && message.tool_calls);
+  assert.deepEqual(replayed.tool_calls[0], toolCall);
 });
 
 test("runAgentTurn translates a Hindi message to English for the model and the reply back to Hindi", async () => {
