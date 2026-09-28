@@ -48,8 +48,11 @@ async function errorCodeOf(response) {
   }
 }
 
+// `apiKey` for the Gemini API; `getAuthToken` (an async function) for
+// Vertex AI, whose access tokens expire and are refreshed between calls.
 export function createGeminiClient({
   apiKey,
+  getAuthToken = async () => apiKey,
   baseUrl,
   timeoutMs,
   fetchImpl = fetch,
@@ -58,10 +61,11 @@ export function createGeminiClient({
   const url = `${baseUrl.replace(/\/+$/, "")}/chat/completions`;
 
   async function attempt(request) {
+    const token = await getAuthToken();
     return fetchImpl(url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify(request),

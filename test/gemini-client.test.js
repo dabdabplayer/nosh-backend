@@ -117,3 +117,25 @@ test("createGeminiClient retries a network error but not a timeout", async () =>
   await assert.rejects(timingOut.chat.completions({}), (error) => error.name === "TimeoutError");
   assert.equal(timeoutCalls.length, 1);
 });
+
+test("createGeminiClient sends a freshly fetched token on every call when given getAuthToken", async () => {
+  const headers = [];
+  let token = 0;
+  const client = createGeminiClient({
+    getAuthToken: async () => `vertex-token-${++token}`,
+    baseUrl: "https://aiplatform.googleapis.com/v1/projects/p/locations/global/endpoints/openapi",
+    timeoutMs: 1000,
+    fetchImpl: async (url, init) => {
+      headers.push([url, init.headers.Authorization]);
+      return new Response(JSON.stringify({ choices: [] }), { status: 200 });
+    },
+  });
+
+  await client.chat.completions({});
+  await client.chat.completions({});
+
+  assert.deepEqual(headers, [
+    ["https://aiplatform.googleapis.com/v1/projects/p/locations/global/endpoints/openapi/chat/completions", "Bearer vertex-token-1"],
+    ["https://aiplatform.googleapis.com/v1/projects/p/locations/global/endpoints/openapi/chat/completions", "Bearer vertex-token-2"],
+  ]);
+});

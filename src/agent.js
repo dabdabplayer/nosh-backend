@@ -1,4 +1,5 @@
 import { createGeminiClient } from "./gemini-client.js";
+import { createVertexTokenProvider } from "./vertex-auth.js";
 import { detectLanguage, pick } from "./language-preference.js";
 import { searchFood } from "./food-search-orchestrator.js";
 import {
@@ -527,7 +528,12 @@ function parseToolArgs(toolCall) {
 let cachedClient;
 function getClient(agent) {
   if (!cachedClient) {
-    cachedClient = createGeminiClient({ apiKey: agent.apiKey, baseUrl: agent.baseUrl, timeoutMs: agent.timeoutMs });
+    cachedClient = createGeminiClient({
+      apiKey: agent.apiKey,
+      getAuthToken: agent.serviceAccount ? createVertexTokenProvider(agent.serviceAccount) : undefined,
+      baseUrl: agent.baseUrl,
+      timeoutMs: agent.timeoutMs,
+    });
   }
   return cachedClient;
 }

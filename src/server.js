@@ -52,6 +52,13 @@ const processedMessageIds = new InProcessMessageIdempotency();
 // Without a Sarvam key the agent still works; it just sees and answers in
 // the user's raw language instead of translated English.
 const translator = config.translation.enabled ? createSarvamTranslator(config.translation) : undefined;
+if (config.agent.enabled) {
+  console.info("Agent model configured.", {
+    provider: config.agent.provider,
+    model: config.agent.model,
+    host: new URL(config.agent.baseUrl).host,
+  });
+}
 if (config.statuspage.enabled) {
   configureStatusReporter(
     createStatusReporter({

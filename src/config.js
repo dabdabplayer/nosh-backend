@@ -1,3 +1,5 @@
+import { parseServiceAccountKey, vertexModelName, vertexOpenAiBaseUrl } from "./vertex-auth.js";
+
 const DEFAULT_PORT = 3000;
 const DEFAULT_WHATSAPP_WEBHOOK_PATH = "/webhooks/whatsapp";
 const DEFAULT_WHATSAPP_API_VERSION = "v21.0";
@@ -20,7 +22,12 @@ const DEFAULT_NLU_TIMEOUT_MS = 15_000;
 // OpenAI-compatible Chat Completions endpoint
 // (https://ai.google.dev/gemini-api/docs/openai).
 const DEFAULT_AGENT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai";
-const DEFAULT_AGENT_MODEL = "gemini-3.8-flash";
+const DEFAULT_AGENT_MODEL = "gemini-3.5-flash-lite";
+// With GOOGLE_SERVICE_ACCOUNT_JSON set, the agent uses Gemini on Vertex AI
+// (Google Cloud) instead: authenticated with the service account, billed to
+// its project, and processed in VERTEX_LOCATION. Gemini 3.5 Flash-Lite is
+// served in "global" or the "us"/"eu" multi-regions.
+const DEFAULT_VERTEX_LOCATION = "global";
 // Per completions call, not per turn - later rounds of a multi-tool turn
 // carry more context and run longer.
 const DEFAULT_AGENT_TIMEOUT_MS = 35_000;
@@ -154,8 +161,23 @@ const nluBaseUrl = readOptionalSecret(process.env.NLU_BASE_URL, "NLU_BASE_URL") 
 const nluTimeoutMs = readPositiveInteger(process.env.NLU_TIMEOUT_MS, "NLU_TIMEOUT_MS", DEFAULT_NLU_TIMEOUT_MS);
 
 const agentApiKey = readOptionalSecret(process.env.AGENT_API_KEY, "AGENT_API_KEY");
-const agentBaseUrl = readOptionalSecret(process.env.AGENT_BASE_URL, "AGENT_BASE_URL") ?? DEFAULT_AGENT_BASE_URL;
-const agentModel = readOptionalSecret(process.env.AGENT_MODEL, "AGENT_MODEL") ?? DEFAULT_AGENT_MODEL;
+const googleServiceAccountJson = readOptionalSecret(
+  process.env.GOOGLE_SERVICE_ACCOUNT_JSON,
+  "GOOGLE_SERVICE_ACCOUNT_JSON",
+);
+const vertexServiceAccount = googleServiceAccountJson ? parseServiceAccountKey(googleServiceAccountJson) : undefined;
+const vertexProjectId =
+  readOptionalSecret(process.env.VERTEX_PROJECT_ID, "VERTEX_PROJECT_ID") ?? vertexServiceAccount?.project_id;
+const vertexLocation = readOptionalSecret(process.env.VERTEX_LOCATION, "VERTEX_LOCATION") ?? DEFAULT_VERTEX_LOCATION;
+const agentProvider = vertexServiceAccount ? "vertex" : "gemini-api";
+
+const configuredAgentModel = readOptionalSecret(process.env.AGENT_MODEL, "AGENT_MODEL") ?? DEFAULT_AGENT_MODEL;
+const agentModel = vertexServiceAccount ? vertexModelName(configuredAgentModel) : configuredAgentModel;
+const agentBaseUrl =
+  readOptionalSecret(process.env.AGENT_BASE_URL, "AGENT_BASE_URL") ??
+  (vertexServiceAccount
+    ? vertexOpenAiBaseUrl({ projectId: vertexProjectId, location: vertexLocation })
+    : DEFAULT_AGENT_BASE_URL);
 const agentTimeoutMs = readPositiveInteger(process.env.AGENT_TIMEOUT_MS, "AGENT_TIMEOUT_MS", DEFAULT_AGENT_TIMEOUT_MS);
 const agentReasoningEffort = process.env.AGENT_REASONING_EFFORT || DEFAULT_AGENT_REASONING_EFFORT;
 
@@ -282,9 +304,11 @@ export const config = Object.freeze({
     componentIds: statuspageComponentIds,
   }),
   agent: Object.freeze({
+    provider: agentProvider,
     apiKey: agentApiKey,
+    serviceAccount: vertexServiceAccount,
     baseUrl: agentBaseUrl,
-    enabled: Boolean(agentApiKey),
+    enabled: Boolean(vertexServiceAccount || agentApiKey),
     model: agentModel,
     timeoutMs: agentTimeoutMs,
     reasoningEffort: agentReasoningEffort,
