@@ -2680,3 +2680,30 @@ test("recommendSimilar with vegOnly says nothing veg came up rather than offerin
   assert.match(reply, /No real vegetarian items/);
   assert.doesNotMatch(reply, /Cheeseburger/);
 });
+
+test("recommendSimilar with vegOnly and a missed craving still explores new restaurants and says the picks are veg", async () => {
+  const client = fakeClient({
+    getFoodOrders: async () =>
+      payload({
+        orders: [orderSummary({ orderId: "o1", restaurantId: "rest-1", restaurantName: "Pizza Place", orderedItems: "1x Margherita" })],
+      }),
+    searchRestaurants: async ({ query }) =>
+      query === "paneer"
+        ? payload({ restaurants: [] })
+        : payload({ restaurants: [{ id: "rest-9", name: "Taco Fiesta", availabilityStatus: "OPEN" }] }),
+    getRestaurantMenu: async ({ restaurantId }) =>
+      restaurantId === "rest-1"
+        ? restaurantMenuItemsPayload([{ id: "i1", name: "Margherita", price: 219, inStock: 1, isVeg: true }])
+        : restaurantMenuItemsPayload([
+            { id: "i9", name: "Veg Tacos", price: 219, inStock: 1, isVeg: true },
+            { id: "i8", name: "Chicken Tacos", price: 249, inStock: 1, isVeg: false },
+          ]),
+  });
+
+  const reply = await recommendSimilar({ swiggyFoodClient: client, craving: "paneer", vegOnly: true });
+
+  assert.match(reply, /Veg Tacos — ₹219/);
+  assert.doesNotMatch(reply, /Chicken Tacos/);
+  assert.match(reply, /every item below is vegetarian/);
+  assert.doesNotMatch(reply, /tell them honestly that nothing matched/);
+});

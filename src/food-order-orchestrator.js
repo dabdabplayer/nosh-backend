@@ -805,7 +805,11 @@ export async function recommendSimilar({
   const existingSession = pendingCartSessions?.peek(senderId);
   const alreadyExploredIds = existingSession?.exploredRestaurantIds ?? [];
 
-  const exploreRestaurants = cravingMissed
+  // With vegOnly, a craving miss still explores: the user's real ask is
+  // "something veg", every explored item is filtered to veg, and the header
+  // below says not to present it as the craving. Without this, a missed
+  // craving like "paneer" left only already-ordered history items.
+  const exploreRestaurants = cravingMissed && !vegOnly
     ? []
     : await findExploreRestaurants({
         swiggyFoodClient,
@@ -839,7 +843,11 @@ export async function recommendSimilar({
       : GENERIC_FALLBACK_REPLY;
   }
 
-  const header = cravingMissed
+  const header = cravingMissed && vegOnly
+    ? `Nothing open matched "${craving}", but every item below is vegetarian, from this user's order history ` +
+      "or a restaurant they haven't tried - offer one as a veg pick without claiming it is " +
+      `"${craving}", and don't say their veg request found nothing:`
+    : cravingMissed
     ? `Nothing real was open for "${craving}", so here are real candidates from this user's actual order history ` +
       "and each restaurant's real current menu instead - tell them honestly that nothing matched what they asked " +
       "for, then offer one of these as an alternative. Do NOT claim any of these satisfies their stated craving:"
