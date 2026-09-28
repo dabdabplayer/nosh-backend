@@ -23,7 +23,7 @@ function noOpenRestaurantsReply(searchTerm, lang = "en") {
 // Position words people use to pick from a numbered list, in English,
 // Hindi and Hinglish. "last" is resolved against the list's length.
 const ORDINAL_POSITIONS = new Map([
-  ["first", 1], ["1st", 1], ["pehla", 1], ["pehli", 1], ["pahla", 1], ["pahli", 1], ["पहला", 1], ["पहली", 1],
+  ["first", 1], ["1st", 1], ["pehla", 1], ["pehli", 1], ["pahla", 1], ["pahli", 1], ["pehela", 1], ["pahela", 1], ["pehle", 1], ["पहला", 1], ["पहली", 1],
   ["second", 2], ["2nd", 2], ["doosra", 2], ["dusra", 2], ["doosri", 2], ["dusri", 2], ["दूसरा", 2], ["दूसरी", 2],
   ["third", 3], ["3rd", 3], ["teesra", 3], ["tisra", 3], ["teesri", 3], ["तीसरा", 3], ["तीसरी", 3],
   ["fourth", 4], ["4th", 4], ["chautha", 4], ["चौथा", 4],

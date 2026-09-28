@@ -37,6 +37,10 @@ const HINGLISH_WORD_RE = new RegExp(`\\b(${HINGLISH_WORDS.join("|")})\\b`, "i");
 // stored preference off one of these would overwrite a real earlier signal
 // with nothing meaningful.
 const AMBIGUOUS_RE = /^(\d+|yes|y|no|n|confirm|confirmed|cancel|cancelled|canceled|stop|place( it)?|proceed|ok|okay)$/i;
+// A one-word pick from a list ("First", "Pehla", "Home", "ghar") says nothing
+// about which language the user prefers, so it keeps the previous one.
+const LIST_PICK_WORD_RE =
+  /^(first|second|third|last|1st|2nd|3rd|pehla|pehli|pehela|pahla|pahli|pahela|pehle|dusra|doosra|dusri|doosri|teesra|tisra|home|work|other|office|ghar|house)$/i;
 
 // Returns "hi" | "hinglish" | "en", or undefined when the text carries no
 // real signal either way (empty, a bare number, a bare yes/no/confirm token
@@ -45,7 +49,7 @@ const AMBIGUOUS_RE = /^(\d+|yes|y|no|n|confirm|confirmed|cancel|cancelled|cancel
 export function detectLanguage(text) {
   const trimmed = (text ?? "").trim();
 
-  if (!trimmed || AMBIGUOUS_RE.test(trimmed)) {
+  if (!trimmed || AMBIGUOUS_RE.test(trimmed) || LIST_PICK_WORD_RE.test(trimmed)) {
     return undefined;
   }
 

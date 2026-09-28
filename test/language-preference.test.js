@@ -99,3 +99,11 @@ test("pick returns the matching language variant, falling back to English", () =
   assert.equal(pick("fr", variants), "Hello");
   assert.equal(pick(undefined, variants), "Hello");
 });
+
+test("detectLanguage treats a one-word list pick as no language signal", () => {
+  for (const word of ["First", "Pehla", "Pehela", "dusra", "Home", "work", "ghar"]) {
+    assert.equal(detectLanguage(word), undefined, word);
+  }
+  assert.equal(detectLanguage("mujhe pizza chahiye"), "hinglish");
+  assert.equal(detectLanguage("show my cart"), "en");
+});

@@ -545,3 +545,9 @@ test("resolvePendingAddressReply accepts 'First' for the address prompt", async 
   assert.equal(outcome.handled, true);
   assert.deepEqual(searchCalls, [{ query: "pasta", addressId: "addr-1" }]);
 });
+
+test("parseAddressSelectionReply accepts common spellings of pehla", () => {
+  assert.equal(parseAddressSelectionReply("Pehela", 2), 0);
+  assert.equal(parseAddressSelectionReply("pahela wala", 2), 0);
+  assert.equal(parseAddressSelectionReply("pehle", 2), 0);
+});
