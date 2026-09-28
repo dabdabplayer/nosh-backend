@@ -505,3 +505,43 @@ test("resolvePendingAddressReply accepts the address's name instead of its numbe
   assert.deepEqual(searchCalls, [{ query: "biryani", addressId: "addr-2" }]);
   assert.equal(outcome.handled, true);
 });
+
+test("parseAddressSelectionReply accepts position words as well as numbers", () => {
+  assert.equal(parseAddressSelectionReply("First", 2), 0);
+  assert.equal(parseAddressSelectionReply("the first one", 2), 0);
+  assert.equal(parseAddressSelectionReply("1st", 2), 0);
+  assert.equal(parseAddressSelectionReply("option 2", 2), 1);
+  assert.equal(parseAddressSelectionReply("pehla wala", 2), 0);
+  assert.equal(parseAddressSelectionReply("पहला", 2), 0);
+  assert.equal(parseAddressSelectionReply("dusra", 2), 1);
+  assert.equal(parseAddressSelectionReply("last", 3), 2);
+});
+
+test("parseAddressSelectionReply leaves sentences and out-of-range picks to the agent", () => {
+  assert.equal(parseAddressSelectionReply("First I want pizza", 2), undefined);
+  assert.equal(parseAddressSelectionReply("third", 2), undefined);
+  assert.equal(parseAddressSelectionReply("one", 2), undefined);
+});
+
+test("resolvePendingAddressReply accepts 'First' for the address prompt", async () => {
+  const pending = new PendingAddressSelections();
+  const searchCalls = [];
+  const client = fakeSwiggyFoodClient({
+    getAddresses: async () => payload(ambiguousAddresses),
+    searchRestaurants: async (params) => {
+      searchCalls.push(params);
+      return payload({ restaurants: [restaurant()] });
+    },
+  });
+
+  await searchFood("sender-1", "pasta", client, pending, undefined);
+  const outcome = await resolvePendingAddressReply({
+    message: message("First"),
+    swiggyFoodClient: client,
+    pendingAddressSelections: pending,
+    pendingCartSessions: undefined,
+  });
+
+  assert.equal(outcome.handled, true);
+  assert.deepEqual(searchCalls, [{ query: "pasta", addressId: "addr-1" }]);
+});

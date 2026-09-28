@@ -20,17 +20,47 @@ function noOpenRestaurantsReply(searchTerm, lang = "en") {
   });
 }
 
-// A reply to a pending "which address?" prompt is just the 1-based number of
-// the chosen candidate.
-export function parseAddressSelectionReply(text, candidateCount) {
-  const trimmed = text.trim();
+// Position words people use to pick from a numbered list, in English,
+// Hindi and Hinglish. "last" is resolved against the list's length.
+const ORDINAL_POSITIONS = new Map([
+  ["first", 1], ["1st", 1], ["pehla", 1], ["pehli", 1], ["pahla", 1], ["pahli", 1], ["पहला", 1], ["पहली", 1],
+  ["second", 2], ["2nd", 2], ["doosra", 2], ["dusra", 2], ["doosri", 2], ["dusri", 2], ["दूसरा", 2], ["दूसरी", 2],
+  ["third", 3], ["3rd", 3], ["teesra", 3], ["tisra", 3], ["teesri", 3], ["तीसरा", 3], ["तीसरी", 3],
+  ["fourth", 4], ["4th", 4], ["chautha", 4], ["चौथा", 4],
+  ["fifth", 5], ["5th", 5], ["panchva", 5], ["paanchva", 5], ["पांचवां", 5],
+]);
+// Words that can surround the pick without changing it ("the first one",
+// "option 2", "pehla wala", "no. 1 please").
+const SELECTION_FILLER_WORDS = new Set([
+  "the", "one", "option", "number", "no", "num", "#", "please", "pls", "plz", "wala", "wali", "vala", "vali", "waala", "vaala",
+]);
 
-  if (!/^\d+$/.test(trimmed)) {
+// A reply to a numbered list ("which address?", restaurants, dishes): a
+// number or a position word, optionally with filler words around it.
+// Anything else returns undefined, so the reply goes to the agent instead.
+export function parseAddressSelectionReply(text, candidateCount) {
+  const words = text
+    .toLowerCase()
+    .replace(/[.,!?#:)(]/g, " ")
+    .split(/\s+/)
+    .filter((word) => word && !SELECTION_FILLER_WORDS.has(word));
+
+  if (words.length !== 1) {
     return undefined;
   }
 
-  const index = Number(trimmed) - 1;
-  return index >= 0 && index < candidateCount ? index : undefined;
+  const [word] = words;
+  let position;
+  if (/^\d+$/.test(word)) {
+    position = Number(word);
+  } else if (word === "last" || word === "aakhri" || word === "akhri" || word === "आखिरी") {
+    position = candidateCount;
+  } else {
+    position = ORDINAL_POSITIONS.get(word);
+  }
+
+  const index = position - 1;
+  return Number.isInteger(index) && index >= 0 && index < candidateCount ? index : undefined;
 }
 
 export function formatAddressLabel(address) {
@@ -51,7 +81,7 @@ export function toAddressCandidate(address) {
 const ADDRESS_TAG_SYNONYMS = {
   home: ["home", "house", "ghar", "घर"],
   work: ["work", "office", "ofc", "daftar", "ऑफिस", "ऑफ़िस", "दफ्तर", "दफ़्तर"],
-  other: ["other", "others", "dusra", "doosra", "दूसरा"],
+  other: ["other", "others"],
 };
 const MAX_ADDRESS_NAME_REPLY_WORDS = 5;
 
