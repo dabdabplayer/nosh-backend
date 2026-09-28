@@ -1,5 +1,6 @@
 import { createGeminiClient } from "./gemini-client.js";
 import { createVertexTokenProvider } from "./vertex-auth.js";
+import { SwiggyRateLimitedError } from "./swiggy-retry.js";
 import { detectLanguage, pick } from "./language-preference.js";
 import { searchFood } from "./food-search-orchestrator.js";
 import {
@@ -510,6 +511,12 @@ async function executeTool(name, args, ctx) {
     }
   } catch (error) {
     console.error("Agent tool execution failed.", { tool: name, name: error?.name });
+    if (error instanceof SwiggyRateLimitedError) {
+      return {
+        text: "Swiggy is getting too many requests right now, so this couldn't be done. Tell the user Swiggy is busy and to try again in a minute. Don't retry it yourself.",
+        terminal: false,
+      };
+    }
     return {
       text: "Something went wrong doing that just now. Let the user know and suggest trying again in a bit.",
       terminal: false,

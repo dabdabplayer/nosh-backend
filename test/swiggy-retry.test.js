@@ -207,3 +207,40 @@ test("withSwiggyRetry makes a single attempt on an internal error when limited t
   );
   assert.equal(calls, 1);
 });
+
+test("withSwiggyRetry retries a 429 only once, after a short wait, even when more attempts are allowed", async () => {
+  let calls = 0;
+  const waits = [];
+
+  await assert.rejects(
+    withSwiggyRetry(
+      async () => {
+        calls += 1;
+        throw { message: "rate limited", code: 429 };
+      },
+      { maxAttempts: 4, sleep: async (ms) => waits.push(ms) },
+    ),
+    SwiggyRateLimitedError,
+  );
+
+  assert.equal(calls, 2);
+  assert.deepEqual(waits, [2000]);
+});
+
+test("withSwiggyRetry stops retrying once the next wait would exceed the 30-second budget", async () => {
+  let clock = 0;
+  let calls = 0;
+
+  await assert.rejects(
+    withSwiggyRetry(
+      async () => {
+        calls += 1;
+        clock += 29_700;
+        throw { message: "unavailable", status: 503 };
+      },
+      { now: () => clock, sleep: async (ms) => (clock += ms) },
+    ),
+  );
+
+  assert.equal(calls, 1);
+});

@@ -81,7 +81,16 @@ export class SwiggyRateLimitedError extends Error {
   }
 }
 
-const FALLBACK_RATE_LIMIT_WAIT_MS = 30_000;
+// Swiggy's rate-limit guidance: "stop retrying immediately, apply backoff"
+// (https://mcp.swiggy.com/builders/docs/operate/rate-limits.md). A 429 gets
+// one short retry at most - its Retry-After header isn't readable here
+// (see above) - and then surfaces as SwiggyRateLimitedError.
+const RATE_LIMIT_RETRY_WAIT_MS = 2000;
+const MAX_RATE_LIMIT_ATTEMPTS = 2;
+// Swiggy's production guide caps retries at 30 seconds of wall-clock time
+// for user-facing flows
+// (https://mcp.swiggy.com/builders/docs/build/ship-to-production.md).
+const RETRY_BUDGET_MS = 30_000;
 
 function httpStatusOf(error) {
   const code = error?.status ?? error?.statusCode ?? error?.response?.status ?? error?.code;
@@ -135,12 +144,23 @@ const RETRY_JITTER_RATIO = 0.3;
 // depending on how "retries" is meant) - defaulting to the concrete sample
 // code's value (4) rather than presenting false precision either way.
 // Throws SwiggyAuthFailureError for a reauth classification and
-// SwiggyRateLimitedError for a rate_limited one (after waiting out the
-// window and exhausting attempts) so callers can tell those apart from
+// SwiggyRateLimitedError for a rate_limited one (after at most one short
+// retry) so callers can tell those apart from
 // every other failure; everything else is rethrown as-is once retries are
 // exhausted or the error is classified as non-retryable.
-export async function withSwiggyRetry(fn, { maxAttempts = 4, rateLimitWaitMs = FALLBACK_RATE_LIMIT_WAIT_MS } = {}) {
+export async function withSwiggyRetry(
+  fn,
+  {
+    maxAttempts = 4,
+    rateLimitWaitMs = RATE_LIMIT_RETRY_WAIT_MS,
+    retryBudgetMs = RETRY_BUDGET_MS,
+    now = Date.now,
+    sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  } = {},
+) {
   let attempt = 0;
+  const startedAt = now();
+  const fitsBudget = (waitMs) => now() - startedAt + waitMs <= retryBudgetMs;
 
   while (true) {
     try {
@@ -154,23 +174,24 @@ export async function withSwiggyRetry(fn, { maxAttempts = 4, rateLimitWaitMs = F
       }
 
       if (classification === "rate_limited") {
-        if (attempt >= maxAttempts) {
+        if (attempt >= Math.min(maxAttempts, MAX_RATE_LIMIT_ATTEMPTS) || !fitsBudget(rateLimitWaitMs)) {
           throw new SwiggyRateLimitedError(error);
         }
-        await new Promise((resolve) => setTimeout(resolve, rateLimitWaitMs));
+        await sleep(rateLimitWaitMs);
         continue;
       }
 
       const attemptLimit = classification === "retry-once" ? Math.min(2, maxAttempts) : maxAttempts;
       const isRetryable = classification === "retry" || classification === "retry-once";
 
-      if (!isRetryable || attempt >= attemptLimit) {
+      const baseMs = RETRY_BASE_MS * 2 ** (attempt - 1);
+      const waitMs = baseMs + Math.random() * baseMs * RETRY_JITTER_RATIO;
+
+      if (!isRetryable || attempt >= attemptLimit || !fitsBudget(waitMs)) {
         throw error;
       }
 
-      const baseMs = RETRY_BASE_MS * 2 ** (attempt - 1);
-      const jitterMs = Math.random() * baseMs * RETRY_JITTER_RATIO;
-      await new Promise((resolve) => setTimeout(resolve, baseMs + jitterMs));
+      await sleep(waitMs);
     }
   }
 }
