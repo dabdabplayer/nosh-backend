@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  matchAddressByName,
   parseAddressSelectionReply,
   resolvePendingAddressReply,
   searchFood,
@@ -449,4 +450,58 @@ test("resolvePendingAddressReply records the address and steps aside (does not c
   assert.deepEqual(outcome, { handled: false });
   assert.equal(pendingCartSessions.peek("sender-1").addressId, "addr-2");
   assert.equal(pending.peek("sender-1"), undefined);
+});
+
+// --- picking an address by name ---
+
+const homeWorkOther = [
+  { id: "a", label: "Home — 1 Main St", tag: "Home" },
+  { id: "b", label: "Work — 2 Office Rd", tag: "Work" },
+  { id: "c", label: "Mom's place — 3 Lane", tag: "Mom's place" },
+];
+
+test("matchAddressByName picks an address by its tag or a common synonym", () => {
+  assert.equal(matchAddressByName("Home", homeWorkOther), 0);
+  assert.equal(matchAddressByName("home please", homeWorkOther), 0);
+  assert.equal(matchAddressByName("ghar pe", homeWorkOther), 0);
+  assert.equal(matchAddressByName("घर", homeWorkOther), 0);
+  assert.equal(matchAddressByName("WORK", homeWorkOther), 1);
+  assert.equal(matchAddressByName("office", homeWorkOther), 1);
+  assert.equal(matchAddressByName("mom's place", homeWorkOther), 2);
+});
+
+test("matchAddressByName leaves unclear or longer replies to the agent", () => {
+  assert.equal(matchAddressByName("Mars", homeWorkOther), undefined);
+  assert.equal(matchAddressByName("actually find me pizza near home instead", homeWorkOther), undefined);
+  assert.equal(
+    matchAddressByName("other", [
+      { id: "x", label: "Other — A", tag: "Other" },
+      { id: "y", label: "Other — B", tag: "Other" },
+    ]),
+    undefined,
+  );
+});
+
+test("resolvePendingAddressReply accepts the address's name instead of its number", async () => {
+  const pending = new PendingAddressSelections();
+  const searchCalls = [];
+  const client = fakeSwiggyFoodClient({
+    getAddresses: async () => payload(ambiguousAddresses),
+    searchRestaurants: async (params) => {
+      searchCalls.push(params);
+      return payload({ restaurants: [restaurant()] });
+    },
+  });
+
+  await searchFood("sender-1", "biryani", client, pending, undefined);
+
+  const outcome = await resolvePendingAddressReply({
+    message: message("other"),
+    swiggyFoodClient: client,
+    pendingAddressSelections: pending,
+    pendingCartSessions: undefined,
+  });
+
+  assert.deepEqual(searchCalls, [{ query: "biryani", addressId: "addr-2" }]);
+  assert.equal(outcome.handled, true);
 });

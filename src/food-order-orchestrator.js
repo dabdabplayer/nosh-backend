@@ -1,9 +1,9 @@
 import {
-  formatAddressLabel,
   formatAddressPrompt,
   MAX_ADDRESS_CANDIDATES,
   NO_SAVED_ADDRESS_REPLY,
   parseAddressSelectionReply,
+  toAddressCandidate,
 } from "./food-search-orchestrator.js";
 import { pick } from "./language-preference.js";
 import { parseStructuredPayload } from "./swiggy-food-client.js";
@@ -627,10 +627,7 @@ export async function recommendSimilar({
     // pendingCartSessions, so every later tool call this session (recommend
     // or explicit search) reuses it via existingAddressId above.
     if (addresses.length > 1) {
-      const candidates = addresses.slice(0, MAX_ADDRESS_CANDIDATES).map((address) => ({
-        id: address.id,
-        label: formatAddressLabel(address),
-      }));
+      const candidates = addresses.slice(0, MAX_ADDRESS_CANDIDATES).map(toAddressCandidate);
 
       pendingAddressSelections?.set(senderId, { kind: "recommend", craving, candidates });
       return formatAddressPrompt(candidates, lang);

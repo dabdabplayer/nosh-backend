@@ -38,6 +38,56 @@ export function formatAddressLabel(address) {
   return address?.addressLine ? `${tag} — ${address.addressLine}` : tag;
 }
 
+export function toAddressCandidate(address) {
+  return {
+    id: address.id,
+    label: formatAddressLabel(address),
+    tag: address?.addressTag ?? address?.addressCategory,
+  };
+}
+
+// Words people use for Swiggy's standard address tags, in English, Hindi
+// and Hinglish.
+const ADDRESS_TAG_SYNONYMS = {
+  home: ["home", "house", "ghar", "घर"],
+  work: ["work", "office", "ofc", "daftar", "ऑफिस", "ऑफ़िस", "दफ्तर", "दफ़्तर"],
+  other: ["other", "others", "dusra", "doosra", "दूसरा"],
+};
+const MAX_ADDRESS_NAME_REPLY_WORDS = 5;
+
+function normalizeWords(text) {
+  return text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{M}\p{N}\s']/gu, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+// A short reply naming one saved address by its tag ("Home", "work",
+// "ghar pe", "Mom's place") picks it. Returns undefined when nothing - or
+// more than one address - matches, so the reply falls through to the agent
+// like any other non-numeric reply.
+export function matchAddressByName(text, candidates) {
+  const words = normalizeWords(text);
+  if (words.length === 0 || words.length > MAX_ADDRESS_NAME_REPLY_WORDS) {
+    return undefined;
+  }
+  const joined = ` ${words.join(" ")} `;
+
+  const matches = candidates
+    .map((candidate, index) => ({ candidate, index }))
+    .filter(({ candidate }) => {
+      const tagWords = normalizeWords(candidate.tag ?? "");
+      if (tagWords.length === 0) {
+        return false;
+      }
+      const names = [tagWords.join(" "), ...(ADDRESS_TAG_SYNONYMS[tagWords.join(" ")] ?? [])];
+      return names.some((name) => joined.includes(` ${name} `));
+    });
+
+  return matches.length === 1 ? matches[0].index : undefined;
+}
+
 export function formatAddressPrompt(candidates, lang = "en") {
   const lines = candidates.map((candidate, index) => `${index + 1}. ${candidate.label}`);
   const header = pick(lang, {
@@ -46,9 +96,9 @@ export function formatAddressPrompt(candidates, lang = "en") {
     hinglish: "Aapke paas kuch saved addresses hain — kaunsa use karoon?",
   });
   const footer = pick(lang, {
-    en: "Reply with the number.",
-    hi: "नंबर के साथ जवाब दें।",
-    hinglish: "Number ke saath reply karein.",
+    en: "Reply with the number or the name (like Home).",
+    hi: "नंबर या नाम (जैसे Home) के साथ जवाब दें।",
+    hinglish: "Number ya naam (jaise Home) ke saath reply karein.",
   });
   return [header, ...lines, footer].join("\n");
 }
@@ -209,10 +259,7 @@ export async function searchFood(
   // choice to make, so ask; with exactly one, there's nothing to choose
   // between and asking would just be friction.
   if (addresses.length > 1) {
-    const candidates = addresses.slice(0, MAX_ADDRESS_CANDIDATES).map((address) => ({
-      id: address.id,
-      label: formatAddressLabel(address),
-    }));
+    const candidates = addresses.slice(0, MAX_ADDRESS_CANDIDATES).map(toAddressCandidate);
 
     pendingAddressSelections.set(senderId, { kind: "search", searchTerm, candidates });
     return formatAddressPrompt(candidates, lang);
@@ -258,7 +305,9 @@ export async function resolvePendingAddressReply({
     return { handled: false };
   }
 
-  const selectedIndex = parseAddressSelectionReply(message.text.trim(), pending.candidates.length);
+  const selectedIndex =
+    parseAddressSelectionReply(message.text.trim(), pending.candidates.length) ??
+    matchAddressByName(message.text, pending.candidates);
 
   if (selectedIndex === undefined) {
     pendingAddressSelections.clear(message.from);
