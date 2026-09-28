@@ -63,6 +63,7 @@ export function createGeminiClient({
   timeoutMs,
   fetchImpl = fetch,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  now = () => performance.now(),
 }) {
   const url = `${baseUrl.replace(/\/+$/, "")}/chat/completions`;
 
@@ -82,6 +83,11 @@ export function createGeminiClient({
   return {
     chat: {
       async completions(request) {
+        // One line per call (retries included) with timing and token counts
+        // only - never message text.
+        const startedAt = now();
+        const elapsedMs = () => Math.round(now() - startedAt);
+
         for (let attemptNumber = 1; ; attemptNumber += 1) {
           const isLastAttempt = attemptNumber >= MAX_ATTEMPTS;
 
@@ -91,6 +97,7 @@ export function createGeminiClient({
           } catch (error) {
             if (isLastAttempt || isTimeout(error)) {
               reportFailure(COMPONENTS.agent);
+              console.warn("Gemini call failed.", { durationMs: elapsedMs(), attempts: attemptNumber, errorName: error?.name });
               throw error;
             }
             console.warn("Retrying Gemini call after a network error.", { name: error?.name });
@@ -100,7 +107,14 @@ export function createGeminiClient({
 
           if (response.ok) {
             reportSuccess(COMPONENTS.agent);
-            return response.json();
+            const body = await response.json();
+            console.info("Gemini call succeeded.", {
+              durationMs: elapsedMs(),
+              attempts: attemptNumber,
+              inputTokens: body?.usage?.prompt_tokens,
+              outputTokens: body?.usage?.completion_tokens,
+            });
+            return body;
           }
 
           if (!isLastAttempt && RETRYABLE_STATUSES.has(response.status)) {
@@ -113,6 +127,7 @@ export function createGeminiClient({
           if (isOutageStatus(response.status)) {
             reportFailure(COMPONENTS.agent);
           }
+          console.warn("Gemini call failed.", { durationMs: elapsedMs(), attempts: attemptNumber, status: response.status });
           const { code, detail } = await errorDetailsOf(response);
           if (detail) {
             console.error("Gemini rejected the credentials.", { status: response.status, code, detail });

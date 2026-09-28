@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { collectSamples } from "../scripts/swiggy-latency-report.js";
+import { collectSamples, collectServiceSamples } from "../scripts/swiggy-latency-report.js";
 import { LATENCY_TARGETS_MS, percentile, toolClass } from "../scripts/swiggy-latency-targets.js";
 
 test("toolClass groups tools the way Swiggy's latency targets do", () => {
@@ -35,4 +35,19 @@ test("collectSamples reads Nosh's Swiggy call log lines and ignores everything e
     search_restaurants: { durations: [90], failures: 0 },
     update_food_cart: { durations: [400], failures: 2 },
   });
+});
+
+test("collectServiceSamples reads Gemini and Sarvam timing lines", () => {
+  const samples = collectServiceSamples(
+    [
+      "Gemini call succeeded. { durationMs: 1840, attempts: 1, inputTokens: 5210, outputTokens: 180 }",
+      "Gemini call failed. { durationMs: 35100, attempts: 1, errorName: 'TimeoutError' }",
+      "Sarvam translation succeeded. { durationMs: 420, direction: 'to-english', chunks: 1 }",
+      "Sarvam translation failed; using the untranslated text. { durationMs: 900, direction: 'from-english', name: 'Error' }",
+    ].join("\n"),
+  );
+
+  assert.deepEqual(samples.gemini, { durations: [1840], failures: 1, inputTokens: 5210, outputTokens: 180 });
+  assert.deepEqual(samples["sarvam to-english"].durations, [420]);
+  assert.equal(samples["sarvam from-english"].failures, 1);
 });

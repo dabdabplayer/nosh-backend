@@ -61,7 +61,11 @@ export function createSarvamTranslator({ apiKey, baseUrl, timeoutMs, client }) {
       maxRetries: 1,
     });
 
+  // One line per translation with timing only - never the text.
   async function translate(text, options) {
+    const startedAt = performance.now();
+    const direction = options.target_language_code === "en-IN" ? "to-english" : "from-english";
+    let chunks = 0;
     try {
       const parts = [];
       for (const chunk of splitForTranslation(text)) {
@@ -71,14 +75,25 @@ export function createSarvamTranslator({ apiKey, baseUrl, timeoutMs, client }) {
         }
         const response = await sarvam.text.translate({ input: chunk, model: MODEL, ...options });
         parts.push(response.translated_text);
+        chunks += 1;
       }
       reportSuccess(COMPONENTS.translation);
+      console.info("Sarvam translation succeeded.", {
+        durationMs: Math.round(performance.now() - startedAt),
+        direction,
+        chunks,
+      });
       return parts.join("\n");
     } catch (error) {
       if (isOutageStatus(error?.statusCode)) {
         reportFailure(COMPONENTS.translation);
       }
-      console.error("Sarvam translation failed; using the untranslated text.", { name: error?.name });
+      console.error("Sarvam translation failed; using the untranslated text.", {
+        durationMs: Math.round(performance.now() - startedAt),
+        direction,
+        name: error?.name,
+        status: error?.statusCode,
+      });
       return text;
     }
   }

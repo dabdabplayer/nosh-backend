@@ -160,3 +160,25 @@ test("createGeminiClient logs Google's explanation for a permission error, but n
   assert.match(logged[0][1].detail, /aiplatform\.endpoints\.predict/);
   assert.doesNotMatch(JSON.stringify(logged), /echo of user text/);
 });
+
+test("createGeminiClient logs each call's timing and token counts, never its content", async () => {
+  const logged = [];
+  const originalInfo = console.info;
+  console.info = (...args) => logged.push(args);
+  try {
+    const client = sequenceClient([
+      { status: 200, body: { choices: [{ message: { content: "secret reply" } }], usage: { prompt_tokens: 120, completion_tokens: 8 } } },
+    ]);
+    await client.chat.completions({ messages: [{ role: "user", content: "secret question" }] });
+  } finally {
+    console.info = originalInfo;
+  }
+
+  const line = logged.find(([message]) => message === "Gemini call succeeded.");
+  assert.ok(line);
+  assert.equal(line[1].attempts, 1);
+  assert.equal(line[1].inputTokens, 120);
+  assert.equal(line[1].outputTokens, 8);
+  assert.equal(typeof line[1].durationMs, "number");
+  assert.doesNotMatch(JSON.stringify(logged), /secret/);
+});
