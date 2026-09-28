@@ -45,6 +45,30 @@ export function splitForTranslation(text, maxChars = MAX_INPUT_CHARS) {
   return chunks;
 }
 
+// Every number in the English reply (prices, ratings, delivery times, list
+// numbers) must survive translation. Sarvam has turned "Loaded Fries - ₹179"
+// into "Loaded Fries kitne ke honge?" (how much would it be?), dropping the
+// price, so a translation that loses one is not used. Devanagari digits
+// count as the same number.
+const DEVANAGARI_DIGITS = "०१२३४५६७८९";
+
+function digitsOf(text) {
+  const ascii = text.replace(/[०-९]/g, (digit) => String(DEVANAGARI_DIGITS.indexOf(digit)));
+  return ascii.match(/\d+/g) ?? [];
+}
+
+export function keepsEveryNumber(original, translated) {
+  const remaining = digitsOf(translated);
+  for (const number of digitsOf(original)) {
+    const index = remaining.indexOf(number);
+    if (index === -1) {
+      return false;
+    }
+    remaining.splice(index, 1);
+  }
+  return true;
+}
+
 // Translation is best-effort: on any failure the original text is returned,
 // since an untranslated reply is better than none. Nothing here decides
 // what the user asked for - YES/NO and numbered replies never reach it.
@@ -114,7 +138,13 @@ export function createSarvamTranslator({ apiKey, baseUrl, timeoutMs, client }) {
       if (!options || !text) {
         return Promise.resolve(text);
       }
-      return translate(text, { source_language_code: "en-IN", ...options });
+      return translate(text, { source_language_code: "en-IN", ...options }).then((translated) => {
+        if (keepsEveryNumber(text, translated)) {
+          return translated;
+        }
+        console.warn("Sarvam translation dropped a number; sending the English reply instead.");
+        return text;
+      });
     },
   };
 }

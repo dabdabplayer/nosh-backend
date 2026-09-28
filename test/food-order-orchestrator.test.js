@@ -2705,5 +2705,5 @@ test("recommendSimilar with vegOnly and a missed craving still explores new rest
   assert.match(reply, /Veg Tacos — ₹219/);
   assert.doesNotMatch(reply, /Chicken Tacos/);
   assert.match(reply, /every item below is vegetarian/);
-  assert.doesNotMatch(reply, /tell them honestly that nothing matched/);
+  assert.match(reply, /Say plainly that nothing matched "paneer"/);
 });

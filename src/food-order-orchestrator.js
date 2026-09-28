@@ -845,8 +845,8 @@ export async function recommendSimilar({
 
   const header = cravingMissed && vegOnly
     ? `Nothing open matched "${craving}", but every item below is vegetarian, from this user's order history ` +
-      "or a restaurant they haven't tried - offer one as a veg pick without claiming it is " +
-      `"${craving}", and don't say their veg request found nothing:`
+      "or a restaurant they haven't tried. Say plainly that nothing matched " +
+      `"${craving}", then offer one of these as a veg alternative - never present it as "${craving}":`
     : cravingMissed
     ? `Nothing real was open for "${craving}", so here are real candidates from this user's actual order history ` +
       "and each restaurant's real current menu instead - tell them honestly that nothing matched what they asked " +

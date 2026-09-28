@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createSarvamTranslator, splitForTranslation } from "../src/sarvam-translator.js";
+import { createSarvamTranslator, keepsEveryNumber, splitForTranslation } from "../src/sarvam-translator.js";
 
 test("splitForTranslation keeps short text whole", () => {
   assert.deepEqual(splitForTranslation("1. Biryani\n2. Pizza", 1000), ["1. Biryani\n2. Pizza"]);
@@ -59,4 +59,22 @@ test("translator leaves English and unknown languages untouched without calling 
   assert.equal(await translator.toEnglish("2", undefined), "2");
   assert.equal(await translator.fromEnglish("Done.", "en"), "Done.");
   assert.equal(called, false);
+});
+
+test("keepsEveryNumber requires each number in the English to appear in the translation", () => {
+  assert.equal(keepsEveryNumber("Loaded Fries - ₹179, ⭐4, 20-30 mins", "Loaded Fries Rs. 179 mein, ⭐4, 20-30 mins"), true);
+  assert.equal(keepsEveryNumber("Loaded Fries - ₹179, ⭐4, 20-30 mins", "Loaded Fries kitne ke honge (⭐4, 20-30 mins)?"), false);
+  assert.equal(keepsEveryNumber("Total: ₹196", "कुल: ₹१९६"), true);
+  assert.equal(keepsEveryNumber("1x Dosa and 1x Idli", "1x Dosa aur Idli"), false);
+});
+
+test("fromEnglish sends the English reply when the translation drops a price", async () => {
+  const translator = createSarvamTranslator({
+    client: { text: { translate: async () => ({ translated_text: "Loaded Fries kitne ke honge?" }) } },
+  });
+
+  assert.equal(
+    await translator.fromEnglish("How about Loaded Fries - ₹179?", "hinglish"),
+    "How about Loaded Fries - ₹179?",
+  );
 });
