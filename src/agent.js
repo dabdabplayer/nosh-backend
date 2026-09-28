@@ -14,6 +14,7 @@ import {
   searchMenu,
   showRestaurantMenu,
   viewCart,
+  viewOrders,
 } from "./food-order-orchestrator.js";
 
 // History: this was raised from 4 -> 6 -> 8 because a recommendation turn
@@ -48,8 +49,8 @@ const SYSTEM_PROMPT = [
   "Facts: never state a price, availability, ETA, restaurant, dish, cart content or order status unless a tool result in this conversation says it. A tool call succeeding isn't the same as it finding something - read what the result says. If nothing real matched, say so plainly; never invent a consolation option. Never say an item was added, removed or changed unless that tool's result this turn says so.",
   "Replies: plain, casual English only - a separate step translates to and from the user's language, so never translate yourself. Keep names, numbers and prices exactly as tools gave them. One to three short sentences, point first, no apologies or filler, no alternatives nobody asked for. Vary your wording.",
   "Numbered lists from search_food or search_menu: keep every number, name and price, in the same order. Never show recommend_similar's list.",
-  "checkout, view_cart, find_coupons, apply_coupon and get_restaurant_menu send their result straight to the user and end your turn - you never see it, so don't write anything around them. For cart contents, prices, coupons or a menu, call these instead of answering from memory or listing dishes yourself.",
-  "Orders: you cannot place or confirm an order; only the user replying YES to checkout's summary does that, outside your view. Never say or imply an order was placed, confirmed or is on its way, even after they say yes. For order status, say you can't check it here (suggest the Swiggy app) or offer their cart. But when they want to order (\"order it\", \"checkout\", in any language), call checkout - never say ordering isn't possible here.",
+  "checkout, view_cart, view_orders, find_coupons, apply_coupon and get_restaurant_menu send their result straight to the user and end your turn - you never see it, so don't write anything around them. For cart contents, past orders, prices, coupons or a menu, call these instead of answering from memory or listing dishes yourself.",
+  "Orders: you cannot place or confirm an order; only the user replying YES to checkout's summary does that, outside your view. Never say or imply an order was placed, confirmed or is on its way, even after they say yes. For past orders or order status, call view_orders; for live tracking, suggest the Swiggy app. But when they want to order (\"order it\", \"checkout\", in any language), call checkout - never say ordering isn't possible here.",
   "Choosing: if they named a specific dish or restaurant, search and let them pick. If they only gave a mood, craving, diet or cuisine (\"something good\", \"kuch teekha\", \"something veg\", \"surprise me\"), you decide: call recommend_similar every time (never rely on memory), passing craving only if this message states one - as a concrete dish or cuisine (\"veg\" -> \"paneer\" or \"South Indian\"), never a bare word like \"vegetarian\". Respect any diet they state for the rest of the conversation: never suggest an item that breaks it, and if no real item fits, say so. Present ONE real item - name, restaurant, price - that they haven't ordered before (never their last order), and ask if they want it. Call add_to_cart only after they agree, with that exact item and restaurant name.",
   "If they reject a pick, call recommend_similar again and choose an item you haven't offered anywhere in this conversation; if none is left, say so. Never claim their order history is thin unless recommend_similar said so this turn.",
 ].join(" ");
@@ -156,6 +157,15 @@ const VIEW_CART_TOOL = Object.freeze({
   },
 });
 
+const VIEW_ORDERS_TOOL = Object.freeze({
+  type: "function",
+  function: {
+    name: "view_orders",
+    description: "Show the user's recent Swiggy food orders and their status. Its result goes straight to the user - you will not see it.",
+    parameters: { type: "object", properties: {} },
+  },
+});
+
 const FIND_COUPONS_TOOL = Object.freeze({
   type: "function",
   function: {
@@ -229,6 +239,7 @@ const TOOLS = Object.freeze([
   ADD_TO_CART_TOOL,
   REMOVE_FROM_CART_TOOL,
   VIEW_CART_TOOL,
+  VIEW_ORDERS_TOOL,
   FIND_COUPONS_TOOL,
   APPLY_COUPON_TOOL,
   CHECKOUT_TOOL,
@@ -259,7 +270,9 @@ export { TOOLS };
 // end to end). get_restaurant_menu joined this set after the agent, with no
 // real menu tool available, invented a full restaurant menu in its own words
 // when asked to "show me the menu" - a menu is listed verbatim, never phrased.
-const TERMINAL_TOOLS = new Set(["checkout", "view_cart", "find_coupons", "apply_coupon", "get_restaurant_menu"]);
+// view_orders is terminal for the same reason: order status is Swiggy's
+// data, listed verbatim, never phrased by the agent.
+const TERMINAL_TOOLS = new Set(["checkout", "view_cart", "view_orders", "find_coupons", "apply_coupon", "get_restaurant_menu"]);
 
 // Every tool call is executed here, never left to the model to reach
 // Swiggy directly. Never throws - a failure inside a tool becomes a tool
@@ -440,6 +453,12 @@ async function executeTool(name, args, ctx) {
       case "view_cart":
         return {
           text: await viewCart({ senderId, swiggyFoodClient, pendingCartSessions, lang }),
+          terminal: TERMINAL_TOOLS.has(name),
+        };
+
+      case "view_orders":
+        return {
+          text: await viewOrders({ senderId, swiggyFoodClient, pendingCartSessions, lang }),
           terminal: TERMINAL_TOOLS.has(name),
         };
 

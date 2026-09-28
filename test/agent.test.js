@@ -33,6 +33,7 @@ function fakeSwiggyClient(overrides = {}) {
       overrides.searchMenu ??
       (async () => ({ structured: { items: [{ name: "Chicken Biryani", price: 249, inStock: 1 }] } })),
     getFoodCart: overrides.getFoodCart ?? (async () => ({ structured: { statusCode: 0, data: { items: [] } } })),
+    getFoodOrders: overrides.getFoodOrders ?? (async () => ({ structured: { orders: [] } })),
   };
 }
 
@@ -1134,4 +1135,30 @@ test("runAgentTurn falls back to the untranslated text when Sarvam fails", async
 
   assert.equal(seenByModel[0], "मुझे बिरयानी चाहिए");
   assert.equal(result, "Let me look for biryani.");
+});
+
+test("runAgentTurn returns view_orders' order list directly, never phrased by the agent", async () => {
+  let completionsCallCount = 0;
+  const client = fakeClient(async () => {
+    completionsCallCount += 1;
+    return toolCallResponse([{ id: "call_1", function: { name: "view_orders", arguments: "{}" } }]);
+  });
+
+  const ctx = newContext();
+  ctx.pendingCartSessions.set("sender-1", { addressId: "addr-1" });
+
+  const result = await runAgentTurn({
+    message: { from: "sender-1", text: "show my past orders" },
+    swiggyFoodClient: fakeSwiggyClient({
+      getFoodOrders: async () => ({
+        structured: { orders: [{ restaurantName: "Dosa Place", orderTotal: "196", orderStatus: "DELIVERED", isActiveOrder: false }] },
+      }),
+    }),
+    ...ctx,
+    agent,
+    client,
+  });
+
+  assert.equal(completionsCallCount, 1);
+  assert.equal(result, "Your recent Swiggy orders:\n1. Dosa Place — ₹196, DELIVERED");
 });

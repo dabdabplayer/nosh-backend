@@ -16,6 +16,7 @@ import {
   searchMenu,
   showRestaurantMenu,
   viewCart,
+  viewOrders,
 } from "../src/food-order-orchestrator.js";
 import { PendingAddressSelections } from "../src/pending-address-selection.js";
 import { SwiggyFoodToolError } from "../src/swiggy-food-client.js";
@@ -2593,4 +2594,51 @@ test("placeConfirmedOrder never retries when it couldn't record the order list f
 
   assert.equal(result.status, "failed");
   assert.equal(placeCalls, 1);
+});
+
+test("viewOrders lists recent orders newest-first with their real status, using the first saved address", async () => {
+  let requestedAddressId;
+  const pendingCartSessions = new PendingCartSessions();
+  const text = await viewOrders({
+    senderId: "sender-1",
+    pendingCartSessions,
+    swiggyFoodClient: fakeClient({
+      getFoodOrders: async ({ addressId }) => {
+        requestedAddressId = addressId;
+        return payload({
+          orders: [
+            { orderId: "o2", restaurantName: "Dosa Place", orderTotal: "196", orderedTime: "Sep 28", orderStatus: "PLACED", isActiveOrder: true, orderedItems: "1x Masala Dosa" },
+            { orderId: "o1", restaurantName: "Biryani House", orderTotal: "301", orderedTime: "Sep 15", orderStatus: "DELIVERED", isActiveOrder: false, orderedItems: "1x Chicken Biryani" },
+          ],
+        });
+      },
+    }),
+  });
+
+  assert.equal(requestedAddressId, "addr-1");
+  assert.equal(pendingCartSessions.peek("sender-1"), undefined);
+  assert.equal(
+    text,
+    "Your recent Swiggy orders:\n1. Dosa Place — ₹196, Sep 28, In progress\n   1x Masala Dosa\n2. Biryani House — ₹301, Sep 15, DELIVERED\n   1x Chicken Biryani",
+  );
+});
+
+test("viewOrders uses the session's address and says so plainly when there are no orders", async () => {
+  let requestedAddressId;
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", { addressId: "addr-9" });
+  const text = await viewOrders({
+    senderId: "sender-1",
+    pendingCartSessions,
+    lang: "hinglish",
+    swiggyFoodClient: fakeClient({
+      getFoodOrders: async ({ addressId }) => {
+        requestedAddressId = addressId;
+        return payload({ orders: [] });
+      },
+    }),
+  });
+
+  assert.equal(requestedAddressId, "addr-9");
+  assert.equal(text, "Aapka abhi tak koi Swiggy food order nahi hai.");
 });

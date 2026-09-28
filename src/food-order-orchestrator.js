@@ -2065,6 +2065,64 @@ export async function viewCart({ senderId, swiggyFoodClient, pendingCartSessions
   });
 }
 
+const MAX_ORDERS_SHOWN = 5;
+
+// Tool implementation for the agent's `view_orders` tool: the user's recent
+// orders from get_food_orders, newest-first, listed verbatim (terminal - see
+// TERMINAL_TOOLS in agent.js). get_food_orders requires an addressId, so this
+// uses the session's address, or the first saved one without asking - it's a
+// lookup, not the start of an order, and never saves that address to the
+// session.
+export async function viewOrders({ senderId, swiggyFoodClient, pendingCartSessions, lang = "en" }) {
+  let addressId = pendingCartSessions?.peek(senderId)?.addressId;
+
+  if (!addressId) {
+    const addresses = parseStructuredPayload(await swiggyFoodClient.getAddresses({}))?.addresses;
+    if (!Array.isArray(addresses)) {
+      return GENERIC_FALLBACK_REPLY;
+    }
+    if (addresses.length === 0) {
+      return NO_SAVED_ADDRESS_REPLY;
+    }
+    addressId = addresses[0]?.id;
+    if (!addressId) {
+      return GENERIC_FALLBACK_REPLY;
+    }
+  }
+
+  const orders = parseStructuredPayload(await swiggyFoodClient.getFoodOrders({ addressId }))?.orders;
+
+  if (!Array.isArray(orders)) {
+    return GENERIC_FALLBACK_REPLY;
+  }
+
+  const shown = orders.filter((order) => order?.restaurantName).slice(0, MAX_ORDERS_SHOWN);
+
+  if (shown.length === 0) {
+    return pick(lang, {
+      en: "You don't have any Swiggy food orders yet.",
+      hi: "आपका अभी तक कोई Swiggy फ़ूड ऑर्डर नहीं है।",
+      hinglish: "Aapka abhi tak koi Swiggy food order nahi hai.",
+    });
+  }
+
+  const activeLabel = pick(lang, { en: "In progress", hi: "जारी है", hinglish: "Chal raha hai" });
+  const lines = shown.map((order, index) => {
+    const status = order.isActiveOrder === true ? activeLabel : (order.orderDeliveryStatus ?? order.orderStatus);
+    const details = [order.orderTotal ? `₹${order.orderTotal}` : undefined, order.orderedTime, status].filter(Boolean);
+    const items = order.orderedItems ? `\n   ${order.orderedItems}` : "";
+    return `${index + 1}. ${order.restaurantName} — ${details.join(", ")}${items}`;
+  });
+
+  const header = pick(lang, {
+    en: "Your recent Swiggy orders:",
+    hi: "आपके हाल के Swiggy ऑर्डर:",
+    hinglish: "Aapke recent Swiggy orders:",
+  });
+
+  return [header, ...lines].join("\n");
+}
+
 // `meta`: see handleRemoveFromCart's own comment above.
 export async function removeFromCart({ senderId, query, quantity, swiggyFoodClient, pendingCartSessions, meta }) {
   const session = pendingCartSessions.peek(senderId);
