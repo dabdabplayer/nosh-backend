@@ -2642,3 +2642,41 @@ test("viewOrders uses the session's address and says so plainly when there are n
   assert.equal(requestedAddressId, "addr-9");
   assert.equal(text, "Aapka abhi tak koi Swiggy food order nahi hai.");
 });
+
+test("recommendSimilar with vegOnly offers only items Swiggy marks veg, leaving out unflagged ones", async () => {
+  const client = fakeClient({
+    getFoodOrders: async () =>
+      payload({
+        orders: [orderSummary({ orderId: "o1", restaurantId: "rest-1", restaurantName: "Burger Barn", orderedItems: "1x Fries" })],
+      }),
+    getRestaurantMenu: async () =>
+      restaurantMenuItemsPayload([
+        { id: "i1", name: "Classic Cheeseburger", price: 219, inStock: 1, isVeg: false },
+        { id: "i2", name: "Veg Burger", price: 159, inStock: 1, isVeg: true },
+        { id: "i3", name: "Mystery Wrap", price: 189, inStock: 1 },
+      ]),
+  });
+
+  const reply = await recommendSimilar({ swiggyFoodClient: client, vegOnly: true });
+
+  assert.match(reply, /Veg Burger — ₹159/);
+  assert.doesNotMatch(reply, /Cheeseburger/);
+  assert.doesNotMatch(reply, /Mystery Wrap/);
+  assert.match(reply, /marked vegetarian by Swiggy/);
+});
+
+test("recommendSimilar with vegOnly says nothing veg came up rather than offering non-veg", async () => {
+  const client = fakeClient({
+    getFoodOrders: async () =>
+      payload({
+        orders: [orderSummary({ orderId: "o1", restaurantId: "rest-1", restaurantName: "Burger Barn", orderedItems: "1x Fries" })],
+      }),
+    getRestaurantMenu: async () =>
+      restaurantMenuItemsPayload([{ id: "i1", name: "Classic Cheeseburger", price: 219, inStock: 1, isVeg: false }]),
+  });
+
+  const reply = await recommendSimilar({ swiggyFoodClient: client, vegOnly: true });
+
+  assert.match(reply, /No real vegetarian items/);
+  assert.doesNotMatch(reply, /Cheeseburger/);
+});

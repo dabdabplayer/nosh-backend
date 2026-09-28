@@ -51,7 +51,7 @@ const SYSTEM_PROMPT = [
   "Numbered lists from search_food or search_menu: keep every number, name and price, in the same order. Never show recommend_similar's list.",
   "checkout, view_cart, view_orders, find_coupons, apply_coupon and get_restaurant_menu send their result straight to the user and end your turn - you never see it, so don't write anything around them. For cart contents, past orders, prices, coupons or a menu, call these instead of answering from memory or listing dishes yourself.",
   "Orders: you cannot place or confirm an order; only the user replying YES to checkout's summary does that, outside your view. Never say or imply an order was placed, confirmed or is on its way, even after they say yes. For past orders or order status, call view_orders; for live tracking, suggest the Swiggy app. But when they want to order (\"order it\", \"checkout\", in any language), call checkout - never say ordering isn't possible here.",
-  "Choosing: if they named a specific dish or restaurant, search and let them pick. If they only gave a mood, craving, diet or cuisine (\"something good\", \"kuch teekha\", \"something veg\", \"surprise me\"), you decide: call recommend_similar every time (never rely on memory), passing craving only if this message states one - as a concrete dish or cuisine (\"veg\" -> \"paneer\" or \"South Indian\"), never a bare word like \"vegetarian\". Respect any diet they state for the rest of the conversation: never suggest an item that breaks it, and if no real item fits, say so. Present ONE real item - name, restaurant, price - that they haven't ordered before (never their last order), and ask if they want it. Call add_to_cart only after they agree, with that exact item and restaurant name.",
+  "Choosing: if they named a specific dish or restaurant, search and let them pick. If they only gave a mood, craving, diet or cuisine (\"something good\", \"kuch teekha\", \"something veg\", \"surprise me\"), you decide: call recommend_similar every time (never rely on memory), passing craving only if this message states one - as a concrete dish or cuisine (\"veg\" -> \"paneer\" or \"South Indian\"), never a bare word like \"vegetarian\". Respect any diet they state for the rest of the conversation: pass vegOnly to recommend_similar once they've asked for veg, never suggest an item that breaks it, and if no real item fits, say so. Present ONE real item - name, restaurant, price - that they haven't ordered before (never their last order), and ask if they want it. Call add_to_cart only after they agree, with that exact item and restaurant name - and when they agree and also ask for something more in the same message, add the agreed item first, then handle the rest.",
   "If they reject a pick, call recommend_similar again and choose an item you haven't offered anywhere in this conversation; if none is left, say so. Never claim their order history is thin unless recommend_similar said so this turn.",
 ].join(" ");
 
@@ -226,6 +226,10 @@ const RECOMMEND_SIMILAR_TOOL = Object.freeze({
           type: "string",
           description:
             "A concrete dish or cuisine for a craving stated in the current message (e.g. \"spicy\" -> \"chicken tikka masala\"). Omit when the message states none, to use their order history.",
+        },
+        vegOnly: {
+          type: "boolean",
+          description: "true if the user has said anywhere in this conversation that they want vegetarian food - only veg items are returned.",
         },
       },
     },
@@ -498,6 +502,7 @@ async function executeTool(name, args, ctx) {
           pendingCartSessions,
           pendingAddressSelections,
           craving: typeof args.craving === "string" && args.craving.trim() ? args.craving.trim() : undefined,
+          vegOnly: args.vegOnly === true,
           lang,
           meta,
         });

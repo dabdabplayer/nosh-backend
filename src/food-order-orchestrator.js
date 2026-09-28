@@ -380,7 +380,18 @@ function wasAlreadyOrdered(itemName, orderedItemStrings) {
 // menu has already been tried. Returns undefined if the menu call fails or
 // comes back with nothing usable, so the caller can move on to its next
 // candidate restaurant instead of failing the whole recommendation.
-async function buildRestaurantCandidateBlock({ swiggyFoodClient, addressId, restaurantId, restaurantName, orderedItemStrings }) {
+// vegOnly keeps only items Swiggy marks isVeg: true (an optional field per
+// get_restaurant_menu's docs) - an item with no flag is left out rather than
+// guessed. Enforced here because a prompt rule alone didn't hold: a user who
+// asked for veg was offered a non-veg cheeseburger.
+async function buildRestaurantCandidateBlock({
+  swiggyFoodClient,
+  addressId,
+  restaurantId,
+  restaurantName,
+  orderedItemStrings,
+  vegOnly = false,
+}) {
   let menuResult;
   try {
     menuResult = await swiggyFoodClient.getRestaurantMenu({ addressId, restaurantId });
@@ -394,7 +405,7 @@ async function buildRestaurantCandidateBlock({ swiggyFoodClient, addressId, rest
     return undefined;
   }
 
-  const inStockItems = items.filter((item) => item?.inStock !== 0);
+  const inStockItems = items.filter((item) => item?.inStock !== 0 && (!vegOnly || item.isVeg === true));
   const notYetTried = inStockItems.filter((item) => !wasAlreadyOrdered(item.name, orderedItemStrings));
   const pool = notYetTried.length > 0 ? notYetTried : inStockItems;
 
@@ -568,6 +579,7 @@ export async function recommendSimilar({
   pendingCartSessions,
   pendingAddressSelections,
   craving,
+  vegOnly = false,
   // Only used for this function's own address-disambiguation prompt below
   // (terminal when reached via the agent's recommend_similar tool call - see
   // executeTool's "recommend_similar" case in agent.js) - same split
@@ -690,6 +702,7 @@ export async function recommendSimilar({
           restaurantId: restaurant.id,
           restaurantName: restaurant.name,
           orderedItemStrings: [],
+          vegOnly,
         });
         if (block) {
           blocks.push(block);
@@ -700,9 +713,12 @@ export async function recommendSimilar({
         markData(true);
         return [
           `Real menu candidates for "${craving}", from real open restaurants near this user:`,
+          vegOnly ? "Every item listed is marked vegetarian by Swiggy." : undefined,
           ...blocks,
           RECOMMEND_CLOSING_INSTRUCTIONS,
-        ].join("\n");
+        ]
+          .filter(Boolean)
+          .join("\n");
       }
     }
 
@@ -807,7 +823,7 @@ export async function recommendSimilar({
 
   const blocks = [];
   for (const restaurant of [...candidateRestaurants, ...exploreRestaurants]) {
-    const block = await buildRestaurantCandidateBlock({ swiggyFoodClient, addressId, ...restaurant });
+    const block = await buildRestaurantCandidateBlock({ swiggyFoodClient, addressId, ...restaurant, vegOnly });
     if (block) {
       blocks.push(block);
     }
@@ -815,6 +831,9 @@ export async function recommendSimilar({
 
   if (blocks.length === 0) {
     markData(false);
+    if (vegOnly) {
+      return "No real vegetarian items came up at any open restaurant for this user right now - tell them so plainly, and don't suggest a non-veg item.";
+    }
     return cravingMissed
       ? `I couldn't find anything open for "${craving}" right now, and couldn't pull up a real menu from their order history either.`
       : GENERIC_FALLBACK_REPLY;
@@ -829,7 +848,8 @@ export async function recommendSimilar({
       "each restaurant's real current menu:";
 
   markData(true);
-  return [header, ...blocks, RECOMMEND_CLOSING_INSTRUCTIONS].join("\n");
+  const vegNote = vegOnly ? "Every item listed is marked vegetarian by Swiggy." : undefined;
+  return [header, vegNote, ...blocks, RECOMMEND_CLOSING_INSTRUCTIONS].filter(Boolean).join("\n");
 }
 
 // Auto-picks each variant group's Swiggy-marked default (falling back to the
