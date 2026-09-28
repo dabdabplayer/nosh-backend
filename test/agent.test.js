@@ -1162,3 +1162,29 @@ test("runAgentTurn returns view_orders' order list directly, never phrased by th
   assert.equal(completionsCallCount, 1);
   assert.equal(result, "Your recent Swiggy orders:\n1. Dosa Place — ₹196, DELIVERED");
 });
+
+test("runAgentTurn shows the model a Hinglish message's original words next to the translation, but keeps only the translation in history", async () => {
+  const seenByModel = [];
+  const client = fakeClient(async ({ messages }) => {
+    seenByModel.push(messages.at(-1).content);
+    return textResponse("Added it.");
+  });
+  const { translator } = fakeSarvam(async (request) => ({
+    translated_text: request.target_language_code === "en-IN" ? "cardo and one pepsi too" : "Add kar diya.",
+  }));
+
+  const ctx = newContext();
+  await runAgentTurn({
+    message: { from: "sender-1", text: "kardo aur ek pepsi bhi" },
+    swiggyFoodClient: fakeSwiggyClient(),
+    ...ctx,
+    agent,
+    client,
+    translator,
+    lang: "hinglish",
+  });
+
+  assert.match(seenByModel[0], /^cardo and one pepsi too\n/);
+  assert.match(seenByModel[0], /Their original words: "kardo aur ek pepsi bhi"/);
+  assert.equal(ctx.pendingConversationHistory.peek("sender-1")[0].content, "cardo and one pepsi too");
+});

@@ -595,13 +595,23 @@ export async function runAgentTurn({
   const senderId = message.from;
   const history = pendingConversationHistory.peek(senderId);
 
-  const userText = translator ? await translator.toEnglish(message.text, detectLanguage(message.text)) : message.text;
+  const messageLang = detectLanguage(message.text);
+  const userText = translator ? await translator.toEnglish(message.text, messageLang) : message.text;
   const toUserLanguage = (text) => (translator ? translator.fromEnglish(text, lang) : text);
+
+  // Romanized Hinglish sometimes translates badly - "kardo" (do it) came back
+  // as "cardo", and the agent searched the menu for it. So for Hinglish the
+  // model also sees the user's own words this turn. History keeps only the
+  // translation, to keep tokens down.
+  const modelUserText =
+    messageLang === "hinglish" && userText !== message.text
+      ? `${userText}\n(Their original words: "${message.text}". If the translation looks wrong, go by these.)`
+      : userText;
 
   const messages = [
     { role: "system", content: SYSTEM_PROMPT },
     ...history.map((turn) => ({ role: turn.role, content: turn.content })),
-    { role: "user", content: userText },
+    { role: "user", content: modelUserText },
   ];
 
   // Mutable, scoped to this one runAgentTurn call only - tracks whether
