@@ -107,3 +107,10 @@ test("detectLanguage treats a one-word list pick as no language signal", () => {
   assert.equal(detectLanguage("mujhe pizza chahiye"), "hinglish");
   assert.equal(detectLanguage("show my cart"), "en");
 });
+
+test("detectLanguage recognizes common Hinglish requests seen in real chats", () => {
+  assert.equal(detectLanguage("Kardo add"), "hinglish");
+  assert.equal(detectLanguage("Koi discount do"), "hinglish");
+  assert.equal(detectLanguage("Mujhe order history dikaho"), "hinglish");
+  assert.equal(detectLanguage("Add it to my cart"), "en");
+});

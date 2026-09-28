@@ -233,9 +233,9 @@ async function buildOrderConfirmationReply(message, pendingConfirmation, lang = 
     // regex and this file's own backstop below are both English-only by
     // design (see AGENTS.md's Commerce Safety section).
     return pick(lang, {
-      en: "Please reply YES to place this order, or NO to cancel.",
-      hi: "इस ऑर्डर को देने के लिए YES लिखें, या रद्द करने के लिए NO लिखें।",
-      hinglish: "Is order ko place karne ke liye YES likhein, ya cancel karne ke liye NO likhein.",
+      en: "Please reply YES to place this order, or NO to cancel. To change the order or add a coupon, reply NO first - your cart stays.",
+      hi: "इस ऑर्डर को देने के लिए YES लिखें, या रद्द करने के लिए NO लिखें। ऑर्डर बदलने या कूपन लगाने के लिए पहले NO लिखें - आपकी कार्ट बनी रहेगी।",
+      hinglish: "Is order ko place karne ke liye YES likhein, ya cancel karne ke liye NO likhein. Order badalne ya coupon lagane ke liye pehle NO likhein - aapki cart wahi rahegi.",
     });
   }
 

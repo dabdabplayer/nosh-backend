@@ -28,6 +28,9 @@ const HINGLISH_WORDS = [
   "acha", "theek", "thik", "bhejo", "dikhao", "batao", "abhi", "zara",
   "thoda", "kitna", "kitne", "paisa", "rupaye", "khana", "mein", "hoga",
   "yeh", "woh", "kaise", "kab", "kripya", "krupya",
+  "kardo", "karde", "kardijiye", "dedo", "dijiye", "koi", "kuch", "dikha",
+  "dikhado", "dikaho", "lagao", "lagado", "wala", "wali", "aur", "bhi",
+  "chalega", "bolo", "mai", "hoon", "hu",
 ];
 const HINGLISH_WORD_RE = new RegExp(`\\b(${HINGLISH_WORDS.join("|")})\\b`, "i");
 
