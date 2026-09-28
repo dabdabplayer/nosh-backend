@@ -7,7 +7,7 @@
 // Measures here: how fast the webhook is acknowledged (Meta asks for a
 // median under 250ms and fewer than 1% over 1s).
 //
-//   META_APP_SECRET=... node scripts/load-test.js --url https://nosh.arysha.app/webhooks/whatsapp --users 10
+//   META_APP_SECRET=... node scripts/simulate-load.js --url https://nosh.arysha.app/webhooks/whatsapp --users 10
 import { createHmac, randomUUID } from "node:crypto";
 
 const MESSAGES = [
@@ -27,7 +27,7 @@ function readArgs(argv) {
   }
   args.users = Number(args.users);
   if (!args.url || !Number.isInteger(args.users) || args.users < 1 || args.users > 500) {
-    throw new Error("Usage: node scripts/load-test.js --url <webhook url> --users <1-500> [--prefix 999]");
+    throw new Error("Usage: node scripts/simulate-load.js --url <webhook url> --users <1-500> [--prefix 999]");
   }
   if (!/^\d{3,}$/.test(args.prefix)) {
     throw new Error("--prefix must be at least 3 digits and match the server's LOAD_TEST_SENDER_PREFIX.");

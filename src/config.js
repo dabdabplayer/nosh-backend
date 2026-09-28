@@ -204,7 +204,7 @@ const statuspageComponentIds = Object.freeze({
 });
 
 // Senders whose WhatsApp number starts with this prefix are treated as
-// load-test traffic (see scripts/load-test.js): replies are built but never
+// load-test traffic (see scripts/simulate-load.js): replies are built but never
 // sent. Unset means off. "999" is not a real country calling code, so no
 // real WhatsApp user can match it.
 function readLoadTestSenderPrefix(value) {
