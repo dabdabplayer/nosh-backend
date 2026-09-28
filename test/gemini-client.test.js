@@ -139,3 +139,24 @@ test("createGeminiClient sends a freshly fetched token on every call when given 
     ["https://aiplatform.googleapis.com/v1/projects/p/locations/global/endpoints/openapi/chat/completions", "Bearer vertex-token-2"],
   ]);
 });
+
+test("createGeminiClient logs Google's explanation for a permission error, but not for other errors", async () => {
+  const logged = [];
+  const originalError = console.error;
+  console.error = (...args) => logged.push(args);
+  try {
+    const denied = sequenceClient([
+      { status: 403, body: { error: { status: "PERMISSION_DENIED", message: "Permission 'aiplatform.endpoints.predict' denied on project p" } } },
+    ]);
+    await assert.rejects(denied.chat.completions({}));
+
+    const badRequest = sequenceClient([{ status: 400, body: { error: { status: "INVALID_ARGUMENT", message: "echo of user text" } } }]);
+    await assert.rejects(badRequest.chat.completions({}));
+  } finally {
+    console.error = originalError;
+  }
+
+  assert.equal(logged.length, 1);
+  assert.match(logged[0][1].detail, /aiplatform\.endpoints\.predict/);
+  assert.doesNotMatch(JSON.stringify(logged), /echo of user text/);
+});

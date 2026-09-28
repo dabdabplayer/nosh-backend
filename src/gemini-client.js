@@ -34,17 +34,23 @@ function retryDelayMs(response) {
   return Math.min(base, MAX_RETRY_DELAY_MS) + Math.random() * 250;
 }
 
-async function errorCodeOf(response) {
-  // Only the status and the provider's error code are surfaced - the error
-  // body can echo request content, which stays out of logs. Gemini
-  // sometimes wraps the error object in a one-element array.
+// Only the provider's error code is surfaced - an error body can echo
+// request content, which stays out of logs. The one exception is 401/403:
+// those are about credentials, and Google's explanation (which permission,
+// API or project) is needed to fix them; it isn't about the request's text.
+// Gemini sometimes wraps the error object in a one-element array.
+async function errorDetailsOf(response) {
   try {
     const body = await response.json();
     const error = Array.isArray(body) ? body[0]?.error : body?.error;
     const code = error?.status ?? error?.code;
-    return typeof code === "string" ? code : undefined;
+    const isAuthError = response.status === 401 || response.status === 403;
+    return {
+      code: typeof code === "string" ? code : undefined,
+      detail: isAuthError && typeof error?.message === "string" ? error.message.slice(0, 500) : undefined,
+    };
   } catch {
-    return undefined;
+    return {};
   }
 }
 
@@ -107,7 +113,11 @@ export function createGeminiClient({
           if (isOutageStatus(response.status)) {
             reportFailure(COMPONENTS.agent);
           }
-          throw new GeminiApiError(response.status, await errorCodeOf(response));
+          const { code, detail } = await errorDetailsOf(response);
+          if (detail) {
+            console.error("Gemini rejected the credentials.", { status: response.status, code, detail });
+          }
+          throw new GeminiApiError(response.status, code);
         }
       },
     },
