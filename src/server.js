@@ -491,6 +491,20 @@ async function resumePendingSearchAfterAuth(senderId) {
   }
 }
 
+// Load-test senders (LOAD_TEST_SENDER_PREFIX) go through the full reply
+// path but their reply is never sent to WhatsApp or written to the chat
+// log; only its timing and outcome are logged.
+function isLoadTestSender(senderId) {
+  return Boolean(config.loadTest.senderPrefix) && senderId.startsWith(config.loadTest.senderPrefix);
+}
+
+function replyOutcome(replyText) {
+  if (replyText === PLACEHOLDER_REPLY_TEXT) {
+    return "placeholder";
+  }
+  return Object.values(AGENT_TROUBLE_REPLY).includes(replyText) ? "trouble" : "reply";
+}
+
 async function replyToIncomingTextMessages(messages) {
   if (!config.whatsapp.sendEnabled || messages.length === 0) {
     return;
@@ -498,6 +512,17 @@ async function replyToIncomingTextMessages(messages) {
 
   await Promise.allSettled(
     messages.map(async (message) => {
+      if (isLoadTestSender(message.from)) {
+        const startedAt = Date.now();
+        try {
+          const replyText = await buildReplyText(message);
+          console.info("Load test reply ready.", { durationMs: Date.now() - startedAt, outcome: replyOutcome(replyText) });
+        } catch (error) {
+          console.error("Load test reply failed.", { durationMs: Date.now() - startedAt, name: error?.name });
+        }
+        return;
+      }
+
       try {
         await sendTextMessage({
           accessToken: config.whatsapp.accessToken,

@@ -203,6 +203,22 @@ const statuspageComponentIds = Object.freeze({
   whatsapp: readOptionalSecret(process.env.STATUSPAGE_COMPONENT_WHATSAPP, "STATUSPAGE_COMPONENT_WHATSAPP"),
 });
 
+// Senders whose WhatsApp number starts with this prefix are treated as
+// load-test traffic (see scripts/load-test.js): replies are built but never
+// sent. Unset means off. "999" is not a real country calling code, so no
+// real WhatsApp user can match it.
+function readLoadTestSenderPrefix(value) {
+  if (value === undefined || value === "") {
+    return undefined;
+  }
+  if (!/^\d{3,}$/.test(value)) {
+    throw new Error("LOAD_TEST_SENDER_PREFIX must be at least 3 digits.");
+  }
+  return value;
+}
+
+const loadTestSenderPrefix = readLoadTestSenderPrefix(process.env.LOAD_TEST_SENDER_PREFIX);
+
 const swiggyOAuthClientId =
   readOptionalSecret(process.env.SWIGGY_OAUTH_CLIENT_ID, "SWIGGY_OAUTH_CLIENT_ID") ??
   DEFAULT_SWIGGY_OAUTH_CLIENT_ID;
@@ -296,6 +312,9 @@ export const config = Object.freeze({
     baseUrl: nluBaseUrl,
     enabled: Boolean(nluApiKey),
     timeoutMs: nluTimeoutMs,
+  }),
+  loadTest: Object.freeze({
+    senderPrefix: loadTestSenderPrefix,
   }),
   statuspage: Object.freeze({
     enabled: Boolean(statuspageApiKey),
