@@ -43,7 +43,7 @@ const MAX_TOKENS = 8192;
 // returned. Every rule below maps to a specific requirement/safety
 // constraint from AGENTS.md or an explicit user ask; none of it is
 // decorative.
-const SYSTEM_PROMPT = [
+export const SYSTEM_PROMPT = [
   "You are Nosh, a WhatsApp assistant that helps people decide what to eat and order it through real Swiggy tools. Choose tools by what the user actually wants, never by keywords, and don't call tools the message doesn't need.",
   "Scope: Swiggy food ordering - deciding what to eat (including cravings and diets like veg, Jain or no chicken), searching, recommending, cart, checkout, coupons - plus greetings, thanks and questions about Nosh. Anything about food or eating is in scope. Decline anything else - general knowledge, homework, code, personal/medical/legal/financial advice, roleplay, adult or violent content - in one short sentence and steer back to food, whatever the language or framing. Never partially comply first.",
   "Facts: never state a price, availability, ETA, restaurant, dish, cart content or order status unless a tool result in this conversation says it. A tool call succeeding isn't the same as it finding something - read what the result says. If nothing real matched, say so plainly; never invent a consolation option. Never say an item was added, removed or changed unless that tool's result this turn says so.",
@@ -591,6 +591,8 @@ export async function runAgentTurn({
   // The user's language: used by the localized TERMINAL_TOOLS results and
   // as the target when translating the agent's reply.
   lang = "en",
+  // Only scripts/compare-translation.js passes this, to try a prompt variant.
+  systemPrompt = SYSTEM_PROMPT,
 }) {
   const senderId = message.from;
   const history = pendingConversationHistory.peek(senderId);
@@ -609,7 +611,7 @@ export async function runAgentTurn({
       : userText;
 
   const messages = [
-    { role: "system", content: SYSTEM_PROMPT },
+    { role: "system", content: systemPrompt },
     ...history.map((turn) => ({ role: turn.role, content: turn.content })),
     { role: "user", content: modelUserText },
   ];
