@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  formatAddressConfirmation,
   matchAddressByName,
   parseAddressSelectionReply,
   resolvePendingAddressReply,
@@ -447,7 +448,7 @@ test("resolvePendingAddressReply records the address and steps aside (does not c
     pendingCartSessions,
   });
 
-  assert.deepEqual(outcome, { handled: false });
+  assert.deepEqual(outcome, { handled: false, addressConfirmation: "📍 Got it, delivering to Work — 2 Other St." });
   assert.equal(pendingCartSessions.peek("sender-1").addressId, "addr-2");
   assert.equal(pending.peek("sender-1"), undefined);
 });
@@ -550,4 +551,35 @@ test("parseAddressSelectionReply accepts common spellings of pehla", () => {
   assert.equal(parseAddressSelectionReply("Pehela", 2), 0);
   assert.equal(parseAddressSelectionReply("pahela wala", 2), 0);
   assert.equal(parseAddressSelectionReply("pehle", 2), 0);
+});
+
+test("resolvePendingAddressReply starts a search's results with a short line confirming the picked address", async () => {
+  const pending = new PendingAddressSelections();
+  pending.set("sender-1", {
+    kind: "search",
+    searchTerm: "biryani",
+    candidates: [
+      { id: "addr-1", label: "Home — 1 Main St", tag: "Home" },
+      { id: "addr-2", label: "Work — 2 Other St", tag: "Work" },
+    ],
+  });
+
+  const outcome = await resolvePendingAddressReply({
+    message: message("Home"),
+    swiggyFoodClient: fakeSwiggyFoodClient({ searchRestaurants: async () => payload({ restaurants: [restaurant()] }) }),
+    pendingAddressSelections: pending,
+    pendingCartSessions: undefined,
+    lang: "hinglish",
+  });
+
+  assert.equal(outcome.handled, true);
+  assert.match(outcome.replyText, /^📍 Theek hai, Home pe delivery hogi\.\n\n/);
+  assert.match(outcome.replyText, /Test Restaurant/);
+});
+
+test("formatAddressConfirmation names the address in the user's language", () => {
+  const home = { id: "addr-1", label: "Home — 1 Main St", tag: "Home" };
+  assert.equal(formatAddressConfirmation(home), "📍 Got it, delivering to Home.");
+  assert.equal(formatAddressConfirmation(home, "punjabi"), "📍 Theek aa, Home te delivery hovegi.");
+  assert.equal(formatAddressConfirmation({ id: "addr-2", label: "2 Other St" }), "📍 Got it, delivering to 2 Other St.");
 });

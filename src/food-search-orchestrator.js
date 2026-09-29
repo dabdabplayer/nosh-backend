@@ -133,6 +133,19 @@ export function formatAddressPrompt(candidates, lang = "en") {
   return [header, ...lines, footer].join("\n");
 }
 
+// A short line confirming which saved address was picked, shown before the
+// search results or recommendation that follow it.
+export function formatAddressConfirmation(candidate, lang = "en") {
+  const name = candidate.tag ?? candidate.label;
+  return pick(lang, {
+    en: `📍 Got it, delivering to ${name}.`,
+    hi: `📍 ठीक है, ${name} पर डिलीवरी होगी।`,
+    hinglish: `📍 Theek hai, ${name} pe delivery hogi.`,
+    punjabi: `📍 Theek aa, ${name} te delivery hovegi.`,
+    pa: `📍 ਠੀਕ ਹੈ, ${name} ਤੇ ਡਿਲੀਵਰੀ ਹੋਵੇਗੀ।`,
+  });
+}
+
 function formatRestaurantReply(searchTerm, restaurants, lang = "en") {
   const lines = restaurants.map((restaurant, index) => {
     const parts = [
@@ -346,6 +359,7 @@ export async function resolvePendingAddressReply({
 
   pendingAddressSelections.clear(message.from);
   const addressId = pending.candidates[selectedIndex].id;
+  const addressConfirmation = formatAddressConfirmation(pending.candidates[selectedIndex], lang);
 
   // A recommendation's address prompt does NOT resolve deterministically
   // here, unlike a search's. recommendSimilar's own return value is
@@ -363,7 +377,7 @@ export async function resolvePendingAddressReply({
   // upgrade path if this inference ever proves unreliable in practice.
   if (pending.kind === "recommend") {
     pendingCartSessions?.set(message.from, { addressId });
-    return { handled: false };
+    return { handled: false, addressConfirmation };
   }
 
   try {
@@ -375,9 +389,9 @@ export async function resolvePendingAddressReply({
       pendingCartSessions,
       lang,
     );
-    return { handled: true, replyText };
+    return { handled: true, replyText: `${addressConfirmation}\n\n${replyText}` };
   } catch (error) {
     console.error("Food search orchestration failed unexpectedly.", { name: error.name });
-    return { handled: true, replyText: GENERIC_FALLBACK_REPLY };
+    return { handled: true, replyText: `${addressConfirmation}\n\n${GENERIC_FALLBACK_REPLY}` };
   }
 }

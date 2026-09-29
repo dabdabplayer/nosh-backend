@@ -377,6 +377,11 @@ async function buildReplyText(message) {
       return addressOutcome.replyText ?? PLACEHOLDER_REPLY_TEXT;
     }
 
+    // A recommendation continues in the agent after the address is picked;
+    // its reply starts with the same short "delivering to Home" line.
+    const withAddressConfirmation = (text) =>
+      addressOutcome.addressConfirmation ? `${addressOutcome.addressConfirmation}\n\n${text}` : text;
+
     const candidateOutcome = await resolvePendingCartCandidateReply({
       message,
       swiggyFoodClient,
@@ -412,10 +417,10 @@ async function buildReplyText(message) {
         status: error?.status,
         code: error?.code,
       });
-      return pick(lang, AGENT_TROUBLE_REPLY);
+      return withAddressConfirmation(pick(lang, AGENT_TROUBLE_REPLY));
     }
 
-    return reply ?? pick(lang, AGENT_TROUBLE_REPLY);
+    return withAddressConfirmation(reply ?? pick(lang, AGENT_TROUBLE_REPLY));
   } catch (error) {
     if (error instanceof SwiggyAuthFailureError) {
       // Swiggy rejected the token mid-conversation even though our locally
