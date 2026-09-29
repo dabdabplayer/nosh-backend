@@ -37,7 +37,7 @@ import {
 } from "./swiggy-oauth.js";
 import { SwiggyAuthFailureError } from "./swiggy-retry.js";
 import { SwiggyTokenStore } from "./swiggy-token-store.js";
-import { sendTextMessage } from "./whatsapp-client.js";
+import { sendReadReceipt, sendTextMessage } from "./whatsapp-client.js";
 import {
   extractInboundTextMessages,
   parseWhatsAppWebhookPayload,
@@ -527,6 +527,17 @@ async function replyToIncomingTextMessages(messages) {
         }
         return;
       }
+
+      // Blue ticks and "typing…" straight away, while the reply is being
+      // built. Best-effort: a failure here never holds up the reply.
+      sendReadReceipt({
+        accessToken: config.whatsapp.accessToken,
+        apiVersion: config.whatsapp.apiVersion,
+        phoneNumberId: message.phoneNumberId,
+        messageId: message.id,
+      }).catch((error) => {
+        console.warn("Failed to send WhatsApp read receipt.", { name: error.name, status: error.status });
+      });
 
       try {
         await sendTextMessage({

@@ -68,3 +68,48 @@ export async function sendTextMessage({
     status: message?.message_status,
   });
 }
+
+// Marks an incoming message as read (blue ticks, and every earlier message
+// in the chat too) and shows "typing…" until Nosh replies or 25 seconds
+// pass. Meta only allows the typing indicator together with a read receipt.
+// https://developers.facebook.com/docs/whatsapp/cloud-api/typing-indicators/
+// Meta's docs don't say which Graph API version the typing indicator needs,
+// so if Meta rejects the request the plain read receipt is sent instead.
+export async function sendReadReceipt({
+  accessToken,
+  apiVersion,
+  phoneNumberId,
+  messageId,
+  fetchImpl = fetch,
+}) {
+  const post = async (withTypingIndicator) => {
+    let response;
+    try {
+      response = await fetchImpl(`https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${accessToken}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          messaging_product: "whatsapp",
+          status: "read",
+          message_id: messageId,
+          ...(withTypingIndicator ? { typing_indicator: { type: "text" } } : {}),
+        }),
+      });
+    } catch (error) {
+      throw new WhatsAppSendError(undefined, error);
+    }
+    await response.body?.cancel();
+    return response;
+  };
+
+  let response = await post(true);
+  if (response.status === 400) {
+    response = await post(false);
+  }
+  if (!response.ok) {
+    throw new WhatsAppSendError(response.status);
+  }
+}

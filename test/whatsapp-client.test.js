@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { sendTextMessage, WhatsAppSendError } from "../src/whatsapp-client.js";
+import { sendReadReceipt, sendTextMessage, WhatsAppSendError } from "../src/whatsapp-client.js";
 
 function jsonResponse(status, body) {
   return {
@@ -77,5 +77,59 @@ test("wraps a network-level failure in WhatsAppSendError", async () => {
       assert.equal(error.cause, networkError);
       return true;
     },
+  );
+});
+
+test("sendReadReceipt marks the message read and shows the typing indicator", async () => {
+  const requests = [];
+  await sendReadReceipt({
+    accessToken: "token",
+    apiVersion: "v23.0",
+    phoneNumberId: "pn-1",
+    messageId: "wamid.1",
+    fetchImpl: async (url, init) => {
+      requests.push({ url, init });
+      return new Response(JSON.stringify({ success: true }), { status: 200 });
+    },
+  });
+
+  assert.equal(requests[0].url, "https://graph.facebook.com/v23.0/pn-1/messages");
+  assert.equal(requests[0].init.headers.authorization, "Bearer token");
+  assert.deepEqual(JSON.parse(requests[0].init.body), {
+    messaging_product: "whatsapp",
+    status: "read",
+    message_id: "wamid.1",
+    typing_indicator: { type: "text" },
+  });
+});
+
+test("sendReadReceipt falls back to a plain read receipt when Meta rejects the typing indicator", async () => {
+  const bodies = [];
+  await sendReadReceipt({
+    accessToken: "token",
+    apiVersion: "v21.0",
+    phoneNumberId: "pn-1",
+    messageId: "wamid.1",
+    fetchImpl: async (url, init) => {
+      bodies.push(JSON.parse(init.body));
+      return new Response("{}", { status: bodies.length === 1 ? 400 : 200 });
+    },
+  });
+
+  assert.equal(bodies.length, 2);
+  assert.equal("typing_indicator" in bodies[1], false);
+  assert.equal(bodies[1].status, "read");
+});
+
+test("sendReadReceipt throws a WhatsAppSendError with the status when Meta rejects it", async () => {
+  await assert.rejects(
+    sendReadReceipt({
+      accessToken: "token",
+      apiVersion: "v23.0",
+      phoneNumberId: "pn-1",
+      messageId: "wamid.1",
+      fetchImpl: async () => new Response("{}", { status: 401 }),
+    }),
+    (error) => error instanceof WhatsAppSendError && error.status === 401,
   );
 });
