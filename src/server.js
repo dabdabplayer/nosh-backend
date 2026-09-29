@@ -373,8 +373,18 @@ async function buildReplyText(message) {
       lang,
     });
 
+    // Replies built here in code, without the agent, still go into its
+    // conversation history. Otherwise the agent never sees the user's
+    // answer: after "home" picked an address here, the next request got
+    // "please pick an address first".
+    const recordTurn = (replyText) => {
+      pendingConversationHistory.append(message.from, { role: "user", content: message.text });
+      pendingConversationHistory.append(message.from, { role: "assistant", content: replyText });
+      return replyText;
+    };
+
     if (addressOutcome.handled) {
-      return addressOutcome.replyText ?? PLACEHOLDER_REPLY_TEXT;
+      return recordTurn(addressOutcome.replyText ?? PLACEHOLDER_REPLY_TEXT);
     }
 
     // A recommendation continues in the agent after the address is picked;
@@ -390,7 +400,7 @@ async function buildReplyText(message) {
     });
 
     if (candidateOutcome.handled) {
-      return candidateOutcome.replyText ?? PLACEHOLDER_REPLY_TEXT;
+      return recordTurn(candidateOutcome.replyText ?? PLACEHOLDER_REPLY_TEXT);
     }
 
     let reply;
