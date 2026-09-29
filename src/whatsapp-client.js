@@ -106,10 +106,13 @@ export async function sendReadReceipt({
   };
 
   let response = await post(true);
+  let typingIndicator = true;
   if (response.status === 400) {
+    typingIndicator = false;
     response = await post(false);
   }
   if (!response.ok) {
     throw new WhatsAppSendError(response.status);
   }
+  return { typingIndicator };
 }

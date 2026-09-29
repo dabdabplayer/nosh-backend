@@ -2,7 +2,7 @@ import { parseServiceAccountKey, vertexModelName, vertexOpenAiBaseUrl } from "./
 
 const DEFAULT_PORT = 3000;
 const DEFAULT_WHATSAPP_WEBHOOK_PATH = "/webhooks/whatsapp";
-const DEFAULT_WHATSAPP_API_VERSION = "v21.0";
+const DEFAULT_WHATSAPP_API_VERSION = "v26.0";
 // Verified live against https://mcp.swiggy.com/.well-known/oauth-authorization-server
 const DEFAULT_SWIGGY_OAUTH_BASE_URL = "https://mcp.swiggy.com/auth";
 // Swiggy's Dynamic Client Registration (POST /auth/register) currently

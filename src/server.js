@@ -535,9 +535,11 @@ async function replyToIncomingTextMessages(messages) {
         apiVersion: config.whatsapp.apiVersion,
         phoneNumberId: message.phoneNumberId,
         messageId: message.id,
-      }).catch((error) => {
-        console.warn("Failed to send WhatsApp read receipt.", { name: error.name, status: error.status });
-      });
+      })
+        .then(({ typingIndicator }) => console.info("WhatsApp read receipt sent.", { typingIndicator }))
+        .catch((error) => {
+          console.warn("Failed to send WhatsApp read receipt.", { name: error.name, status: error.status });
+        });
 
       try {
         await sendTextMessage({
