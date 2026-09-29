@@ -1257,3 +1257,17 @@ test("runAgentTurn accepts numbers that came from a tool result", async () => {
   assert.equal(calls, 2);
   assert.match(result, /Test Biryani House/);
 });
+
+test("runAgentTurn tells Gemini the user's language when the message itself has none, like an address pick", async () => {
+  const seen = [];
+  const client = fakeClient(async ({ messages }) => {
+    seen.push(messages.at(-1).content);
+    return textResponse("Burger Barn da Classic Cheeseburger vadiya hai.");
+  });
+
+  await runAgentTurn({ message: { from: "sender-1", text: "Home" }, swiggyFoodClient: fakeSwiggyClient(), ...newContext(), agent, client, lang: "punjabi" });
+  await runAgentTurn({ message: { from: "sender-2", text: "show me pizza" }, swiggyFoodClient: fakeSwiggyClient(), ...newContext(), agent, client, lang: "punjabi" });
+
+  assert.equal(seen[0], "Home\n(Note from Nosh: they have been writing in Punjabi in Roman letters - reply in that.)");
+  assert.equal(seen[1], "show me pizza");
+});

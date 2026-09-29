@@ -72,6 +72,13 @@ if (!SYSTEM_PROMPT.includes(ENGLISH_REPLIES_RULE)) {
 
 export const OWN_LANGUAGE_SYSTEM_PROMPT = SYSTEM_PROMPT.replace(ENGLISH_REPLIES_RULE, OWN_LANGUAGE_REPLIES_RULE);
 
+const LANGUAGE_NAMES = {
+  hi: "Hindi in Devanagari",
+  hinglish: "Hinglish in Roman letters",
+  punjabi: "Punjabi in Roman letters",
+  pa: "Punjabi in Gurmukhi",
+};
+
 // Every run of digits in a text, with Devanagari and Gurmukhi digits read as
 // the same numbers.
 const NATIVE_DIGITS = ["०१२३४५६७८९", "੦੧੨੩੪੫੬੭੮੯"];
@@ -648,10 +655,17 @@ export async function runAgentTurn({
   // as "cardo", and the agent searched the menu for it. So for Hinglish the
   // model also sees the user's own words this turn. History keeps only the
   // translation, to keep tokens down.
+  // A one-word pick like "Home" or "1" says nothing about language, and
+  // Gemini answered one in English mid-way through a Punjabi chat. Tell it
+  // which language the user has been writing in.
+  const languageNote =
+    !translator && messageLang === undefined && LANGUAGE_NAMES[lang]
+      ? `\n(Note from Nosh: they have been writing in ${LANGUAGE_NAMES[lang]} - reply in that.)`
+      : "";
   const modelUserText =
     messageLang === "hinglish" && userText !== message.text
       ? `${userText}\n(Their original words: "${message.text}". If the translation looks wrong, go by these.)`
-      : userText;
+      : `${userText}${languageNote}`;
 
   const messages = [
     { role: "system", content: systemPrompt },
