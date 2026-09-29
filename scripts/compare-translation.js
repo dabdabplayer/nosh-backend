@@ -24,7 +24,7 @@ import { createServer } from "node:http";
 import { readFile, writeFile } from "node:fs/promises";
 import { SarvamAIClient } from "sarvamai";
 import { config } from "../src/config.js";
-import { runAgentTurn, SYSTEM_PROMPT } from "../src/agent.js";
+import { OWN_LANGUAGE_SYSTEM_PROMPT, runAgentTurn, SYSTEM_PROMPT } from "../src/agent.js";
 import { createGeminiClient } from "../src/gemini-client.js";
 import { createVertexTokenProvider } from "../src/vertex-auth.js";
 import { createSarvamTranslator } from "../src/sarvam-translator.js";
@@ -37,20 +37,6 @@ import { PendingOrderConfirmations } from "../src/pending-order-confirmations.js
 import { handleMockSwiggyFoodRequest, MOCK_FOOD_PATH } from "./mock-swiggy-food-server.js";
 
 const SARVAM_RUPEES_PER_CHAR = 0.005; // sarvam.ai/api-pricing, pay as you go
-
-const ENGLISH_REPLIES_RULE =
-  "Replies: plain, casual English only - a separate step translates to and from the user's language, so never translate yourself.";
-const OWN_LANGUAGE_REPLIES_RULE =
-  "Replies: write in the language and script of the user's latest message - Hinglish in Roman letters, Hindi in " +
-  "Devanagari, Punjabi in whichever script they used, English in English. Keep the literal English YES and NO " +
-  "whenever you mention confirming an order.";
-
-function geminiOnlyPrompt() {
-  if (!SYSTEM_PROMPT.includes(ENGLISH_REPLIES_RULE)) {
-    throw new Error("The system prompt's reply-language rule changed; update ENGLISH_REPLIES_RULE here.");
-  }
-  return SYSTEM_PROMPT.replace(ENGLISH_REPLIES_RULE, OWN_LANGUAGE_REPLIES_RULE);
-}
 
 function scriptOf(text) {
   if (/[਀-੿]/.test(text)) return "gurmukhi";
@@ -162,7 +148,7 @@ async function runConversation({ variant, conversation, mockUrl, gemini, sarvam 
           client: gemini.client,
           translator: sarvam?.translator,
           lang,
-          systemPrompt: variant === "gemini" ? geminiOnlyPrompt() : SYSTEM_PROMPT,
+          systemPrompt: variant === "gemini" ? OWN_LANGUAGE_SYSTEM_PROMPT : SYSTEM_PROMPT,
         });
       } catch (caught) {
         error = caught?.name ?? "Error";
@@ -228,7 +214,7 @@ async function main() {
   if (!config.agent.serviceAccount && !config.agent.apiKey) {
     throw new Error("Set GOOGLE_SERVICE_ACCOUNT_JSON (Vertex) or AGENT_API_KEY for Gemini.");
   }
-  if (!config.translation.enabled) {
+  if (!config.translation.apiKey) {
     throw new Error("Set NLU_API_KEY for Sarvam.");
   }
 

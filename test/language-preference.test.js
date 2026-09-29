@@ -114,3 +114,16 @@ test("detectLanguage recognizes common Hinglish requests seen in real chats", ()
   assert.equal(detectLanguage("Mujhe order history dikaho"), "hinglish");
   assert.equal(detectLanguage("Add it to my cart"), "en");
 });
+
+test("detectLanguage recognizes Punjabi in Gurmukhi and in Roman letters", () => {
+  assert.equal(detectLanguage("ਮੈਨੂੰ ਕੁਝ ਸ਼ਾਕਾਹਾਰੀ ਖਾਣਾ ਚਾਹੀਦਾ ਹੈ"), "pa");
+  assert.equal(detectLanguage("Veere kuch vadiya khaan nu dasso"), "punjabi");
+  assert.equal(detectLanguage("Theek aa, cart vich paa do"), "punjabi");
+  assert.equal(detectLanguage("mujhe kuch tasty khana hai"), "hinglish");
+});
+
+test("pick gives romanized Punjabi the Hinglish template and Gurmukhi the English one", () => {
+  const variants = { en: "Your cart", hi: "आपकी कार्ट", hinglish: "Aapki cart" };
+  assert.equal(pick("punjabi", variants), "Aapki cart");
+  assert.equal(pick("pa", variants), "Your cart");
+});

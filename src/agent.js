@@ -55,6 +55,48 @@ export const SYSTEM_PROMPT = [
   "If they reject a pick, call recommend_similar again and choose an item you haven't offered anywhere in this conversation; if none is left, say so. Never claim their order history is thin unless recommend_similar said so this turn.",
 ].join(" ");
 
+// The default prompt: no translator, so Gemini reads the user's message as
+// written and replies in their language and script. Compared end to end
+// against Sarvam translation with scripts/compare-translation.js: faster,
+// no translation cost, and replies in the user's own Punjabi or Hinglish.
+const ENGLISH_REPLIES_RULE =
+  "Replies: plain, casual English only - a separate step translates to and from the user's language, so never translate yourself.";
+const OWN_LANGUAGE_REPLIES_RULE =
+  "Replies: write in the language and script of the user's latest message - Hinglish in Roman letters, Hindi in " +
+  "Devanagari, Punjabi in whichever script they used, English in English - in a neutral voice. Keep the literal " +
+  "English YES and NO whenever you mention confirming an order.";
+
+if (!SYSTEM_PROMPT.includes(ENGLISH_REPLIES_RULE)) {
+  throw new Error("SYSTEM_PROMPT's reply-language rule changed; update ENGLISH_REPLIES_RULE.");
+}
+
+export const OWN_LANGUAGE_SYSTEM_PROMPT = SYSTEM_PROMPT.replace(ENGLISH_REPLIES_RULE, OWN_LANGUAGE_REPLIES_RULE);
+
+// Every run of digits in a text, with Devanagari and Gurmukhi digits read as
+// the same numbers.
+const NATIVE_DIGITS = ["०१२३४५६७८९", "੦੧੨੩੪੫੬੭੮੯"];
+
+function digitsOf(text) {
+  let ascii = String(text ?? "");
+  for (const digits of NATIVE_DIGITS) {
+    ascii = ascii.replace(new RegExp(`[${digits}]`, "g"), (digit) => String(digits.indexOf(digit)));
+  }
+  return ascii.match(/\d+/g) ?? [];
+}
+
+// Numbers in a reply that appear nowhere the model could have got them: the
+// prompt, the conversation, the user's message or any tool result this turn.
+// A price, rating or time that no tool gave is invented.
+function unsupportedNumbers(reply, messages) {
+  const seen = new Set();
+  for (const message of messages) {
+    for (const digits of digitsOf(typeof message.content === "string" ? message.content : "")) {
+      seen.add(digits);
+    }
+  }
+  return digitsOf(reply).filter((digits) => !seen.has(digits));
+}
+
 const SEARCH_FOOD_TOOL = Object.freeze({
   type: "function",
   function: {
@@ -591,8 +633,9 @@ export async function runAgentTurn({
   // The user's language: used by the localized TERMINAL_TOOLS results and
   // as the target when translating the agent's reply.
   lang = "en",
-  // Only scripts/compare-translation.js passes this, to try a prompt variant.
-  systemPrompt = SYSTEM_PROMPT,
+  // English-only when a translator sits in between; otherwise Gemini replies
+  // in the user's own language. Only scripts/compare-translation.js passes it.
+  systemPrompt = translator ? SYSTEM_PROMPT : OWN_LANGUAGE_SYSTEM_PROMPT,
 }) {
   const senderId = message.from;
   const history = pendingConversationHistory.peek(senderId);
@@ -688,6 +731,12 @@ export async function runAgentTurn({
     lang,
   };
 
+  // One chance per turn to fix an empty reply or one with an invented number.
+  let askedToCorrect = false;
+  // The rejected reply and the correction note repeat the invented numbers,
+  // so they never count as a source for them.
+  const correctionMessages = new Set();
+
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const response = await client.chat.completions({
       model: agent.model,
@@ -704,6 +753,40 @@ export async function runAgentTurn({
 
     if (!Array.isArray(toolCalls) || toolCalls.length === 0) {
       const finalText = responseMessage?.content?.trim();
+      // A fake order summary gets the fabricated-confirmation redirect below,
+      // which is more useful than asking for a rewrite.
+      const looksLikeConfirmation = Boolean(finalText) && /\bYES\b/.test(finalText) && /\bNO\b/.test(finalText);
+      const inventedNumbers = finalText && !looksLikeConfirmation
+        ? unsupportedNumbers(finalText, messages.filter((message) => !correctionMessages.has(message)))
+        : [];
+
+      if (!askedToCorrect && (!finalText || inventedNumbers.length > 0)) {
+        // Seen in testing: after adding to the cart, Gemini sometimes ends
+        // the turn with no text at all. Ask once rather than send the user
+        // the generic trouble reply.
+        askedToCorrect = true;
+        console.warn("Asking the agent to correct its reply.", {
+          empty: !finalText,
+          inventedNumbers: inventedNumbers.length,
+        });
+        const rejected = finalText ? { role: "assistant", content: finalText } : undefined;
+        const note = {
+          role: "user",
+          content: finalText
+            ? `(Note from Nosh, not the user: your reply has numbers no tool result gave - ${inventedNumbers.join(", ")}. Rewrite it using only real numbers from tool results, or leave them out.)`
+            : "(Note from Nosh, not the user: your reply was empty. Reply to the user now, briefly, based on the tool results above.)",
+        };
+        for (const message of [rejected, note].filter(Boolean)) {
+          correctionMessages.add(message);
+          messages.push(message);
+        }
+        continue;
+      }
+
+      if (inventedNumbers.length > 0) {
+        console.error("Agent reply still had numbers no tool gave; not sending it.", { count: inventedNumbers.length });
+        return undefined;
+      }
 
       if (!finalText) {
         // Distinguishes "the reasoning/token budget got eaten" (see
@@ -742,7 +825,7 @@ export async function runAgentTurn({
       // real tool. Phrased as intent ("ask me to check out"), not a literal
       // command keyword - this app has no trigger-word interface (see the
       // system prompt's first rule), so the redirect must not imply one.
-      if (/\bYES\b/.test(finalText) && /\bNO\b/.test(finalText)) {
+      if (looksLikeConfirmation) {
         console.error("Agent produced a fabricated confirmation-shaped reply with no real tool call this turn.");
         const safeRedirect = withCartReplacementNote(pick(lang, {
           en: "Let me pull up your actual order for you — ask me to check out and I'll show the real summary and total.",

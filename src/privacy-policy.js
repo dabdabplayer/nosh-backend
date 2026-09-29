@@ -1,3 +1,5 @@
+import { config } from "./config.js";
+
 // Served at GET /privacy-policy. This is the public policy required by
 // Meta's WhatsApp Business Platform app review before the app can be
 // published. Swiggy-originated data (orders, addresses, cart contents)
@@ -7,6 +9,14 @@
 // model training" rule in the Swiggy Builders Club data-and-compliance docs.
 // Do not add an AI-training clause to this page without re-checking that
 // rule and confirming with Swiggy.
+// Listed only while Sarvam translation is switched on (AGENT_TRANSLATOR=sarvam);
+// otherwise no message text is sent to Sarvam.
+const SARVAM_ITEM = `  <li><strong>Sarvam AI</strong> - translates messages you write in Hindi or
+  Hinglish into English for the model above, and translates Nosh's replies
+  back into your language. It receives only the text being translated, which
+  can include restaurant names, dishes, and prices from Nosh's replies.</li>
+`;
+
 export const PRIVACY_POLICY_HTML = `<!doctype html>
 <html lang="en">
 <head>
@@ -24,7 +34,7 @@ export const PRIVACY_POLICY_HTML = `<!doctype html>
 </head>
 <body>
 <h1>Nosh Privacy Policy</h1>
-<p class="updated">Last updated: 28 September 2026</p>
+<p class="updated">Last updated: 29 September 2026</p>
 
 <p>Nosh Labs ("Nosh", "we", "us") operates Nosh, a WhatsApp-based conversational
 assistant that helps you search for restaurants, build a cart, and place
@@ -76,11 +86,7 @@ message Nosh on WhatsApp and how we handle it.</p>
   Swiggy data needed for the current request, such as restaurant and menu
   results, your cart, and the labels of your saved addresses. Under Google
   Cloud's terms, Google does not use this data to train its models.</li>
-  <li><strong>Sarvam AI</strong> - translates messages you write in Hindi or
-  Hinglish into English for the model above, and translates Nosh's replies
-  back into your language. It receives only the text being translated, which
-  can include restaurant names, dishes, and prices from Nosh's replies.</li>
-</ul>
+${config.translation.enabled ? SARVAM_ITEM : ""}</ul>
 <p>We do not sell your data, and we do not share it with any other third
 party.</p>
 

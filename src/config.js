@@ -159,6 +159,17 @@ function readPositiveInteger(value, name, defaultValue) {
 const nluApiKey = readOptionalSecret(process.env.NLU_API_KEY, "NLU_API_KEY");
 const nluBaseUrl = readOptionalSecret(process.env.NLU_BASE_URL, "NLU_BASE_URL") ?? DEFAULT_NLU_BASE_URL;
 const nluTimeoutMs = readPositiveInteger(process.env.NLU_TIMEOUT_MS, "NLU_TIMEOUT_MS", DEFAULT_NLU_TIMEOUT_MS);
+// "none" (default): Gemini reads and replies in the user's own language.
+// "sarvam": Sarvam translates to English and back (needs NLU_API_KEY).
+const agentTranslator = process.env.AGENT_TRANSLATOR || "none";
+
+if (agentTranslator !== "none" && agentTranslator !== "sarvam") {
+  throw new Error('AGENT_TRANSLATOR must be "none" or "sarvam".');
+}
+
+if (agentTranslator === "sarvam" && !nluApiKey) {
+  throw new Error('AGENT_TRANSLATOR="sarvam" needs NLU_API_KEY.');
+}
 
 const agentApiKey = readOptionalSecret(process.env.AGENT_API_KEY, "AGENT_API_KEY");
 const googleServiceAccountJson = readOptionalSecret(
@@ -310,7 +321,7 @@ export const config = Object.freeze({
   translation: Object.freeze({
     apiKey: nluApiKey,
     baseUrl: nluBaseUrl,
-    enabled: Boolean(nluApiKey),
+    enabled: agentTranslator === "sarvam",
     timeoutMs: nluTimeoutMs,
   }),
   loadTest: Object.freeze({

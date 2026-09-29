@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { runAgentTurn, TOOLS } from "../src/agent.js";
+import { OWN_LANGUAGE_SYSTEM_PROMPT, runAgentTurn, SYSTEM_PROMPT, TOOLS } from "../src/agent.js";
 import { createSarvamTranslator } from "../src/sarvam-translator.js";
 import { PendingAddressSelections } from "../src/pending-address-selection.js";
 import { PendingCartSessions } from "../src/pending-cart-sessions.js";
@@ -1187,4 +1187,73 @@ test("runAgentTurn shows the model a Hinglish message's original words next to t
   assert.match(seenByModel[0], /^cardo and one pepsi too\n/);
   assert.match(seenByModel[0], /Their original words: "kardo aur ek pepsi bhi"/);
   assert.equal(ctx.pendingConversationHistory.peek("sender-1")[0].content, "cardo and one pepsi too");
+});
+
+test("runAgentTurn has Gemini reply in the user's own language when there is no translator, and in English when there is", async () => {
+  const prompts = [];
+  const client = fakeClient(async ({ messages }) => {
+    prompts.push(messages[0].content);
+    return textResponse("Sure!");
+  });
+  const { translator } = fakeSarvam(async (request) => ({ translated_text: request.input }));
+
+  await runAgentTurn({ message: { from: "sender-1", text: "hi" }, swiggyFoodClient: fakeSwiggyClient(), ...newContext(), agent, client });
+  await runAgentTurn({ message: { from: "sender-2", text: "hi" }, swiggyFoodClient: fakeSwiggyClient(), ...newContext(), agent, client, translator });
+
+  assert.equal(prompts[0], OWN_LANGUAGE_SYSTEM_PROMPT);
+  assert.match(prompts[0], /language and script of the user's latest message/);
+  assert.equal(prompts[1], SYSTEM_PROMPT);
+});
+
+test("runAgentTurn asks Gemini once to reply when it returns an empty reply", async () => {
+  const requests = [];
+  const client = fakeClient(async ({ messages }) => {
+    requests.push(structuredClone(messages));
+    return requests.length === 1 ? textResponse("") : textResponse("Cart mein add ho gaya.");
+  });
+
+  const result = await runAgentTurn({ message: { from: "sender-1", text: "haan add kardo" }, swiggyFoodClient: fakeSwiggyClient(), ...newContext(), agent, client });
+
+  assert.equal(result, "Cart mein add ho gaya.");
+  assert.equal(requests.length, 2);
+  assert.match(requests[1].at(-1).content, /your reply was empty/);
+});
+
+test("runAgentTurn asks Gemini to fix a reply with a number no tool gave, and sends nothing if it repeats it", async () => {
+  let calls = 0;
+  const fixed = fakeClient(async () => {
+    calls += 1;
+    return calls === 1 ? textResponse("Paneer Tikka is ₹349.") : textResponse("Paneer Tikka is a great pick.");
+  });
+  const result = await runAgentTurn({ message: { from: "sender-1", text: "suggest something" }, swiggyFoodClient: fakeSwiggyClient(), ...newContext(), agent, client: fixed });
+  assert.equal(result, "Paneer Tikka is a great pick.");
+
+  const stubborn = fakeClient(async () => textResponse("Paneer Tikka is ₹349."));
+  const stubbornResult = await runAgentTurn({ message: { from: "sender-2", text: "suggest something" }, swiggyFoodClient: fakeSwiggyClient(), ...newContext(), agent, client: stubborn });
+  assert.equal(stubbornResult, undefined);
+});
+
+test("runAgentTurn accepts numbers that came from a tool result", async () => {
+  let calls = 0;
+  const client = fakeClient(async () => {
+    calls += 1;
+    return calls === 1
+      ? toolCallResponse([{ id: "call_1", function: { name: "search_food", arguments: JSON.stringify({ query: "biryani" }) } }])
+      : textResponse("Test Biryani House is open - want to see the menu?");
+  });
+  const ctx = newContext();
+  ctx.pendingCartSessions.set("sender-1", { addressId: "addr-1" });
+
+  const result = await runAgentTurn({
+    message: { from: "sender-1", text: "biryani" },
+    swiggyFoodClient: fakeSwiggyClient({
+      searchMenu: async () => ({ structured: { items: [{ name: "Chicken Biryani", price: 249, inStock: 1 }] } }),
+    }),
+    ...ctx,
+    agent,
+    client,
+  });
+
+  assert.equal(calls, 2);
+  assert.match(result, /Test Biryani House/);
 });

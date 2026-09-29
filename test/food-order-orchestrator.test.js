@@ -2677,7 +2677,7 @@ test("recommendSimilar with vegOnly says nothing veg came up rather than offerin
 
   const reply = await recommendSimilar({ swiggyFoodClient: client, vegOnly: true });
 
-  assert.match(reply, /No real vegetarian items/);
+  assert.match(reply, /couldn't find any vegetarian items/);
   assert.doesNotMatch(reply, /Cheeseburger/);
 });
 

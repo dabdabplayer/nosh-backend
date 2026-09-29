@@ -16,6 +16,11 @@
 // language-bearing message).
 
 const DEVANAGARI_RE = /[ऀ-ॿ]/;
+const GURMUKHI_RE = /[\u0A00-\u0A7F]/;
+
+// Common romanized Punjabi words that don't appear in Hinglish or English.
+const PUNJABI_WORD_RE =
+  /\b(veere|veer|paaji|paji|dasso|dasseo|tussi|tusi|mainu|sanu|saanu|vich|hor|changa|vadiya|kiddan|kidda|haigi|haiga|kithe|oye)\b/i;
 
 // Deliberately a short list of common romanized Hindi/Hinglish tokens that
 // are unlikely to appear in an ordinary English sentence, matched as whole
@@ -45,7 +50,8 @@ const AMBIGUOUS_RE = /^(\d+|yes|y|no|n|confirm|confirmed|cancel|cancelled|cancel
 const LIST_PICK_WORD_RE =
   /^(first|second|third|last|1st|2nd|3rd|pehla|pehli|pehela|pahla|pahli|pahela|pehle|dusra|doosra|dusri|doosri|teesra|tisra|home|work|other|office|ghar|house)$/i;
 
-// Returns "hi" | "hinglish" | "en", or undefined when the text carries no
+// Returns "pa" (Gurmukhi Punjabi) | "punjabi" (romanized Punjabi) | "hi" |
+// "hinglish" | "en", or undefined when the text carries no
 // real signal either way (empty, a bare number, a bare yes/no/confirm token
 // - see AMBIGUOUS_RE). Callers should leave any stored preference unchanged
 // on undefined, not overwrite it with a guess.
@@ -56,8 +62,16 @@ export function detectLanguage(text) {
     return undefined;
   }
 
+  if (GURMUKHI_RE.test(trimmed)) {
+    return "pa";
+  }
+
   if (DEVANAGARI_RE.test(trimmed)) {
     return "hi";
+  }
+
+  if (PUNJABI_WORD_RE.test(trimmed)) {
+    return "punjabi";
   }
 
   if (HINGLISH_WORD_RE.test(trimmed)) {
@@ -93,6 +107,11 @@ export class PendingLanguagePreference {
 // unrecognized/missing lang - keeps every call site terse and keeps "en" as
 // the unconditional safe default (existing tests assert exact English
 // strings with no lang argument passed at all).
+//
+// Punjabi has no templates of its own yet: romanized Punjabi gets the
+// Hinglish ones (close enough to read), Gurmukhi gets English.
+const FALLBACK_LANG = { punjabi: "hinglish" };
+
 export function pick(lang, variants) {
-  return variants[lang] ?? variants.en;
+  return variants[lang] ?? variants[FALLBACK_LANG[lang]] ?? variants.en;
 }

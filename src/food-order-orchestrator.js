@@ -836,7 +836,7 @@ export async function recommendSimilar({
   if (blocks.length === 0) {
     markData(false);
     if (vegOnly) {
-      return "No real vegetarian items came up at any open restaurant for this user right now - tell them so plainly, and don't suggest a non-veg item.";
+      return "I couldn't find any vegetarian items at open restaurants near you right now.";
     }
     return cravingMissed
       ? `I couldn't find anything open for "${craving}" right now, and couldn't pull up a real menu from their order history either.`
