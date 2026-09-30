@@ -1,6 +1,6 @@
 # Nosh backend
 
-This is the initial backend foundation for Nosh, FoodieLab's WhatsApp-first AI food and commerce agent.
+This is the initial backend foundation for Nosh a WhatsApp first AI food and commerce agent.
 
 ## Included in this increment
 
