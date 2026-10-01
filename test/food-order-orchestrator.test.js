@@ -14,6 +14,7 @@ import {
   removeFromCart,
   resolvePendingCartCandidateReply,
   searchMenu,
+  takeOfferedCoupon,
   showRestaurantMenu,
   viewCart,
   viewOrders,
@@ -2706,4 +2707,84 @@ test("recommendSimilar with vegOnly and a missed craving still explores new rest
   assert.doesNotMatch(reply, /Chicken Tacos/);
   assert.match(reply, /every item below is vegetarian/);
   assert.match(reply, /Say plainly that nothing matched "paneer"/);
+});
+
+test("findCoupons offers the first coupon that works on the cart, asks before applying, and remembers the code", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", cartRestaurantId: "r-1" });
+
+  const client = fakeClient({
+    fetchFoodCoupons: async () =>
+      payload({
+        coupon_sections: [
+          {
+            coupons: [
+              { title: "BIGSPEND", description: "₹150 off above ₹999", applicable: false, applicabilityStatus: "NOT_APPLICABLE" },
+              { title: "SAVE10", description: "10% off, up to ₹50", applicable: true, applicabilityStatus: "APPLICABLE" },
+              { title: "FLAT20", description: "₹20 off", applicable: true, applicabilityStatus: "APPLICABLE" },
+            ],
+          },
+        ],
+      }),
+  });
+
+  const reply = await findCoupons({ senderId: "sender-1", swiggyFoodClient: client, pendingCartSessions });
+
+  assert.equal(
+    reply,
+    "Best coupon I found for this order:\nSAVE10 — 10% off, up to ₹50\nShould I apply it?\n(1 more available - ask to see all coupons.)",
+  );
+  assert.doesNotMatch(reply, /\bYES\b|\bNO\b/);
+  assert.equal(pendingCartSessions.peek("sender-1").cartRestaurantId, "r-1");
+
+  assert.equal(takeOfferedCoupon({ senderId: "sender-1", pendingCartSessions }), "SAVE10");
+  // The offer only covers the next message.
+  assert.equal(takeOfferedCoupon({ senderId: "sender-1", pendingCartSessions }), undefined);
+  assert.equal(pendingCartSessions.peek("sender-1").cartRestaurantId, "r-1");
+});
+
+test("findCoupons says so when no coupon works on the cart, or one is already applied, and offers nothing", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
+
+  const none = await findCoupons({
+    senderId: "sender-1",
+    pendingCartSessions,
+    swiggyFoodClient: fakeClient({
+      fetchFoodCoupons: async () =>
+        payload({ coupon_sections: [{ coupons: [{ title: "BIGSPEND", applicable: false, applicabilityStatus: "NOT_APPLICABLE" }] }] }),
+    }),
+  });
+  assert.match(none, /None of the available coupons work on this order/);
+  assert.equal(takeOfferedCoupon({ senderId: "sender-1", pendingCartSessions }), undefined);
+
+  const applied = await findCoupons({
+    senderId: "sender-1",
+    pendingCartSessions,
+    lang: "hinglish",
+    swiggyFoodClient: fakeClient({
+      fetchFoodCoupons: async () =>
+        payload({ coupon_sections: [{ coupons: [{ title: "SAVE10", applicable: true, applicabilityStatus: "APPLIED" }] }] }),
+    }),
+  });
+  assert.equal(applied, "SAVE10 is order par pehle se apply hai.");
+  assert.equal(takeOfferedCoupon({ senderId: "sender-1", pendingCartSessions }), undefined);
+});
+
+test("findCoupons with showAll lists every coupon and uses a real code in its example", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
+
+  const reply = await findCoupons({
+    senderId: "sender-1",
+    pendingCartSessions,
+    showAll: true,
+    swiggyFoodClient: fakeClient({
+      fetchFoodCoupons: async () =>
+        payload({ coupon_sections: [{ coupons: [{ title: "SAVE10", description: "10% off" }, { title: "FLAT20", description: "₹20 off" }] }] }),
+    }),
+  });
+
+  assert.equal(reply, 'Available coupons:\nSAVE10 — 10% off\nFLAT20 — ₹20 off\nReply "apply <code>" to use one, e.g. "apply SAVE10".');
+  assert.equal(takeOfferedCoupon({ senderId: "sender-1", pendingCartSessions }), undefined);
 });

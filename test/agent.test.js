@@ -1271,3 +1271,35 @@ test("runAgentTurn tells Gemini the user's language when the message itself has 
   assert.equal(seen[0], "Home\n(Note from Nosh: they have been writing in Punjabi in Roman letters - reply in that.)");
   assert.equal(seen[1], "show me pizza");
 });
+
+test("runAgentTurn sends a tool's fresh address question straight to the user even when an older one is still open", async () => {
+  let completionsCallCount = 0;
+  const client = fakeClient(async () => {
+    completionsCallCount += 1;
+    return toolCallResponse([{ id: "call_1", function: { name: "search_food", arguments: JSON.stringify({ query: "pizza" }) } }]);
+  });
+  const ctx = newContext();
+  ctx.pendingAddressSelections.set("sender-1", { kind: "agent", candidates: [{ id: "addr-1", label: "Home — 1 Main St", tag: "Home" }] });
+
+  const result = await runAgentTurn({
+    message: { from: "sender-1", text: "show me pizza" },
+    swiggyFoodClient: fakeSwiggyClient({
+      getAddresses: async () => ({
+        structured: {
+          addresses: [
+            { id: "addr-1", addressTag: "Home", addressLine: "1 Main St" },
+            { id: "addr-2", addressTag: "Work", addressLine: "2 Other St" },
+          ],
+          total: 2,
+        },
+      }),
+    }),
+    ...ctx,
+    agent,
+    client,
+  });
+
+  assert.equal(completionsCallCount, 1);
+  assert.match(result, /which one should I use\?/);
+  assert.equal(ctx.pendingAddressSelections.peek("sender-1").kind, "search");
+});

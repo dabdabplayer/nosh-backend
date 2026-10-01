@@ -353,7 +353,14 @@ export async function resolvePendingAddressReply({
     matchAddressByName(message.text, pending.candidates);
 
   if (selectedIndex === undefined) {
-    pendingAddressSelections.clear(message.from);
+    // Not an address pick: let the agent handle the message, but keep the
+    // question open so a later "Home" or "1" still counts. Seen live: a user
+    // repeated their request, the agent re-asked for the address in its own
+    // words, and their next "Home" was no longer recognized as an answer.
+    // The address list was never re-shown by code, so nobody is trapped; and
+    // since the original request may be stale by then, the pick only records
+    // the address and hands back to the agent (kind "agent").
+    pendingAddressSelections.set(message.from, { kind: "agent", candidates: pending.candidates });
     return { handled: false };
   }
 
@@ -375,7 +382,7 @@ export async function resolvePendingAddressReply({
   // itself, now that pendingCartSessions.addressId is already set. pending.
   // craving is kept in the pending record (unused here) as a documented
   // upgrade path if this inference ever proves unreliable in practice.
-  if (pending.kind === "recommend") {
+  if (pending.kind !== "search") {
     pendingCartSessions?.set(message.from, { addressId });
     return { handled: false, addressConfirmation };
   }

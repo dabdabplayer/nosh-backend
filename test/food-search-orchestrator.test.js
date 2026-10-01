@@ -397,7 +397,7 @@ test("resolvePendingAddressReply resolves a valid follow-up reply and clears pen
 // dispatch's behavior: a genuinely new request there overrode a stale
 // address prompt via the NLU classifier's own judgment; this is the
 // equivalent without a classifier to consult.
-test("resolvePendingAddressReply clears stale pending state and reports unhandled on a non-numeric reply", async () => {
+test("resolvePendingAddressReply hands a non-address reply to the agent but keeps the address question open, without the old search", async () => {
   const pending = new PendingAddressSelections();
   let searchCalled = false;
   const client = fakeSwiggyFoodClient({
@@ -419,6 +419,23 @@ test("resolvePendingAddressReply clears stale pending state and reports unhandle
 
   assert.equal(searchCalled, false);
   assert.deepEqual(outcome, { handled: false });
+  assert.equal(pending.peek("sender-1").kind, "agent");
+  assert.equal(pending.peek("sender-1").searchTerm, undefined);
+
+  // The later "Home" still counts: it records the address and goes on to the
+  // agent, without running the stale "biryani" search.
+  const pendingCartSessions = new PendingCartSessions();
+  const pick = await resolvePendingAddressReply({
+    message: message("Home"),
+    swiggyFoodClient: client,
+    pendingAddressSelections: pending,
+    pendingCartSessions,
+  });
+
+  assert.equal(searchCalled, false);
+  assert.equal(pick.handled, false);
+  assert.match(pick.addressConfirmation, /^📍 Got it, delivering to /);
+  assert.ok(pendingCartSessions.peek("sender-1").addressId);
   assert.equal(pending.peek("sender-1"), undefined);
 });
 

@@ -220,8 +220,13 @@ const FIND_COUPONS_TOOL = Object.freeze({
   function: {
     name: "find_coupons",
     description:
-      "List available coupons/discounts for the user's current order. Its result goes straight to the user - you will not see it.",
-    parameters: { type: "object", properties: {} },
+      "Find a coupon/discount for the user's current order: offers the best one and asks whether to apply it. Its result goes straight to the user - you will not see it.",
+    parameters: {
+      type: "object",
+      properties: {
+        showAll: { type: "boolean", description: "true only when the user asks to see every coupon." },
+      },
+    },
   },
 });
 
@@ -230,7 +235,7 @@ const APPLY_COUPON_TOOL = Object.freeze({
   function: {
     name: "apply_coupon",
     description:
-      "Apply a specific coupon code to the user's current order. Its result goes straight to the user - you will not see it.",
+      "Apply a coupon code to the user's current order - one they named, or the one just offered when they agree to it (use that exact code). Its result goes straight to the user - you will not see it.",
     parameters: {
       type: "object",
       properties: { couponCode: { type: "string", description: "The coupon code, as the user said it." } },
@@ -362,7 +367,9 @@ async function executeTool(name, args, ctx) {
         // result for lack of one). lang is passed through regardless of
         // which branch fires - searchFood itself only actually uses it for
         // the (terminal) address prompt, see its own comment.
-        const hadPendingAddress = Boolean(pendingAddressSelections.peek(senderId));
+        // A new prompt is a new stored object - an older question may still
+        // be open (see resolvePendingAddressReply).
+        const addressPromptBefore = pendingAddressSelections.peek(senderId);
         // Deliberately not tracked in dataAvailabilityState (see that
         // state's own comment in runAgentTurn, and recommend_similar's case
         // below): the documented consolation-hallucination incidents
@@ -383,8 +390,8 @@ async function executeTool(name, args, ctx) {
           pendingCartSessions,
           lang,
         );
-        const nowPendingAddress = Boolean(pendingAddressSelections.peek(senderId));
-        return { text, terminal: !hadPendingAddress && nowPendingAddress };
+        const addressPromptAfter = pendingAddressSelections.peek(senderId);
+        return { text, terminal: Boolean(addressPromptAfter) && addressPromptAfter !== addressPromptBefore };
       }
 
       case "search_menu": {
@@ -517,7 +524,7 @@ async function executeTool(name, args, ctx) {
 
       case "find_coupons":
         return {
-          text: await findCoupons({ senderId, swiggyFoodClient, pendingCartSessions, lang }),
+          text: await findCoupons({ senderId, swiggyFoodClient, pendingCartSessions, showAll: args.showAll === true, lang }),
           terminal: TERMINAL_TOOLS.has(name),
         };
 
@@ -543,7 +550,9 @@ async function executeTool(name, args, ctx) {
         // food-order-orchestrator.js) when more than one address is saved -
         // that specific result must be terminal too, not agent-paraphrased,
         // while an ordinary recommendation stays ordinary (non-terminal).
-        const hadPendingAddress = Boolean(pendingAddressSelections.peek(senderId));
+        // A new prompt is a new stored object - an older question may still
+        // be open (see resolvePendingAddressReply).
+        const addressPromptBefore = pendingAddressSelections.peek(senderId);
         const meta = {};
         const text = await recommendSimilar({
           swiggyFoodClient,
@@ -555,8 +564,8 @@ async function executeTool(name, args, ctx) {
           lang,
           meta,
         });
-        const nowPendingAddress = Boolean(pendingAddressSelections.peek(senderId));
-        const terminal = !hadPendingAddress && nowPendingAddress;
+        const addressPromptAfter = pendingAddressSelections.peek(senderId);
+        const terminal = Boolean(addressPromptAfter) && addressPromptAfter !== addressPromptBefore;
 
         if (!terminal && dataAvailabilityState) {
           dataAvailabilityState.anyToolCalled = true;

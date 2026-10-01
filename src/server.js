@@ -4,6 +4,8 @@ import { ConversationLog } from "./conversation-log.js";
 import { resolvePendingAddressReply } from "./food-search-orchestrator.js";
 import {
   parseOrderConfirmationReply,
+  applyCoupon,
+  takeOfferedCoupon,
   placeConfirmedOrder,
   resolvePendingCartCandidateReply,
 } from "./food-order-orchestrator.js";
@@ -385,6 +387,24 @@ async function buildReplyText(message) {
 
     if (addressOutcome.handled) {
       return recordTurn(addressOutcome.replyText ?? PLACEHOLDER_REPLY_TEXT);
+    }
+
+    // "Best coupon I found... Should I apply it?" followed by a plain yes:
+    // apply that exact coupon here, in code. The offer only covers the very
+    // next message; anything else (including "haan" or "apply it") goes to
+    // the agent, which can still apply it from the conversation.
+    const offeredCoupon = takeOfferedCoupon({ senderId: message.from, pendingCartSessions });
+
+    if (offeredCoupon && parseOrderConfirmationReply(message.text) === "confirm") {
+      return recordTurn(
+        await applyCoupon({
+          senderId: message.from,
+          couponCode: offeredCoupon,
+          swiggyFoodClient,
+          pendingCartSessions,
+          lang,
+        }),
+      );
     }
 
     // A recommendation continues in the agent after the address is picked;

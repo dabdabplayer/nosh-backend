@@ -1455,24 +1455,104 @@ function formatCoupons(couponsPayload, lang = "en") {
     .map((coupon) => `${coupon.title} — ${coupon.description ?? coupon.subtitle ?? ""}`.trim());
 
   const header = pick(lang, { en: "Available coupons:", hi: "उपलब्ध कूपन:", hinglish: "Available coupons:" });
+  const example = coupons[0].title;
   const footer = pick(lang, {
-    en: 'Reply "apply <code>" to use one, e.g. "apply SWIGGYIT".',
-    hi: 'इस्तेमाल करने के लिए "apply <code>" लिखें, जैसे "apply SWIGGYIT"।',
-    hinglish: 'Use karne ke liye "apply <code>" likhein, jaise "apply SWIGGYIT".',
+    en: `Reply "apply <code>" to use one, e.g. "apply ${example}".`,
+    hi: `इस्तेमाल करने के लिए "apply <code>" लिखें, जैसे "apply ${example}"।`,
+    hinglish: `Use karne ke liye "apply <code>" likhein, jaise "apply ${example}".`,
   });
 
   return [header, ...lines, footer].join("\n");
 }
 
-async function handleFindCoupons({ swiggyFoodClient, restaurantId, addressId, lang = "en" }) {
+// fetch_food_coupons marks each coupon with applicable / applicabilityStatus
+// (mcp.swiggy.com/builders/docs/reference/food/fetch_food_coupons.md). Both
+// are optional, so a coupon with neither is still offered; apply_food_coupon
+// has the final say.
+function couponIsUsable(coupon) {
+  if (coupon?.applicabilityStatus === "APPLIED") {
+    return false;
+  }
+  if (coupon?.applicable === undefined && coupon?.applicabilityStatus === undefined) {
+    return true;
+  }
+  return coupon?.applicable === true || coupon?.applicabilityStatus === "APPLICABLE";
+}
+
+// Offers ONE coupon and asks before applying it. Swiggy gives no discount
+// amounts to compare, so "best" is the first coupon Swiggy lists that works
+// on this cart; the real saving shows once it is applied. Never mentions
+// uppercase YES/NO - that wording is reserved for the checkout summary.
+function formatCouponOffer(couponsPayload, lang = "en") {
+  const sections = Array.isArray(couponsPayload?.coupon_sections) ? couponsPayload.coupon_sections : [];
+  const coupons = sections
+    .flatMap((section) => (Array.isArray(section?.coupons) ? section.coupons : []))
+    .filter((coupon) => typeof coupon?.title === "string" && coupon.title.trim());
+
+  if (coupons.length === 0) {
+    return { text: formatCoupons(couponsPayload, lang) };
+  }
+
+  const applied = coupons.find((coupon) => coupon.applicabilityStatus === "APPLIED");
+  if (applied) {
+    return {
+      text: pick(lang, {
+        en: `${applied.title} is already applied to this order.`,
+        hi: `${applied.title} इस ऑर्डर पर पहले से लागू है।`,
+        hinglish: `${applied.title} is order par pehle se apply hai.`,
+      }),
+    };
+  }
+
+  const usable = coupons.filter(couponIsUsable);
+  if (usable.length === 0) {
+    return {
+      text: pick(lang, {
+        en: "None of the available coupons work on this order right now - adding more items may unlock one.",
+        hi: "अभी कोई भी कूपन इस ऑर्डर पर लागू नहीं हो रहा - और आइटम जोड़ने पर कोई लागू हो सकता है।",
+        hinglish: "Abhi koi bhi coupon is order par nahi chal raha - aur items add karne par koi chal sakta hai.",
+      }),
+    };
+  }
+
+  const best = usable[0];
+  const details = (best.description ?? best.subtitle ?? "").trim();
+  const couponLine = details ? `${best.title} — ${details}` : best.title;
+  const others = usable.length - 1;
+
+  const lines = [
+    pick(lang, {
+      en: "Best coupon I found for this order:",
+      hi: "इस ऑर्डर के लिए मुझे सबसे अच्छा कूपन यह मिला:",
+      hinglish: "Is order ke liye sabse accha coupon yeh mila:",
+    }),
+    couponLine,
+    pick(lang, { en: "Should I apply it?", hi: "क्या मैं इसे लगा दूँ?", hinglish: "Kya main ise apply kar doon?" }),
+  ];
+
+  if (others > 0) {
+    lines.push(
+      pick(lang, {
+        en: `(${others} more available - ask to see all coupons.)`,
+        hi: `(${others} और उपलब्ध हैं - सभी कूपन देखने के लिए कहें।)`,
+        hinglish: `(${others} aur available hain - saare coupons dekhne ke liye bolein.)`,
+      }),
+    );
+  }
+
+  return { text: lines.join("\n"), offeredCouponCode: best.title };
+}
+
+async function handleFindCoupons({ swiggyFoodClient, restaurantId, addressId, showAll = false, lang = "en" }) {
   let result;
   try {
     result = await swiggyFoodClient.fetchFoodCoupons({ restaurantId, addressId });
   } catch {
-    return GENERIC_FALLBACK_REPLY;
+    return { text: GENERIC_FALLBACK_REPLY };
   }
 
-  return formatCoupons(parseStructuredPayload(result), lang);
+  const couponsPayload = parseStructuredPayload(result);
+  return showAll ? { text: formatCoupons(couponsPayload, lang) } : formatCouponOffer(couponsPayload, lang);
 }
 
 async function handleApplyCoupon({ swiggyFoodClient, couponCode, addressId, lang = "en" }) {
@@ -2174,19 +2254,45 @@ export async function removeFromCart({ senderId, query, quantity, swiggyFoodClie
 }
 
 // TERMINAL_TOOLS tool - see viewCart's comment above.
-export async function findCoupons({ senderId, swiggyFoodClient, pendingCartSessions, lang = "en" }) {
+//
+// By default offers the one best coupon and asks before applying it; the
+// offered code is kept on the session (offeredCouponCode) so a plain "yes"
+// applies it in code - see takeOfferedCoupon and buildReplyText in server.js.
+// showAll lists every coupon instead.
+export async function findCoupons({ senderId, swiggyFoodClient, pendingCartSessions, showAll = false, lang = "en" }) {
   const session = pendingCartSessions.peek(senderId);
 
   if (!session) {
     return noActiveOrderReply(lang);
   }
 
-  return handleFindCoupons({
+  const { text, offeredCouponCode } = await handleFindCoupons({
     swiggyFoodClient,
     restaurantId: session.restaurantId,
     addressId: session.addressId,
+    showAll,
     lang,
   });
+
+  if (offeredCouponCode) {
+    pendingCartSessions.set(senderId, { ...pendingCartSessions.peek(senderId), offeredCouponCode });
+  }
+
+  return text;
+}
+
+// Returns the coupon code Nosh last offered this sender, if any, and forgets
+// it - an offer only covers the very next message.
+export function takeOfferedCoupon({ senderId, pendingCartSessions }) {
+  const session = pendingCartSessions.peek(senderId);
+
+  if (!session?.offeredCouponCode) {
+    return undefined;
+  }
+
+  const { offeredCouponCode, ...rest } = session;
+  pendingCartSessions.set(senderId, rest);
+  return offeredCouponCode;
 }
 
 // TERMINAL_TOOLS tool - see viewCart's comment above.
