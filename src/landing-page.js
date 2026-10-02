@@ -1,6 +1,6 @@
 // The public website, served at GET / by this same Render service. One
-// self-contained HTML document: no framework, no JavaScript (all motion is
-// CSS), no external fonts or trackers, so it loads in a single request and nothing about a visitor is
+// self-contained HTML document: no framework, no external scripts, fonts or
+// trackers (motion is CSS; one tiny inline script starts the ₹0 count), so it loads in a single request and nothing about a visitor is
 // sent to a third party.
 //
 // Every claim on this page has to stay true to how Nosh actually works and
@@ -277,7 +277,7 @@ export function buildLandingPageHtml({ whatsappNumber, launched = false, year = 
   }
 
   /* ---- Motion ----
-     All of it is CSS; there is no script. Every element is fully visible by
+     All of it is CSS; the only script starts the ₹0 count on scroll. Every element is fully visible by
      default, so a browser that lacks a feature (or a visitor who asks for
      reduced motion) simply sees the finished page. */
 
@@ -292,6 +292,22 @@ export function buildLandingPageHtml({ whatsappNumber, launched = false, year = 
   @keyframes progress { from { transform: scaleX(0); } to { transform: scaleX(1); } }
   @keyframes stamp { 0% { opacity: 0; scale: 1.9; } 70% { opacity: 1; scale: 0.96; } 100% { opacity: 1; scale: 1; } }
   @keyframes float { 0%, 100% { translate: 0 0; } 50% { translate: 0 -6px; } }
+
+  /* "₹0 charged by Nosh": the amount races up to ₹1000, then drops straight
+     to zero. The number is a CSS counter driven by an animated integer, so
+     it reads 0 wherever that isn't supported and before it plays. */
+  @property --count { syntax: "<integer>"; initial-value: 0; inherits: false; }
+  @keyframes count-up {
+    0% { --count: 0; animation-timing-function: cubic-bezier(0.35, 0, 0.75, 1); }
+    86% { --count: 1000; animation-timing-function: step-end; }
+    86.01%, 100% { --count: 0; }
+  }
+  @keyframes thud { 0%, 85% { scale: 1; } 87% { scale: 1.18; } 100% { scale: 1; } }
+  .num { font-variant-numeric: tabular-nums; }
+  .count { counter-reset: amount var(--count); }
+  .count::after { content: counter(amount); }
+  .count.play { animation: count-up 2.3s linear 0.15s both; }
+  .num:has(.count.play) { animation: thud 2.3s ease-out 0.15s both; }
 
   /* Lime underline that draws itself under "in a chat." */
   h1 em { font-style: normal; background: linear-gradient(var(--lime), var(--lime)) no-repeat 0 96% / 100% 0.13em; padding-bottom: 0.04em; }
@@ -496,7 +512,7 @@ export function buildLandingPageHtml({ whatsappNumber, launched = false, year = 
     <p class="lead reveal">If you can send a WhatsApp message, you can order with Nosh.</p>
     <div class="facts">
       <div class="fact reveal"><div class="num">0</div><p>apps to install</p></div>
-      <div class="fact reveal"><div class="num">₹0</div><p>charged by Nosh</p></div>
+      <div class="fact reveal"><div class="num" role="img" aria-label="₹0">₹<span class="count" aria-hidden="true"></span></div><p>charged by Nosh</p></div>
       <div class="fact reveal"><div class="num">4</div><p>languages understood</p></div>
     </div>
   </div>
@@ -579,6 +595,19 @@ export function buildLandingPageHtml({ whatsappNumber, launched = false, year = 
     </div>
   </div>
 </footer>
+
+<script>
+  // Starts the "₹1000 to ₹0" count when it scrolls into view. The page works
+  // without this: the number simply reads 0.
+  (function () {
+    var count = document.querySelector(".count");
+    if (!count) return;
+    if (!("IntersectionObserver" in window)) { count.classList.add("play"); return; }
+    new IntersectionObserver(function (entries, observer) {
+      if (entries[0].isIntersecting) { count.classList.add("play"); observer.disconnect(); }
+    }, { threshold: 0.6 }).observe(count);
+  })();
+</script>
 
 </body>
 </html>

@@ -51,8 +51,10 @@ test("the landing page uses the Nosh logo mark and WhatsApp's chat colours for t
   assert.match(html, /--wa-out: #d9fdd3/);
 });
 
-test("the landing page's motion is CSS only and is switched off for reduced-motion visitors", () => {
-  assert.doesNotMatch(html, /<script/);
+test("the landing page's motion is CSS, with one small inline script, and is switched off for reduced-motion visitors", () => {
+  // One inline script (it starts the ₹0 count); nothing loaded from elsewhere.
+  assert.equal((html.match(/<script/g) ?? []).length, 1);
+  assert.doesNotMatch(html, /<script[^>]+src=/);
   assert.match(html, /@media \(prefers-reduced-motion: reduce\) \{[^}]*\{[^}]*\}\s*\*, \*::before, \*::after \{ animation: none !important;/);
   // Scroll effects only where the browser supports them; content is never
   // hidden by default.
@@ -93,5 +95,8 @@ test("the page says, prominently and accurately, that Nosh is free for the user"
   // Free means Nosh's own charges: the food itself is still paid for.
   assert.match(html, /You pay only for your food, at the same prices Swiggy shows you\./);
   assert.match(html, /<strong>Completely free to use\.<\/strong> You only pay for your food\./);
-  assert.match(html, /<div class="num">₹0<\/div><p>charged by Nosh<\/p>/);
+  // The amount is read out as "₹0"; visually it counts up to ₹1000 and drops to zero.
+  assert.match(html, /<div class="num" role="img" aria-label="₹0">₹<span class="count" aria-hidden="true"><\/span><\/div><p>charged by Nosh<\/p>/);
+  assert.match(html, /86% \{ --count: 1000;/);
+  assert.match(html, /86\.01%, 100% \{ --count: 0; \}/);
 });
