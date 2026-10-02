@@ -291,6 +291,14 @@ const chatLogEncryptionKey = chatLogEncryptionKeyRaw
   ? read32ByteBase64Key(chatLogEncryptionKeyRaw, "CHAT_LOG_ENCRYPTION_KEY")
   : undefined;
 
+// Digits only, with country code - the format wa.me links use.
+const DEFAULT_PUBLIC_WHATSAPP_NUMBER = "919220133162";
+const publicWhatsappNumber = (process.env.NOSH_WHATSAPP_NUMBER || DEFAULT_PUBLIC_WHATSAPP_NUMBER).replace(/[^\d]/g, "");
+
+if (!/^\d{8,15}$/.test(publicWhatsappNumber)) {
+  throw new Error("NOSH_WHATSAPP_NUMBER must be a phone number with country code, 8 to 15 digits.");
+}
+
 export const config = Object.freeze({
   environment: process.env.NODE_ENV ?? "development",
   port: readPort(process.env.PORT),
@@ -298,6 +306,11 @@ export const config = Object.freeze({
   // outside the rollout gets the same placeholder reply as when Swiggy Food
   // isn't configured at all. Defaults to 100 (everyone) so existing
   // deployments are unaffected unless ROLLOUT_PERCENT is explicitly set.
+  // The public website (src/landing-page.js): the WhatsApp number its
+  // "Message Nosh" button opens a chat with.
+  publicSite: Object.freeze({
+    whatsappNumber: publicWhatsappNumber,
+  }),
   rollout: Object.freeze({
     percent: readRolloutPercent(process.env.ROLLOUT_PERCENT),
   }),

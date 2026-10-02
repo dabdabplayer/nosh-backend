@@ -32,6 +32,7 @@ import { PendingConversationHistory } from "./pending-conversation-history.js";
 import { PendingOAuthExchanges } from "./pending-oauth-exchanges.js";
 import { PendingOrderConfirmations } from "./pending-order-confirmations.js";
 import { PendingPostAuthActions } from "./pending-post-auth-actions.js";
+import { buildLandingPageHtml } from "./landing-page.js";
 import { PRIVACY_POLICY_HTML } from "./privacy-policy.js";
 import { isSenderInRollout } from "./rollout.js";
 import { runAgentTurn } from "./agent.js";
@@ -63,6 +64,7 @@ import {
 } from "./whatsapp-webhook.js";
 
 const serviceName = "nosh-backend";
+const LANDING_PAGE_HTML = buildLandingPageHtml({ whatsappNumber: config.publicSite.whatsappNumber });
 const swiggyOAuthOrigin = new URL(config.swiggyOAuth.redirectUri).origin;
 const processedMessageIds = new InProcessMessageIdempotency();
 // Without a Sarvam key the agent still works; it just sees and answers in
@@ -936,11 +938,15 @@ const server = http.createServer(async (request, response) => {
     return;
   }
 
-  if (request.method === "GET" && url.pathname === "/") {
-    sendJson(response, 200, {
-      service: serviceName,
-      message: "Nosh backend is running.",
+  // The public website. /health (above) is the machine-readable check.
+  if ((request.method === "GET" || request.method === "HEAD") && url.pathname === "/") {
+    response.writeHead(200, {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "public, max-age=300",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "strict-origin-when-cross-origin",
     });
+    response.end(request.method === "HEAD" ? undefined : LANDING_PAGE_HTML);
     return;
   }
 
