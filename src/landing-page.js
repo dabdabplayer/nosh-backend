@@ -1,6 +1,6 @@
 // The public website, served at GET / by this same Render service. One
-// self-contained HTML document: no framework, no JavaScript, no external
-// fonts or trackers, so it loads in a single request and nothing about a visitor is
+// self-contained HTML document: no framework, no JavaScript (all motion is
+// CSS), no external fonts or trackers, so it loads in a single request and nothing about a visitor is
 // sent to a third party.
 //
 // Every claim on this page has to stay true to how Nosh actually works and
@@ -232,16 +232,90 @@ export function buildLandingPageHtml({ whatsappNumber, year = new Date().getFull
     .card, .card.wide, .card.half { grid-column: span 6; }
   }
 
-  /* Scroll reveal, in CSS only. Content is visible by default; browsers
-     that support scroll-driven animations fade each block in as it enters
-     the screen. No script, so nothing can leave a section hidden. */
+  /* ---- Motion ----
+     All of it is CSS; there is no script. Every element is fully visible by
+     default, so a browser that lacks a feature (or a visitor who asks for
+     reduced motion) simply sees the finished page. */
+
   @keyframes rise { from { opacity: 0; transform: translateY(28px); } to { opacity: 1; transform: none; } }
+  @keyframes rise-blur { from { opacity: 0; transform: translateY(22px); filter: blur(10px); } to { opacity: 1; transform: none; filter: none; } }
+  @keyframes pop { from { opacity: 0; transform: translateY(34px) scale(0.95); } to { opacity: 1; transform: none; } }
+  @keyframes underline { from { background-size: 0% 0.13em; } to { background-size: 100% 0.13em; } }
+  @keyframes message { from { opacity: 0; transform: translateY(10px) scale(0.96); } to { opacity: 1; transform: none; } }
+  @keyframes typing { 0% { opacity: 0; } 12%, 80% { opacity: 1; } 100% { opacity: 0; } }
+  @keyframes dot { 0%, 60%, 100% { transform: none; opacity: 0.45; } 30% { transform: translateY(-3px); opacity: 1; } }
+  @keyframes drift { to { transform: translateY(70px) scale(0.965); } }
+  @keyframes progress { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+  @keyframes float { 0%, 100% { translate: 0 0; } 50% { translate: 0 -6px; } }
+
+  /* Lime underline that draws itself under "in a chat." */
+  h1 em { font-style: normal; background: linear-gradient(var(--lime), var(--lime)) no-repeat 0 96% / 100% 0.13em; padding-bottom: 0.04em; }
+
+  /* The chat types itself out: each message has a start time (--at). */
+  .turn { position: relative; display: flex; flex-direction: column; gap: 6px; }
+  .dots { position: absolute; top: 0; left: 0; display: flex; gap: 4px; padding: 11px 12px; background: var(--wa-in); border-radius: 0 9px 9px 9px; box-shadow: 0 1px 0.5px rgba(11, 20, 26, 0.13); opacity: 0; pointer-events: none; }
+  .dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--wa-meta); }
+
+  /* Scroll progress, under the navigation bar. */
+  .progress { position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: var(--link); transform: scaleX(0); transform-origin: 0 50%; }
+
+  /* Hover: cards lift (uses "translate" so it never fights the reveal). */
+  .card, .step, .item { transition: translate 0.35s cubic-bezier(0.2, 0.7, 0.2, 1), box-shadow 0.35s ease; }
+  .text-link::after { display: inline-block; transition: transform 0.25s ease; }
+  @media (hover: hover) {
+    .card:hover, .step:hover, .item:hover { translate: 0 -5px; box-shadow: 0 18px 40px rgba(11, 48, 40, 0.12); }
+    .text-link:hover::after { transform: translateX(4px); }
+    .button:hover { box-shadow: 0 8px 24px rgba(11, 48, 40, 0.22); }
+    .reply { transition: filter 0.2s ease; }
+    .lang { transition: translate 0.25s ease; }
+    .lang:hover { translate: 0 -2px; }
+  }
+  .button { transition: background 0.2s ease, transform 0.2s ease, box-shadow 0.3s ease; }
+
+  @media (prefers-reduced-motion: no-preference) {
+    /* On load: the hero arrives in sequence. */
+    .hero h1 { animation: rise-blur 0.9s cubic-bezier(0.2, 0.7, 0.2, 1) 0.05s both; }
+    .hero h1 em { animation: underline 0.8s cubic-bezier(0.2, 0.7, 0.2, 1) 0.95s both; }
+    .hero .lead { animation: rise 0.8s cubic-bezier(0.2, 0.7, 0.2, 1) 0.25s both; }
+    .hero .hero-actions { animation: rise 0.8s cubic-bezier(0.2, 0.7, 0.2, 1) 0.4s both; }
+    .phone { animation: rise 1s cubic-bezier(0.2, 0.7, 0.2, 1) 0.55s both; }
+
+    /* Then the conversation plays. */
+    .chat .msg, .chat .replies { animation: message 0.4s cubic-bezier(0.2, 0.8, 0.2, 1) var(--at, 0s) both; }
+    .dots { animation: typing 1s ease var(--at, 0s) both; }
+    .dots i { animation: dot 1s ease-in-out infinite; }
+    .dots i:nth-child(2) { animation-delay: 0.15s; }
+    .dots i:nth-child(3) { animation-delay: 0.3s; }
+    .avatar { animation: float 5s ease-in-out 2s infinite; }
+  }
+
+  /* On scroll: blocks arrive as they enter the screen, headings sharpen
+     into focus, and cards in a row follow one another. */
   @supports (animation-timeline: view()) {
     @media (prefers-reduced-motion: no-preference) {
       .reveal { animation: rise linear both; animation-timeline: view(); animation-range: entry 0% entry 90%; }
+      h2.reveal { animation-name: rise-blur; animation-range: entry 0% entry 100%; }
+      .card.reveal, .step.reveal, .item.reveal, .fact.reveal {
+        animation-name: pop;
+        animation-range: entry calc(var(--i, 0) * 9%) entry calc(85% + var(--i, 0) * 12%);
+      }
+      /* --i is the position within a row: later cards start a beat later. */
+      :is(.steps, .facts) > :nth-child(2) { --i: 1; }
+      :is(.steps, .facts) > :nth-child(3) { --i: 2; }
+      .list > :nth-child(even) { --i: 1; }
+      .grid > :is(:nth-child(2), :nth-child(4), :nth-child(7)) { --i: 1; }
+      .grid > :nth-child(5) { --i: 2; }
+
+      /* The phone drifts back as the hero scrolls away. */
+      .phone-wrap { animation: drift linear both; animation-timeline: scroll(root); animation-range: 0 720px; }
+      .progress { animation: progress linear both; animation-timeline: scroll(root); }
     }
   }
-  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
 </style>
 </head>
 <body>
@@ -257,13 +331,14 @@ export function buildLandingPageHtml({ whatsappNumber, year = new Date().getFull
       <a class="button small" href="${chatUrl}" target="_blank" rel="noopener">Order now</a>
     </nav>
   </div>
+  <div class="progress" aria-hidden="true"></div>
 </header>
 
 <main id="top">
 
 <section class="hero">
   <div class="wrap">
-    <h1>Food, ordered<br>in a chat.</h1>
+    <h1>Food, ordered<br><em>in a chat.</em></h1>
     <p class="lead">Tell Nosh what you feel like. It finds it on Swiggy, builds your cart and places the order, right inside WhatsApp.</p>
     <div class="hero-actions">
       <a class="button" href="${chatUrl}" target="_blank" rel="noopener">
@@ -273,6 +348,7 @@ export function buildLandingPageHtml({ whatsappNumber, year = new Date().getFull
       <a class="text-link" href="#how">See how it works</a>
     </div>
 
+    <div class="phone-wrap">
     <div class="phone" role="img" aria-label="Example WhatsApp conversation with Nosh: a request for vegetarian food, a recommendation with buttons, and the item added to the cart.">
       <div class="phone-bar">
         <img class="avatar" src="/nosh-mark.png" alt="" width="36" height="36">
@@ -282,14 +358,21 @@ export function buildLandingPageHtml({ whatsappNumber, year = new Date().getFull
         </div>
       </div>
       <div class="chat">
-        <div class="msg out">Kuch tasty veg khana hai<span class="meta">8:41 pm<span class="ticks">✓✓</span></span></div>
-        <div class="msg in">Masala Dosa from Idli Dosa Corner. ₹149, ⭐ 4.5, 20–25 mins. Add kar doon?<span class="meta">8:41 pm</span></div>
-        <div class="replies"><span class="reply">Add kar do</span><span class="reply">Kuch aur</span><span class="reply">Cuisine chuno</span></div>
-        <div class="msg out">Add kar do<span class="meta">8:42 pm<span class="ticks">✓✓</span></span></div>
-        <div class="msg in">Masala Dosa cart mein add ho gaya. Total ₹196.<span class="meta">8:42 pm</span></div>
-        <div class="replies"><span class="reply">Checkout</span><span class="reply">Cart dekhein</span><span class="reply">Coupons</span></div>
+        <div class="msg out" style="--at:1.5s">Kuch tasty veg khana hai<span class="meta">8:41 pm<span class="ticks">✓✓</span></span></div>
+        <div class="turn">
+          <div class="dots" style="--at:2s" aria-hidden="true"><i></i><i></i><i></i></div>
+          <div class="msg in" style="--at:3s">Masala Dosa from Idli Dosa Corner. ₹149, ⭐ 4.5, 20–25 mins. Add kar doon?<span class="meta">8:41 pm</span></div>
+          <div class="replies" style="--at:3.3s"><span class="reply">Add kar do</span><span class="reply">Kuch aur</span><span class="reply">Cuisine chuno</span></div>
+        </div>
+        <div class="msg out" style="--at:4.6s">Add kar do<span class="meta">8:42 pm<span class="ticks">✓✓</span></span></div>
+        <div class="turn">
+          <div class="dots" style="--at:5.1s" aria-hidden="true"><i></i><i></i><i></i></div>
+          <div class="msg in" style="--at:6.1s">Masala Dosa cart mein add ho gaya. Total ₹196.<span class="meta">8:42 pm</span></div>
+          <div class="replies" style="--at:6.4s"><span class="reply">Checkout</span><span class="reply">Cart dekhein</span><span class="reply">Coupons</span></div>
+        </div>
       </div>
       <p class="caption">Example conversation. Real prices, ratings and delivery times come from Swiggy.</p>
+    </div>
     </div>
   </div>
 </section>

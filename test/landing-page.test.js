@@ -50,3 +50,12 @@ test("the landing page uses the Nosh logo mark and WhatsApp's chat colours for t
   assert.match(html, /--lime: #caf743/);
   assert.match(html, /--wa-out: #d9fdd3/);
 });
+
+test("the landing page's motion is CSS only and is switched off for reduced-motion visitors", () => {
+  assert.doesNotMatch(html, /<script/);
+  assert.match(html, /@media \(prefers-reduced-motion: reduce\) \{[^}]*\{[^}]*\}\s*\*, \*::before, \*::after \{ animation: none !important;/);
+  // Scroll effects only where the browser supports them; content is never
+  // hidden by default.
+  assert.match(html, /@supports \(animation-timeline: view\(\)\)/);
+  assert.doesNotMatch(html, /\.reveal \{[^}]*opacity: 0/);
+});
