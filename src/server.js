@@ -12,6 +12,9 @@ import {
 } from "./food-order-orchestrator.js";
 import {
   beginPlacingOrder,
+  cuisinesReply,
+  homeOptions,
+  moreOptionsReply,
   expiredOptionReply,
   formatPlaceOrderCheck,
   orderOptionsFor,
@@ -367,15 +370,23 @@ async function buildReplyText(incoming, turn = {}) {
     });
 
     if (tap.kind === "expired") {
+      turn.home = true;
       return expiredOptionReply(lang);
+    }
+    if (tap.kind === "cuisines" || tap.kind === "more") {
+      const menu = tap.kind === "cuisines" ? cuisinesReply(lang) : moreOptionsReply(lang);
+      turn.options = menu.options;
+      return menu.text;
     }
     if (tap.kind === "order-check") {
       return formatPlaceOrderCheck(tap.confirmation, lang);
     }
     if (tap.kind === "order-place") {
+      turn.home = true;
       return placePendingOrder(message, lang);
     }
     if (tap.kind === "order-cancel") {
+      turn.cartShown = true;
       return cancelPendingOrder(message.from, lang);
     }
     if (tap.kind === "text") {
@@ -394,7 +405,10 @@ async function buildReplyText(incoming, turn = {}) {
     }
     // Anything typed that isn't a yes or no gets the reminder, with the
     // order buttons again.
-    turn.orderReprompt = parseOrderConfirmationReply(message.text) === undefined;
+    const typedDecision = parseOrderConfirmationReply(message.text);
+    turn.orderReprompt = typedDecision === undefined;
+    turn.home = typedDecision === "confirm";
+    turn.cartShown = typedDecision === "cancel";
     return buildOrderConfirmationReply(message, pendingConfirmation, lang);
   }
 
@@ -455,6 +469,10 @@ async function buildReplyText(incoming, turn = {}) {
     mcpUrl: effectiveSwiggyFoodMcpUrl,
     token: authResult.accessToken,
   });
+
+  // From here on every reply can carry the main menu when it has no buttons
+  // of its own.
+  turn.home = true;
 
   try {
     // Deterministic pre-agent short-circuits, in the same priority a
@@ -600,15 +618,20 @@ async function buildReply(message) {
   const turn = {};
   const text = await buildReplyText(message, turn);
   const lang = pendingLanguagePreference.get(message.from);
-  const options = turn.orderReprompt
-    ? orderOptionsFor(pendingOrderConfirmations.peek(message.from), lang)
-    : replyOptionsFor({
-        before,
-        after: snapshotPromptState(stores),
-        lang,
-        recommended: turn.recommended === true,
-        cartShown: turn.cartShown === true,
-      });
+  const options =
+    turn.options ??
+    (turn.orderReprompt
+      ? orderOptionsFor(pendingOrderConfirmations.peek(message.from), lang)
+      : replyOptionsFor({
+          before,
+          after: snapshotPromptState(stores),
+          lang,
+          recommended: turn.recommended === true,
+          cartShown: turn.cartShown === true,
+        })) ??
+    // Nothing specific to offer: the main menu, so there is always something
+    // to tap. Not while an order summary is waiting for its answer.
+    (turn.home && !pendingOrderConfirmations.peek(message.from) ? homeOptions(lang) : undefined);
   return { text, options };
 }
 

@@ -36,6 +36,36 @@ const MAX_LIST_ROWS = 10;
 const RECOMMEND_ADD = "rec:add";
 const RECOMMEND_OTHER = "rec:other";
 
+const HOME_RECOMMEND = "home:recommend";
+const HOME_CUISINES = "home:cuisines";
+const HOME_MORE = "home:more";
+const CUISINE_PREFIX = "cuisine:";
+const MORE_PREFIX = "more:";
+
+// Shown by "Browse cuisines". Plain search terms, in the order people most
+// often ask for them; tapping one runs a normal search for it.
+const CUISINES = Object.freeze([
+  "Biryani",
+  "Pizza",
+  "Burgers",
+  "Chinese",
+  "South Indian",
+  "North Indian",
+  "Italian",
+  "Mexican",
+  "Japanese",
+  "Desserts",
+]);
+
+// What each "More options" row says on the user's behalf.
+const MORE_ACTIONS = Object.freeze({
+  veg: "Recommend me something vegetarian.",
+  usual: "Reorder my usual.",
+  cart: "Show my cart.",
+  orders: "Show my recent orders.",
+  address: "Change my delivery address.",
+});
+
 const MAX_BUTTONS = 3;
 
 export function newConfirmationNonce() {
@@ -236,11 +266,66 @@ export function replyOptionsFor({ before, after, lang = "en", recommended = fals
       buttons: [
         { id: RECOMMEND_ADD, title: pick(lang, { en: "Add it", hi: "जोड़ें", hinglish: "Add kar do" }) },
         { id: RECOMMEND_OTHER, title: pick(lang, { en: "Something else", hi: "कुछ और", hinglish: "Kuch aur" }) },
+        { id: HOME_CUISINES, title: pick(lang, { en: "Browse cuisines", hi: "खाना चुनें", hinglish: "Cuisine chuno" }) },
       ],
     };
   }
 
   return undefined;
+}
+
+// The main menu: goes with any reply that has no buttons of its own, so
+// there is always something to tap. Tapping is the main way to use Nosh;
+// typing is for changes and extra detail.
+export function homeOptions(lang = "en") {
+  return {
+    buttons: [
+      { id: HOME_RECOMMEND, title: pick(lang, { en: "Recommend for me", hi: "मेरे लिए चुनें", hinglish: "Mere liye chuno" }) },
+      { id: HOME_CUISINES, title: pick(lang, { en: "Browse cuisines", hi: "खाना चुनें", hinglish: "Cuisine chuno" }) },
+      { id: HOME_MORE, title: pick(lang, { en: "More options", hi: "और विकल्प", hinglish: "Aur options" }) },
+    ],
+  };
+}
+
+// The reply to "Browse cuisines": a list of cuisines to tap.
+export function cuisinesReply(lang = "en") {
+  return {
+    text: pick(lang, {
+      en: "What are you in the mood for? Pick one, or type any dish or restaurant.",
+      hi: "आज क्या खाने का मन है? एक चुनें, या कोई भी डिश या रेस्टोरेंट लिखें।",
+      hinglish: "Aaj kya khane ka mann hai? Ek chuno, ya koi bhi dish ya restaurant likho.",
+    }),
+    options: {
+      list: {
+        button: pick(lang, { en: "Choose a cuisine", hi: "खाना चुनें", hinglish: "Cuisine chuno" }),
+        rows: CUISINES.map((cuisine) => ({ id: `${CUISINE_PREFIX}${cuisine}`, title: cuisine })),
+      },
+    },
+  };
+}
+
+// The reply to "More options": everything else Nosh can do.
+export function moreOptionsReply(lang = "en") {
+  const titles = {
+    veg: pick(lang, { en: "Recommend veg food", hi: "शाकाहारी सुझाव", hinglish: "Veg recommend karo" }),
+    usual: pick(lang, { en: "Reorder my usual", hi: "पिछला ऑर्डर दोबारा", hinglish: "Usual reorder karo" }),
+    cart: pick(lang, { en: "View cart", hi: "कार्ट देखें", hinglish: "Cart dekhein" }),
+    orders: pick(lang, { en: "My orders", hi: "मेरे ऑर्डर", hinglish: "Mere orders" }),
+    address: pick(lang, { en: "Change address", hi: "पता बदलें", hinglish: "Address badlein" }),
+  };
+  return {
+    text: pick(lang, {
+      en: "Here's what else I can do. Pick one, or just tell me what you need.",
+      hi: "मैं यह सब भी कर सकता हूँ। एक चुनें, या बताइए आपको क्या चाहिए।",
+      hinglish: "Main yeh sab bhi kar sakta hoon. Ek chuno, ya bataiye kya chahiye.",
+    }),
+    options: {
+      list: {
+        button: pick(lang, { en: "More options", hi: "और विकल्प", hinglish: "Aur options" }),
+        rows: Object.keys(MORE_ACTIONS).map((key) => ({ id: `${MORE_PREFIX}${key}`, title: titles[key] })),
+      },
+    },
+  };
 }
 
 export function expiredOptionReply(lang = "en") {
@@ -259,10 +344,31 @@ export function expiredOptionReply(lang = "en") {
 //   { kind: "order-cancel" }                  cancel the pending order
 //   { kind: "coupon-apply", couponCode }      apply the coupon just offered
 //   { kind: "text", text, forAgent }          continue as if the user had typed `text`
+//   { kind: "cuisines" } / { kind: "more" }   show the cuisine list / the full menu
 // Never returns "order-place" unless the id's nonce matches the pending
 // order summary AND "Place order" was tapped on that same summary first.
 export function resolveTap({ replyId, senderId, pendingAddressSelections, pendingOrderConfirmations, pendingCartSessions }) {
   const id = String(replyId ?? "");
+
+  // The main menu never goes out of date.
+  if (id === HOME_RECOMMEND) {
+    return { kind: "text", text: "Recommend me something.", forAgent: true };
+  }
+  if (id === HOME_CUISINES) {
+    return { kind: "cuisines" };
+  }
+  if (id === HOME_MORE) {
+    return { kind: "more" };
+  }
+  if (id.startsWith(CUISINE_PREFIX)) {
+    const cuisine = CUISINES.find((name) => name === id.slice(CUISINE_PREFIX.length));
+    return cuisine ? { kind: "text", text: `I want ${cuisine}.`, forAgent: true } : { kind: "expired" };
+  }
+  if (id.startsWith(MORE_PREFIX)) {
+    const action = MORE_ACTIONS[id.slice(MORE_PREFIX.length)];
+    return action ? { kind: "text", text: action, forAgent: true } : { kind: "expired" };
+  }
+
   const confirmation = pendingOrderConfirmations.peek(senderId);
   const nonceMatches = (prefix) =>
     Boolean(confirmation?.nonce) && id.startsWith(prefix) && id.slice(prefix.length) === confirmation.nonce;
