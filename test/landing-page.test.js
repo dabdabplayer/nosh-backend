@@ -90,7 +90,7 @@ test("the page says, prominently and accurately, that Nosh is free for the user"
   const freeAt = html.indexOf('<section id="free"');
   assert.ok(freeAt > html.indexOf('class="hero"') && freeAt < html.indexOf('<section id="how"'));
   // "completely" small and lowercase, "FREE" as the stamp.
-  assert.match(html, /<h2 id="free-heading" class="reveal"><span class="free-word">completely<\/span> <span class="stamp">FREE<\/span><\/h2>/);
+  assert.match(html, /<h2 id="free-heading"><span class="free-word">completely<\/span> <span class="stamp">FREE<\/span><\/h2>/);
   assert.match(html, /Nosh charges you nothing\. No fees\. No markup\. No subscription\./);
   // Free means Nosh's own charges: the food itself is still paid for.
   assert.match(html, /You pay only for your food, at the same prices Swiggy shows you\./);
@@ -109,5 +109,14 @@ test("the FREE stamp is only hidden while a running script is about to stamp it"
   // only when motion is allowed - never by default.
   assert.match(html, /\.js \.stamp:not\(\.play\) \{ opacity: 0; \}/);
   assert.doesNotMatch(html, /\n  \.stamp \{[^}]*opacity: 0/);
-  assert.match(html, /\.stamp\.play \{ animation: stamp 0\.75s/);
+  assert.match(html, /\.stamp\.play \{ animation: stamp 0\.9s/);
+});
+
+test("the count turns red and shakes while it sits at ₹1000, and the ₹0 is back in the normal colour", () => {
+  assert.match(html, /@keyframes heat \{\s*0% \{ color: var\(--link\); \}\s*36%, 71% \{ color: var\(--red\);/);
+  assert.match(html, /71\.01%, 100% \{ color: var\(--link\); \}/);
+  // The shake covers the hold: it starts when the count reaches 1000 (1.8s
+  // in, plus the 0.15s start delay) and lasts until the collapse.
+  assert.match(html, /shake 1\.75s linear 1\.95s;/);
+  assert.match(html, /@keyframes shake \{ 0% \{ translate:/);
 });

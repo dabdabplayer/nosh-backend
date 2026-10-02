@@ -55,6 +55,7 @@ export function buildLandingPageHtml({ whatsappNumber, launched = false, year = 
   :root {
     --brand: #0b3028;
     --lime: #caf743;
+    --red: #d92d20;
     --bg: #ffffff;
     --bg-alt: #f4f6f1;
     --card: #ffffff;
@@ -85,6 +86,7 @@ export function buildLandingPageHtml({ whatsappNumber, launched = false, year = 
 
   @media (prefers-color-scheme: dark) {
     :root {
+      --red: #ff5a4f;
       --bg: #061a15;
       --bg-alt: #0a251f;
       --card: #0f3229;
@@ -325,15 +327,23 @@ export function buildLandingPageHtml({ whatsappNumber, launched = false, year = 
   .num { font-variant-numeric: tabular-nums; }
   .count { counter-reset: amount var(--count); }
   .count::after { content: counter(amount); }
+  /* While it climbs it turns red; at ₹1000 it shakes, harder and harder,
+     for the whole hold; the ₹0 that replaces it is back in the normal colour. */
+  @keyframes heat {
+    0% { color: var(--link); }
+    36%, 71% { color: var(--red); animation-timing-function: step-end; }
+    71.01%, 100% { color: var(--link); }
+  }
+  @keyframes shake { 0% { translate: 1.0px 0.6px; rotate: -0.5deg; } 5% { translate: -1.2px 0.7px; rotate: 0.6deg; } 10% { translate: 1.5px -0.8px; rotate: -0.7deg; } 15% { translate: -1.8px -1.0px; rotate: 0.8deg; } 20% { translate: 2.0px 1.1px; rotate: -0.9deg; } 25% { translate: -2.2px 1.2px; rotate: 1.0deg; } 30% { translate: 2.5px -1.4px; rotate: -1.1deg; } 35% { translate: -2.8px -1.5px; rotate: 1.2deg; } 40% { translate: 3.0px 1.7px; rotate: -1.4deg; } 45% { translate: -3.2px 1.8px; rotate: 1.5deg; } 50% { translate: 3.5px -1.9px; rotate: -1.6deg; } 55% { translate: -3.8px -2.1px; rotate: 1.7deg; } 60% { translate: 4.0px 2.2px; rotate: -1.8deg; } 65% { translate: -4.2px 2.3px; rotate: 1.9deg; } 70% { translate: 4.5px -2.5px; rotate: -2.0deg; } 75% { translate: -4.8px -2.6px; rotate: 2.1deg; } 80% { translate: 5.0px 2.8px; rotate: -2.2deg; } 85% { translate: -5.2px 2.9px; rotate: 2.4deg; } 90% { translate: 5.5px -3.0px; rotate: -2.5deg; } 95% { translate: -5.8px -3.2px; rotate: 2.6deg; } 100% { translate: 0.0px 0.0px; rotate: 0.0deg; } }
   .count.play { animation: count-up 5s linear 0.15s both; }
-  .num:has(.count.play) { animation: implode 5s linear 0.15s both; }
+  .num:has(.count.play) { animation: implode 5s linear 0.15s both, heat 5s linear 0.15s both, shake 1.75s linear 1.95s; }
 
   /* The stamp waits off the page until it scrolls into view, but only when
      the script that will bring it down is running (html.js). */
   @media (prefers-reduced-motion: no-preference) {
     .js .stamp:not(.play) { opacity: 0; }
-    .stamp.play { animation: stamp 0.75s linear both; }
-    .free:has(.stamp.play) .wrap { animation: jolt 0.75s linear both; }
+    .stamp.play { animation: stamp 0.9s linear 0.1s both; }
+    .free:has(.stamp.play) .wrap { animation: jolt 0.9s linear 0.1s both; }
   }
 
   /* Lime underline that draws itself under "in a chat." */
@@ -465,7 +475,7 @@ export function buildLandingPageHtml({ whatsappNumber, launched = false, year = 
 
 <section id="free" class="free center" aria-labelledby="free-heading">
   <div class="wrap">
-    <h2 id="free-heading" class="reveal"><span class="free-word">completely</span> <span class="stamp">FREE</span></h2>
+    <h2 id="free-heading"><span class="free-word">completely</span> <span class="stamp">FREE</span></h2>
     <p class="free-lead reveal">Nosh charges you nothing. No fees. No markup. No subscription.</p>
     <p class="free-sub reveal">You pay only for your food, at the same prices Swiggy shows you.</p>
   </div>
@@ -622,19 +632,20 @@ export function buildLandingPageHtml({ whatsappNumber, launched = false, year = 
 </footer>
 
 <script>
-  // Plays the stamp and the "₹1000 to ₹0" count when each scrolls into view.
-  // The page works without this: the stamp is simply there and the number
-  // reads 0.
+  // Plays the stamp and the "₹1000 to ₹0" count when each is properly on
+  // screen. The page works without this: the stamp is simply there and the
+  // number reads 0.
   (function () {
-    var targets = document.querySelectorAll(".stamp, .count");
     if (!("IntersectionObserver" in window)) return;
     document.documentElement.classList.add("js");
+    // Wait until the whole thing is on screen and clear of the bottom edge,
+    // so it plays where the visitor is looking, not as it first peeks in.
     var observer = new IntersectionObserver(function (entries) {
       entries.forEach(function (entry) {
         if (entry.isIntersecting) { entry.target.classList.add("play"); observer.unobserve(entry.target); }
       });
-    }, { threshold: 0.55 });
-    targets.forEach(function (target) { observer.observe(target); });
+    }, { threshold: 0.9, rootMargin: "0px 0px -12% 0px" });
+    document.querySelectorAll(".stamp, .count").forEach(function (target) { observer.observe(target); });
   })();
 </script>
 
