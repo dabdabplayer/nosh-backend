@@ -26,47 +26,71 @@ export function buildLandingPageHtml({ whatsappNumber, year = new Date().getFull
 <title>Nosh - Order food by chatting on WhatsApp</title>
 <meta name="description" content="Tell Nosh what you feel like eating. It finds it on Swiggy, builds your cart and places the order, right inside WhatsApp.">
 <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#061a15" media="(prefers-color-scheme: dark)">
 <meta property="og:title" content="Nosh - Food, ordered in a chat">
 <meta property="og:description" content="Order from Swiggy by chatting on WhatsApp. No app to install.">
 <meta property="og:type" content="website">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%231d1d1f'/%3E%3Cpath d='M20 46V18h5l14 19V18h5v28h-5L25 27v19z' fill='%23fff'/%3E%3C/svg%3E">
+<link rel="icon" type="image/png" href="/nosh-mark.png">
+<link rel="apple-touch-icon" href="/nosh-mark.png">
 <style>
+  /* Brand colours sampled from the Nosh logo: deep green and lime. The chat
+     mock-up uses WhatsApp's own chat colours (--wa-*). */
   :root {
+    --brand: #0b3028;
+    --lime: #caf743;
     --bg: #ffffff;
-    --bg-alt: #f5f5f7;
+    --bg-alt: #f4f6f1;
     --card: #ffffff;
-    --text: #1d1d1f;
-    --muted: #6e6e73;
-    --line: rgba(0, 0, 0, 0.08);
-    --accent: #0071e3;
-    --accent-hover: #0077ed;
-    --link: #0066cc;
+    --text: #0b3028;
+    --muted: #5d6f69;
+    --line: rgba(11, 48, 40, 0.1);
+    --accent: #0b3028;
+    --accent-text: #ffffff;
+    --accent-hover: #124538;
+    --link: #17705a;
     --nav: rgba(255, 255, 255, 0.72);
-    --bubble-in: #e9e9eb;
-    --bubble-out: #0b84ff;
-    --dark-bg: #000000;
-    --dark-text: #f5f5f7;
-    --dark-muted: #a1a1a6;
-    --dark-card: #1d1d1f;
-    --shadow: 0 20px 60px rgba(0, 0, 0, 0.12);
+    --badge-bg: #0b3028;
+    --badge-text: #caf743;
+    --dark-bg: #0b3028;
+    --dark-text: #f4f6f1;
+    --dark-muted: #a9bdb5;
+    --dark-card: #123c32;
+    --shadow: 0 20px 60px rgba(11, 48, 40, 0.16);
+    --wa-chat: #efeae2;
+    --wa-bar: #f0f2f5;
+    --wa-in: #ffffff;
+    --wa-out: #d9fdd3;
+    --wa-text: #111b21;
+    --wa-meta: #667781;
+    --wa-action: #008069;
+    --wa-tick: #53bdeb;
   }
 
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #000000;
-      --bg-alt: #101012;
-      --card: #1d1d1f;
-      --text: #f5f5f7;
-      --muted: #a1a1a6;
-      --line: rgba(255, 255, 255, 0.12);
-      --accent: #0a84ff;
-      --accent-hover: #2b95ff;
-      --link: #2997ff;
-      --nav: rgba(0, 0, 0, 0.72);
-      --bubble-in: #26262a;
-      --dark-bg: #101012;
-      --shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+      --bg: #061a15;
+      --bg-alt: #0a251f;
+      --card: #0f3229;
+      --text: #f4f6f1;
+      --muted: #a9bdb5;
+      --line: rgba(244, 246, 241, 0.12);
+      --accent: #caf743;
+      --accent-text: #0b3028;
+      --accent-hover: #d6fa6b;
+      --link: #caf743;
+      --nav: rgba(6, 26, 21, 0.72);
+      --badge-bg: #caf743;
+      --badge-text: #0b3028;
+      --dark-bg: #0b3028;
+      --dark-card: #123c32;
+      --shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+      --wa-chat: #0b141a;
+      --wa-bar: #202c33;
+      --wa-in: #202c33;
+      --wa-out: #005c4b;
+      --wa-text: #e9edef;
+      --wa-meta: #8696a0;
+      --wa-action: #53bdeb;
     }
   }
 
@@ -101,7 +125,8 @@ export function buildLandingPageHtml({ whatsappNumber, year = new Date().getFull
     border-bottom: 1px solid var(--line);
   }
   .nav .wrap { display: flex; align-items: center; justify-content: space-between; height: 52px; }
-  .brand { font-size: 21px; font-weight: 600; letter-spacing: -0.03em; color: var(--text); }
+  .brand { display: inline-flex; align-items: center; gap: 9px; font-family: ui-rounded, "SF Pro Rounded", -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif; font-size: 22px; font-weight: 700; letter-spacing: -0.02em; color: var(--text); }
+  .brand img { width: 28px; height: 28px; border-radius: 22%; display: block; }
   .brand:hover { text-decoration: none; }
   .nav-links { display: flex; align-items: center; gap: 28px; font-size: 12px; letter-spacing: -0.01em; }
   .nav-links a { color: var(--text); opacity: 0.8; }
@@ -111,14 +136,14 @@ export function buildLandingPageHtml({ whatsappNumber, year = new Date().getFull
   /* Buttons */
   .button {
     display: inline-flex; align-items: center; gap: 8px;
-    background: var(--accent); color: #fff;
+    background: var(--accent); color: var(--accent-text);
     padding: 12px 22px; border-radius: 980px;
     font-size: 17px; font-weight: 400; letter-spacing: -0.022em;
     transition: background 0.2s ease, transform 0.2s ease;
   }
   .button:hover { background: var(--accent-hover); text-decoration: none; }
   .button:active { transform: scale(0.98); }
-  .button.small { padding: 6px 14px; font-size: 12px; opacity: 1; color: #fff; }
+  .button.small { padding: 6px 14px; font-size: 12px; opacity: 1; color: var(--accent-text); }
   .button svg { width: 18px; height: 18px; fill: currentColor; flex: none; }
   .text-link { font-size: 19px; }
   .text-link::after { content: " \\203A"; }
@@ -140,29 +165,32 @@ export function buildLandingPageHtml({ whatsappNumber, year = new Date().getFull
   .hero { padding-top: clamp(64px, 9vw, 112px); padding-bottom: 0; text-align: center; overflow: hidden; }
   .hero-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 18px 28px; margin-top: 32px; }
 
-  /* Phone */
+  /* Phone: a WhatsApp chat, in WhatsApp's colours */
   .phone {
-    width: min(380px, 100%); margin: clamp(48px, 7vw, 80px) auto 0;
-    background: var(--card); border: 1px solid var(--line);
-    border-radius: 44px 44px 0 0; border-bottom: 0;
-    padding: 18px 16px 34px; box-shadow: var(--shadow); text-align: left;
+    width: min(390px, 100%); margin: clamp(48px, 7vw, 80px) auto 0;
+    background: var(--wa-chat); color: var(--wa-text);
+    border: 8px solid var(--brand); border-bottom: 0;
+    border-radius: 46px 46px 0 0; overflow: hidden;
+    box-shadow: var(--shadow); text-align: left;
   }
-  .phone-bar { display: flex; align-items: center; gap: 10px; padding: 4px 6px 14px; border-bottom: 1px solid var(--line); margin-bottom: 16px; }
-  .avatar { width: 34px; height: 34px; border-radius: 50%; background: var(--text); color: var(--bg); display: grid; place-items: center; font-weight: 600; font-size: 16px; }
-  .phone-name { font-size: 15px; font-weight: 600; line-height: 1.2; }
-  .phone-status { font-size: 12px; color: var(--muted); }
-  .chat { display: flex; flex-direction: column; gap: 8px; font-size: 15px; line-height: 1.35; letter-spacing: -0.01em; }
-  .msg { max-width: 84%; padding: 9px 13px; border-radius: 18px; }
-  .msg.in { background: var(--bubble-in); align-self: flex-start; border-bottom-left-radius: 6px; }
-  .msg.out { background: var(--bubble-out); color: #fff; align-self: flex-end; border-bottom-right-radius: 6px; }
-  .chips { display: flex; flex-wrap: wrap; gap: 6px; align-self: flex-start; max-width: 92%; }
-  .chip { border: 1px solid var(--line); color: var(--link); padding: 7px 13px; border-radius: 980px; font-size: 14px; background: var(--card); }
-  .caption { font-size: 12px; color: var(--muted); text-align: center; margin-top: 18px; }
+  .phone-bar { display: flex; align-items: center; gap: 10px; padding: 14px 16px 12px; background: var(--wa-bar); }
+  .avatar { width: 36px; height: 36px; border-radius: 50%; display: block; object-fit: cover; }
+  .phone-name { font-size: 16px; font-weight: 600; line-height: 1.2; }
+  .phone-status { font-size: 12px; color: var(--wa-meta); }
+  .chat { display: flex; flex-direction: column; gap: 6px; padding: 16px 12px 6px; font-size: 14.5px; line-height: 1.35; letter-spacing: -0.005em; }
+  .msg { position: relative; max-width: 82%; padding: 7px 10px 8px; border-radius: 9px; box-shadow: 0 1px 0.5px rgba(11, 20, 26, 0.13); }
+  .msg.in { background: var(--wa-in); align-self: flex-start; border-top-left-radius: 0; }
+  .msg.out { background: var(--wa-out); align-self: flex-end; border-top-right-radius: 0; }
+  .meta { float: right; margin: 6px 0 -3px 12px; font-size: 11px; color: var(--wa-meta); white-space: nowrap; }
+  .meta .ticks { color: var(--wa-tick); margin-left: 3px; letter-spacing: -0.2em; }
+  .replies { display: flex; flex-direction: column; gap: 3px; width: 82%; align-self: flex-start; margin-top: -3px; }
+  .reply { background: var(--wa-in); color: var(--wa-action); text-align: center; padding: 9px 10px; border-radius: 9px; font-size: 14.5px; box-shadow: 0 1px 0.5px rgba(11, 20, 26, 0.13); }
+  .caption { font-size: 12px; color: var(--wa-meta); text-align: center; padding: 14px 18px 30px; }
 
   /* Steps */
   .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-top: 56px; counter-reset: step; }
   .step { background: var(--card); border-radius: 28px; padding: 32px 28px; counter-increment: step; }
-  .step::before { content: counter(step); display: grid; place-items: center; width: 36px; height: 36px; border-radius: 50%; background: var(--text); color: var(--bg); font-weight: 600; margin-bottom: 20px; }
+  .step::before { content: counter(step); display: grid; place-items: center; width: 36px; height: 36px; border-radius: 50%; background: var(--badge-bg); color: var(--badge-text); font-weight: 700; margin-bottom: 20px; }
   .step p, .card p { color: var(--muted); margin-top: 10px; }
 
   /* Feature grid */
@@ -176,13 +204,15 @@ export function buildLandingPageHtml({ whatsappNumber, year = new Date().getFull
 
   /* Ease */
   .facts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-top: 56px; }
-  .fact .num { font-size: clamp(56px, 9vw, 96px); font-weight: 600; letter-spacing: -0.04em; line-height: 1; }
+  .fact .num { color: var(--link); font-size: clamp(56px, 9vw, 96px); font-weight: 600; letter-spacing: -0.04em; line-height: 1; }
   .fact p { color: var(--muted); margin-top: 12px; font-size: 19px; }
 
   /* Dark sections */
   .dark { background: var(--dark-bg); color: var(--dark-text); }
   .dark .eyebrow, .dark .lead { color: var(--dark-muted); }
-  .dark a { color: #2997ff; }
+  .dark a { color: var(--lime); }
+  .dark h2 em, h1 em, h2 em { font-style: normal; }
+  .dark h2 em { color: var(--lime); }
   .list { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; margin-top: 56px; text-align: left; }
   .item { background: var(--dark-card); border-radius: 28px; padding: 32px 28px; }
   .item p { color: var(--dark-muted); margin-top: 10px; }
@@ -218,7 +248,7 @@ export function buildLandingPageHtml({ whatsappNumber, year = new Date().getFull
 
 <header class="nav">
   <div class="wrap">
-    <a class="brand" href="#top" aria-label="Nosh home">Nosh</a>
+    <a class="brand" href="#top" aria-label="Nosh home"><img src="/nosh-mark.png" alt="" width="28" height="28">nosh</a>
     <nav class="nav-links" aria-label="Sections">
       <a href="#features">Features</a>
       <a href="#ease">Ease of use</a>
@@ -233,7 +263,6 @@ export function buildLandingPageHtml({ whatsappNumber, year = new Date().getFull
 
 <section class="hero">
   <div class="wrap">
-    <p class="eyebrow">Nosh</p>
     <h1>Food, ordered<br>in a chat.</h1>
     <p class="lead">Tell Nosh what you feel like. It finds it on Swiggy, builds your cart and places the order, right inside WhatsApp.</p>
     <div class="hero-actions">
@@ -246,19 +275,19 @@ export function buildLandingPageHtml({ whatsappNumber, year = new Date().getFull
 
     <div class="phone" role="img" aria-label="Example WhatsApp conversation with Nosh: a request for vegetarian food, a recommendation with buttons, and the item added to the cart.">
       <div class="phone-bar">
-        <div class="avatar">N</div>
+        <img class="avatar" src="/nosh-mark.png" alt="" width="36" height="36">
         <div>
           <div class="phone-name">Nosh</div>
           <div class="phone-status">online</div>
         </div>
       </div>
       <div class="chat">
-        <div class="msg out">Kuch tasty veg khana hai</div>
-        <div class="msg in">Masala Dosa from Idli Dosa Corner. ₹149, ⭐ 4.5, 20–25 mins. Add kar doon?</div>
-        <div class="chips"><span class="chip">Add kar do</span><span class="chip">Kuch aur</span><span class="chip">Cuisine chuno</span></div>
-        <div class="msg out">Add kar do</div>
-        <div class="msg in">Masala Dosa cart mein add ho gaya. Total ₹196.</div>
-        <div class="chips"><span class="chip">Checkout</span><span class="chip">Cart dekhein</span><span class="chip">Coupons</span></div>
+        <div class="msg out">Kuch tasty veg khana hai<span class="meta">8:41 pm<span class="ticks">✓✓</span></span></div>
+        <div class="msg in">Masala Dosa from Idli Dosa Corner. ₹149, ⭐ 4.5, 20–25 mins. Add kar doon?<span class="meta">8:41 pm</span></div>
+        <div class="replies"><span class="reply">Add kar do</span><span class="reply">Kuch aur</span><span class="reply">Cuisine chuno</span></div>
+        <div class="msg out">Add kar do<span class="meta">8:42 pm<span class="ticks">✓✓</span></span></div>
+        <div class="msg in">Masala Dosa cart mein add ho gaya. Total ₹196.<span class="meta">8:42 pm</span></div>
+        <div class="replies"><span class="reply">Checkout</span><span class="reply">Cart dekhein</span><span class="reply">Coupons</span></div>
       </div>
       <p class="caption">Example conversation. Real prices, ratings and delivery times come from Swiggy.</p>
     </div>
@@ -340,7 +369,7 @@ export function buildLandingPageHtml({ whatsappNumber, year = new Date().getFull
 <section id="privacy" class="dark center">
   <div class="wrap">
     <p class="eyebrow reveal">Privacy</p>
-    <h2 class="reveal">Your data is yours.<br>Nosh keeps it that way.</h2>
+    <h2 class="reveal">Your data is yours.<br><em>Nosh keeps it that way.</em></h2>
     <div class="list">
       <div class="item reveal">
         <h3>No passwords. Ever.</h3>

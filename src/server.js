@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import http from "node:http";
 import { config } from "./config.js";
 import { ConversationLog } from "./conversation-log.js";
@@ -65,6 +66,8 @@ import {
 
 const serviceName = "nosh-backend";
 const LANDING_PAGE_HTML = buildLandingPageHtml({ whatsappNumber: config.publicSite.whatsappNumber });
+// The Nosh logo mark, used by the website (nav, chat avatar, browser icon).
+const LOGO_MARK_PNG = readFileSync(new URL("../public/nosh-mark.png", import.meta.url));
 const swiggyOAuthOrigin = new URL(config.swiggyOAuth.redirectUri).origin;
 const processedMessageIds = new InProcessMessageIdempotency();
 // Without a Sarvam key the agent still works; it just sees and answers in
@@ -927,6 +930,16 @@ const server = http.createServer(async (request, response) => {
 
   if (request.method === "GET" && url.pathname === "/privacy-policy") {
     sendHtml(response, 200, PRIVACY_POLICY_HTML);
+    return;
+  }
+
+  if ((request.method === "GET" || request.method === "HEAD") && url.pathname === "/nosh-mark.png") {
+    response.writeHead(200, {
+      "content-type": "image/png",
+      "content-length": LOGO_MARK_PNG.length,
+      "cache-control": "public, max-age=86400",
+    });
+    response.end(request.method === "HEAD" ? undefined : LOGO_MARK_PNG);
     return;
   }
 

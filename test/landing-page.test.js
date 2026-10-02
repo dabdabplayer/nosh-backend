@@ -41,3 +41,12 @@ test("the WhatsApp number is escaped into the page", () => {
   const odd = buildLandingPageHtml({ whatsappNumber: '1"><script>', year: 2026 });
   assert.doesNotMatch(odd, /wa\.me\/1"><script>/);
 });
+
+test("the landing page uses the Nosh logo mark and WhatsApp's chat colours for the example chat", () => {
+  assert.match(html, /<link rel="icon" type="image\/png" href="\/nosh-mark\.png">/);
+  assert.match(html, /<img class="avatar" src="\/nosh-mark\.png"/);
+  // Brand colours from the logo, and WhatsApp's outgoing-bubble green.
+  assert.match(html, /--brand: #0b3028/);
+  assert.match(html, /--lime: #caf743/);
+  assert.match(html, /--wa-out: #d9fdd3/);
+});
