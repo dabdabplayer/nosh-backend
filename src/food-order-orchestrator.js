@@ -1117,7 +1117,7 @@ function formatItemSelectionReply(searchTerm, restaurantName, items) {
   return [
     `Here's what I found for "${searchTerm}" at ${restaurantName}:`,
     ...lines,
-    "Reply with the number, or tell me what else you'd like.",
+    "Tap one to add it, or tell me what else you'd like.",
   ].join("\n");
 }
 
@@ -1476,9 +1476,9 @@ function formatCoupons(couponsPayload, lang = "en") {
   const header = pick(lang, { en: "Available coupons:", hi: "उपलब्ध कूपन:", hinglish: "Available coupons:" });
   const example = coupons[0].title;
   const footer = pick(lang, {
-    en: `Reply "apply <code>" to use one, e.g. "apply ${example}".`,
-    hi: `इस्तेमाल करने के लिए "apply <code>" लिखें, जैसे "apply ${example}"।`,
-    hinglish: `Use karne ke liye "apply <code>" likhein, jaise "apply ${example}".`,
+    en: `Tap one to apply it, or reply "apply ${example}".`,
+    hi: `लगाने के लिए एक चुनें, या "apply ${example}" लिखें।`,
+    hinglish: `Apply karne ke liye ek tap karein, ya "apply ${example}" likhein.`,
   });
 
   return [header, ...lines, footer].join("\n");
@@ -2302,9 +2302,9 @@ export async function showRestaurantMenu({ senderId, restaurantName, swiggyFoodC
       : undefined;
 
   const footer = pick(lang, {
-    en: "Tell me what you'd like and I'll add it to your cart.",
-    hi: "बताइए आपको क्या चाहिए, मैं कार्ट में जोड़ दूंगा।",
-    hinglish: "Batayein aapko kya chahiye, main cart mein add kar dunga.",
+    en: "Tap a dish to add it, or tell me what you'd like.",
+    hi: "जोड़ने के लिए कोई डिश चुनें, या बताइए आपको क्या चाहिए।",
+    hinglish: "Add karne ke liye koi dish tap karein, ya batayein kya chahiye.",
   });
 
   return [header, ...lines, moreNote, footer].filter(Boolean).join("\n");

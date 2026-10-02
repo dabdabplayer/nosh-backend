@@ -206,7 +206,7 @@ test("resolvePendingCartCandidateReply: picking a restaurant looks up items matc
   assert.deepEqual(menuSearchCalls, [{ query: "pizza", addressId: "addr-1", restaurantIdOfAddedItem: "r-pizza" }]);
   assert.match(outcome.replyText, /"pizza" at Fake Pizza Co/);
   assert.match(outcome.replyText, /1\. Margherita Pizza — ₹219/);
-  assert.match(outcome.replyText, /Reply with the number/);
+  assert.match(outcome.replyText, /Tap one to add it/);
 
   const session = pendingCartSessions.peek("sender-1");
   assert.equal(session.restaurantId, "r-pizza");
@@ -2797,7 +2797,7 @@ test("findCoupons with showAll lists every coupon and uses a real code in its ex
     }),
   });
 
-  assert.equal(reply, 'Available coupons:\nSAVE10 — 10% off\nFLAT20 — ₹20 off\nReply "apply <code>" to use one, e.g. "apply SAVE10".');
+  assert.equal(reply, 'Available coupons:\nSAVE10 — 10% off\nFLAT20 — ₹20 off\nTap one to apply it, or reply "apply SAVE10".');
   assert.equal(takeOfferedCoupon({ senderId: "sender-1", pendingCartSessions }), undefined);
 });
 

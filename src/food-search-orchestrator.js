@@ -126,9 +126,9 @@ export function formatAddressPrompt(candidates, lang = "en") {
     hinglish: "Aapke paas kuch saved addresses hain — kaunsa use karoon?",
   });
   const footer = pick(lang, {
-    en: "Reply with the number or the name (like Home).",
-    hi: "नंबर या नाम (जैसे Home) के साथ जवाब दें।",
-    hinglish: "Number ya naam (jaise Home) ke saath reply karein.",
+    en: "Tap one, or reply with its number or name.",
+    hi: "एक चुनें, या उसका नंबर या नाम लिखें।",
+    hinglish: "Ek tap karein, ya uska number ya naam likhein.",
   });
   return [header, ...lines, footer].join("\n");
 }
@@ -164,9 +164,9 @@ function formatRestaurantReply(searchTerm, restaurants, lang = "en") {
     hinglish: `"${searchTerm}" ke liye ye mile:`,
   });
   const footer = pick(lang, {
-    en: "Which one would you like? Reply with the number.",
-    hi: "कौन सा चाहिए? नंबर के साथ जवाब दें।",
-    hinglish: "Kaunsa chahiye? Number ke saath reply karein.",
+    en: "Which one would you like? Tap one, or reply with its number.",
+    hi: "कौन सा चाहिए? एक चुनें, या उसका नंबर लिखें।",
+    hinglish: "Kaunsa chahiye? Ek tap karein, ya uska number likhein.",
   });
 
   return [header, ...lines, footer].join("\n");
