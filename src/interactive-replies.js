@@ -53,6 +53,7 @@ export function snapshotPromptState({ senderId, pendingAddressSelections, pendin
     addressPrompt: pendingAddressSelections.peek(senderId),
     confirmation: pendingOrderConfirmations.peek(senderId),
     offeredCouponCode: session?.offeredCouponCode,
+    listedCoupons: session?.listedCoupons,
     restaurantCandidates: session?.restaurantCandidates,
     itemCandidates: session?.itemCandidates,
   };
@@ -139,6 +140,20 @@ export function replyOptionsFor({ before, after, lang = "en", recommended = fals
         },
         { id: COUPON_ALL, title: pick(lang, { en: "See all coupons", hi: "सभी कूपन देखें", hinglish: "Saare coupons" }) },
       ],
+    };
+  }
+
+  // The full coupon list: each row applies that coupon.
+  if (Array.isArray(after.listedCoupons) && after.listedCoupons !== before.listedCoupons && after.listedCoupons.length > 0) {
+    return {
+      list: {
+        button: pick(lang, { en: "Apply a coupon", hi: "कूपन लगाएँ", hinglish: "Coupon lagayein" }),
+        rows: after.listedCoupons.map((coupon) => ({
+          id: `${COUPON_APPLY_PREFIX}${coupon.code}`,
+          title: coupon.code,
+          ...(coupon.description ? { description: coupon.description } : {}),
+        })),
+      },
     };
   }
 
@@ -232,9 +247,13 @@ export function resolveTap({ replyId, senderId, pendingAddressSelections, pendin
 
   const session = pendingCartSessions.peek(senderId);
 
+  // The button names the coupon itself, so it stays usable after the offer
+  // has scrolled by (seen live: "See all coupons", then Apply on the earlier
+  // offer was refused). Applying is checked by Swiggy and changes no order,
+  // so all this needs is a cart to apply it to.
   if (id.startsWith(COUPON_APPLY_PREFIX)) {
     const couponCode = id.slice(COUPON_APPLY_PREFIX.length);
-    return session?.offeredCouponCode && session.offeredCouponCode === couponCode
+    return (session?.cartRestaurantId || session?.restaurantId) && /^[A-Za-z0-9_-]{1,40}$/.test(couponCode)
       ? { kind: "coupon-apply", couponCode }
       : { kind: "expired" };
   }

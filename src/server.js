@@ -480,15 +480,16 @@ async function buildReplyText(incoming, turn = {}) {
     // next message; anything else (including "haan" or "apply it") goes to
     // the agent, which can still apply it from the conversation.
     const offeredCoupon = takeOfferedCoupon({ senderId: message.from, pendingCartSessions });
-    const agreedToCoupon = isTap
-      ? tap.kind === "coupon-apply" && tap.couponCode === offeredCoupon
-      : parseOrderConfirmationReply(message.text) === "confirm";
+    // A tapped Apply names its own coupon; a typed yes means the one offered.
+    const couponToApply = isTap
+      ? (tap.kind === "coupon-apply" ? tap.couponCode : undefined)
+      : (parseOrderConfirmationReply(message.text) === "confirm" ? offeredCoupon : undefined);
 
-    if (offeredCoupon && agreedToCoupon) {
+    if (couponToApply) {
       return recordTurn(
         await applyCoupon({
           senderId: message.from,
-          couponCode: offeredCoupon,
+          couponCode: couponToApply,
           swiggyFoodClient,
           pendingCartSessions,
           lang,

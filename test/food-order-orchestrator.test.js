@@ -2791,3 +2791,53 @@ test("findCoupons with showAll lists every coupon and uses a real code in its ex
   assert.equal(reply, 'Available coupons:\nSAVE10 — 10% off\nFLAT20 — ₹20 off\nReply "apply <code>" to use one, e.g. "apply SAVE10".');
   assert.equal(takeOfferedCoupon({ senderId: "sender-1", pendingCartSessions }), undefined);
 });
+
+test("resolvePendingCartCandidateReply: shows the restaurant's real menu when no dish there matches the search term", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", {
+    addressId: "addr-1",
+    searchTerm: "sushi",
+    restaurantCandidates: [{ id: "r-sushi", name: "Sushi Central" }],
+  });
+
+  const client = fakeClient({
+    searchMenu: async () => payload({ items: [] }),
+    getRestaurantMenu: async () =>
+      payload({
+        restaurant: { name: "Sushi Central" },
+        items: [
+          { id: "i1", name: "California Roll", price: 349, inStock: 1 },
+          { id: "i2", name: "Salmon Nigiri", price: 399, inStock: 1 },
+        ],
+      }),
+  });
+
+  const outcome = await resolvePendingCartCandidateReply({ message: message("1"), swiggyFoodClient: client, pendingCartSessions });
+
+  assert.equal(outcome.handled, true);
+  assert.match(outcome.replyText, /^Sushi Central menu:/);
+  assert.match(outcome.replyText, /1\. California Roll — ₹349/);
+  assert.match(outcome.replyText, /2\. Salmon Nigiri — ₹399/);
+  assert.equal(pendingCartSessions.peek("sender-1").restaurantId, "r-sushi");
+  assert.equal(pendingCartSessions.peek("sender-1").restaurantCandidates, undefined);
+});
+
+test("findCoupons with showAll remembers the listed coupons so they can be shown as tappable rows", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
+
+  await findCoupons({
+    senderId: "sender-1",
+    pendingCartSessions,
+    showAll: true,
+    swiggyFoodClient: fakeClient({
+      fetchFoodCoupons: async () =>
+        payload({ coupon_sections: [{ coupons: [{ title: "SAVE10", description: "10% off" }, { title: "FLAT20", subtitle: "₹20 off" }] }] }),
+    }),
+  });
+
+  assert.deepEqual(pendingCartSessions.peek("sender-1").listedCoupons, [
+    { code: "SAVE10", description: "10% off" },
+    { code: "FLAT20", description: "₹20 off" },
+  ]);
+});

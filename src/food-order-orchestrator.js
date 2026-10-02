@@ -1553,7 +1553,19 @@ async function handleFindCoupons({ swiggyFoodClient, restaurantId, addressId, sh
   }
 
   const couponsPayload = parseStructuredPayload(result);
-  return showAll ? { text: formatCoupons(couponsPayload, lang) } : formatCouponOffer(couponsPayload, lang);
+
+  if (!showAll) {
+    return formatCouponOffer(couponsPayload, lang);
+  }
+
+  const sections = Array.isArray(couponsPayload?.coupon_sections) ? couponsPayload.coupon_sections : [];
+  const listedCoupons = sections
+    .flatMap((section) => (Array.isArray(section?.coupons) ? section.coupons : []))
+    .filter((coupon) => typeof coupon?.title === "string" && coupon.title.trim())
+    .slice(0, MAX_COUPONS)
+    .map((coupon) => ({ code: coupon.title, description: (coupon.description ?? coupon.subtitle ?? "").trim() }));
+
+  return { text: formatCoupons(couponsPayload, lang), listedCoupons };
 }
 
 async function handleApplyCoupon({ swiggyFoodClient, couponCode, addressId, lang = "en" }) {
@@ -1937,6 +1949,24 @@ export async function resolvePendingCartCandidateReply({ message, swiggyFoodClie
         restaurantId: restaurant.id,
         restaurantName: restaurant.name,
       });
+
+      // No dish there is named after the search term - seen live: "sushi" at
+      // a sushi restaurant whose dishes are California Roll, Salmon Nigiri...
+      // Show the real menu rather than ask an open question the user can only
+      // answer by guessing dish names.
+      const menuMeta = {};
+      const menuReply = await showRestaurantMenu({
+        senderId: message.from,
+        swiggyFoodClient,
+        pendingCartSessions,
+        lang,
+        meta: menuMeta,
+      }).catch(() => undefined);
+
+      if (menuMeta.shown) {
+        return { handled: true, replyText: menuReply };
+      }
+
       const gotItReply = pick(lang, {
         en: `Got it — what would you like from ${restaurant.name}?`,
         hi: `ठीक है — ${restaurant.name} से आपको क्या चाहिए?`,
@@ -2070,7 +2100,8 @@ const MAX_MENU_ITEMS = 40;
 // variantsV2 update_food_cart needs, and the docs say to use search_menu for
 // ordering - so adding a dish from this list still goes through add_to_cart,
 // which already resolves it via search_menu.
-export async function showRestaurantMenu({ senderId, restaurantName, swiggyFoodClient, pendingCartSessions, lang = "en" }) {
+// `meta.shown` (optional output) is set when a real menu was listed.
+export async function showRestaurantMenu({ senderId, restaurantName, swiggyFoodClient, pendingCartSessions, lang = "en", meta }) {
   const session = pendingCartSessions.peek(senderId);
 
   if (!session?.addressId) {
@@ -2128,6 +2159,9 @@ export async function showRestaurantMenu({ senderId, restaurantName, swiggyFoodC
   // is kept so add_to_cart only flushes the cart on a genuine restaurant switch.
   const { restaurantCandidates, itemCandidates, searchTerm, ...rest } = session;
   pendingCartSessions.set(senderId, { ...rest, restaurantId, restaurantName: displayName });
+  if (meta) {
+    meta.shown = true;
+  }
 
   const shown = inStockItems.slice(0, MAX_MENU_ITEMS);
   const lines = shown.map((item, index) => {
@@ -2272,7 +2306,7 @@ export async function findCoupons({ senderId, swiggyFoodClient, pendingCartSessi
     return noActiveOrderReply(lang);
   }
 
-  const { text, offeredCouponCode } = await handleFindCoupons({
+  const { text, offeredCouponCode, listedCoupons } = await handleFindCoupons({
     swiggyFoodClient,
     restaurantId: session.restaurantId,
     addressId: session.addressId,
@@ -2282,6 +2316,9 @@ export async function findCoupons({ senderId, swiggyFoodClient, pendingCartSessi
 
   if (offeredCouponCode) {
     pendingCartSessions.set(senderId, { ...pendingCartSessions.peek(senderId), offeredCouponCode });
+  } else if (listedCoupons?.length > 0) {
+    // Lets the full list be shown as tappable rows (interactive-replies.js).
+    pendingCartSessions.set(senderId, { ...pendingCartSessions.peek(senderId), listedCoupons });
   }
 
   return text;

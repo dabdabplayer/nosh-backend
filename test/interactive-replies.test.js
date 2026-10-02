@@ -167,7 +167,7 @@ test("beginPlacingOrder returns nothing when no order is waiting", () => {
 
 // --- Coupons, lists and recommendations ---
 
-test("a coupon offer gets Apply and See all buttons, and Apply only works for the coupon currently offered", () => {
+test("a coupon offer gets Apply and See all buttons, and Apply keeps working after the offer has passed", () => {
   const s = stores();
   s.pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
   const options = optionsAfter(s, () =>
@@ -181,11 +181,43 @@ test("a coupon offer gets Apply and See all buttons, and Apply only works for th
     ],
   });
   assert.deepEqual(resolveTap({ ...s, replyId: "coupon:apply:SAVE10" }), { kind: "coupon-apply", couponCode: "SAVE10" });
-  assert.deepEqual(resolveTap({ ...s, replyId: "coupon:apply:OTHER" }), { kind: "expired" });
   assert.deepEqual(resolveTap({ ...s, replyId: "coupon:all" }), { kind: "text", text: "Show me all the coupons.", forAgent: true });
 
   // An offer left over from an earlier turn adds no buttons.
   assert.equal(optionsAfter(s, () => {}), undefined);
+
+  // The offer is gone (the user asked to see all coupons), but the button
+  // names its own coupon and there is still a cart to apply it to.
+  s.pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
+  assert.deepEqual(resolveTap({ ...s, replyId: "coupon:apply:SAVE10" }), { kind: "coupon-apply", couponCode: "SAVE10" });
+
+  // No cart, or an id that isn't a plausible coupon code: refused.
+  s.pendingCartSessions.clear("sender-1");
+  assert.deepEqual(resolveTap({ ...s, replyId: "coupon:apply:SAVE10" }), { kind: "expired" });
+  s.pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
+  assert.deepEqual(resolveTap({ ...s, replyId: "coupon:apply:not a code!" }), { kind: "expired" });
+});
+
+test("the full coupon list becomes tappable rows that each apply their coupon", () => {
+  const s = stores();
+  s.pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
+  const listedCoupons = [
+    { code: "SAVE10", description: "10% off, up to ₹50" },
+    { code: "FLAT20", description: "" },
+  ];
+  const options = optionsAfter(s, () => s.pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", listedCoupons }));
+
+  assert.equal(options.list.button, "Apply a coupon");
+  assert.deepEqual(options.list.rows, [
+    { id: "coupon:apply:SAVE10", title: "SAVE10", description: "10% off, up to ₹50" },
+    { id: "coupon:apply:FLAT20", title: "FLAT20" },
+  ]);
+
+  // Carried along on later session writes without being shown again.
+  assert.equal(
+    optionsAfter(s, () => s.pendingCartSessions.set("sender-1", { ...s.pendingCartSessions.peek("sender-1"), cartRestaurantId: "r-1" })),
+    undefined,
+  );
 });
 
 test("numbered restaurant and dish lists become tappable rows matched by real id", () => {
