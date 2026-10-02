@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { sendReadReceipt, sendTextMessage, WhatsAppSendError } from "../src/whatsapp-client.js";
+import {
+  buildInteractive,
+  sendReadReceipt,
+  sendReply,
+  sendTextMessage,
+  truncateLabel,
+  WhatsAppSendError,
+} from "../src/whatsapp-client.js";
 
 function jsonResponse(status, body) {
   return {
@@ -132,4 +139,92 @@ test("sendReadReceipt throws a WhatsAppSendError with the status when Meta rejec
     }),
     (error) => error instanceof WhatsAppSendError && error.status === 401,
   );
+});
+
+test("truncateLabel cuts to the limit by character and marks the cut", () => {
+  assert.equal(truncateLabel("Home", 20), "Home");
+  assert.equal(truncateLabel("Test Kitchen Biryani House (Mock)", 24), "Test Kitchen Biryani Ho…");
+  assert.equal([...truncateLabel("ऑर्डर प्लेस करें अभी तुरंत यहाँ", 20)].length, 20);
+});
+
+test("buildInteractive builds reply buttons and lists in Meta's format, with labels cut to fit", () => {
+  assert.deepEqual(buildInteractive("Which address?", { buttons: [{ id: "addr:1", title: "Home" }] }), {
+    type: "button",
+    body: { text: "Which address?" },
+    action: { buttons: [{ type: "reply", reply: { id: "addr:1", title: "Home" } }] },
+  });
+
+  const list = buildInteractive("Pick one", {
+    list: { button: "Choose", rows: [{ id: "rest:r-1", title: "Test Kitchen Biryani House (Mock)", description: "⭐4.3" }] },
+  });
+  assert.equal(list.type, "list");
+  assert.equal(list.action.button, "Choose");
+  assert.deepEqual(list.action.sections[0].rows[0], { id: "rest:r-1", title: "Test Kitchen Biryani Ho…", description: "⭐4.3" });
+});
+
+test("buildInteractive gives up when the options don't fit, so plain text is sent", () => {
+  const fourButtons = [1, 2, 3, 4].map((n) => ({ id: `b${n}`, title: `B${n}` }));
+  assert.equal(buildInteractive("text", { buttons: fourButtons }), undefined);
+  assert.equal(buildInteractive("x".repeat(1025), { buttons: [{ id: "a", title: "A" }] }), undefined);
+  assert.equal(buildInteractive("text", { list: { button: "Choose", rows: Array.from({ length: 11 }, (_, n) => ({ id: `r${n}`, title: `R${n}` })) } }), undefined);
+  assert.equal(buildInteractive("text", undefined), undefined);
+});
+
+test("sendReply sends an interactive message when there are options", async () => {
+  const bodies = [];
+  const result = await sendReply({
+    accessToken: "token",
+    apiVersion: "v26.0",
+    phoneNumberId: "pn-1",
+    to: "15550001111",
+    text: "Which address?",
+    options: { buttons: [{ id: "addr:1", title: "Home" }] },
+    fetchImpl: async (url, init) => {
+      bodies.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({ messages: [{ id: "wamid.out" }] }), { status: 200 });
+    },
+  });
+
+  assert.equal(bodies.length, 1);
+  assert.equal(bodies[0].type, "interactive");
+  assert.equal(bodies[0].interactive.body.text, "Which address?");
+  assert.equal(result.interactive, true);
+});
+
+test("sendReply falls back to the same text as a plain message when Meta rejects the interactive one", async () => {
+  const bodies = [];
+  await sendReply({
+    accessToken: "token",
+    apiVersion: "v26.0",
+    phoneNumberId: "pn-1",
+    to: "15550001111",
+    text: "Which address?",
+    options: { buttons: [{ id: "addr:1", title: "Home" }] },
+    fetchImpl: async (url, init) => {
+      bodies.push(JSON.parse(init.body));
+      return bodies.length === 1
+        ? new Response("{}", { status: 400 })
+        : new Response(JSON.stringify({ messages: [{ id: "wamid.out" }] }), { status: 200 });
+    },
+  });
+
+  assert.deepEqual(bodies.map((body) => body.type), ["interactive", "text"]);
+  assert.equal(bodies[1].text.body, "Which address?");
+});
+
+test("sendReply sends plain text when there are no options", async () => {
+  const bodies = [];
+  await sendReply({
+    accessToken: "token",
+    apiVersion: "v26.0",
+    phoneNumberId: "pn-1",
+    to: "15550001111",
+    text: "Hello",
+    fetchImpl: async (url, init) => {
+      bodies.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({ messages: [{ id: "wamid.out" }] }), { status: 200 });
+    },
+  });
+
+  assert.deepEqual(bodies.map((body) => body.type), ["text"]);
 });

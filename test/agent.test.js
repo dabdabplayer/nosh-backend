@@ -34,6 +34,7 @@ function fakeSwiggyClient(overrides = {}) {
       (async () => ({ structured: { items: [{ name: "Chicken Biryani", price: 249, inStock: 1 }] } })),
     getFoodCart: overrides.getFoodCart ?? (async () => ({ structured: { statusCode: 0, data: { items: [] } } })),
     getFoodOrders: overrides.getFoodOrders ?? (async () => ({ structured: { orders: [] } })),
+    getRestaurantMenu: overrides.getRestaurantMenu ?? (async () => ({ structured: { items: [] } })),
   };
 }
 
@@ -1302,4 +1303,38 @@ test("runAgentTurn sends a tool's fresh address question straight to the user ev
   assert.equal(completionsCallCount, 1);
   assert.match(result, /which one should I use\?/);
   assert.equal(ctx.pendingAddressSelections.peek("sender-1").kind, "search");
+});
+
+test("runAgentTurn treats a tapped button's canned text as having no language, and reports a recommendation", async () => {
+  const seen = [];
+  let calls = 0;
+  const client = fakeClient(async ({ messages }) => {
+    calls += 1;
+    if (calls === 1) {
+      seen.push(messages.at(-1).content);
+      return toolCallResponse([{ id: "call_1", function: { name: "recommend_similar", arguments: "{}" } }]);
+    }
+    return textResponse("Veg Biryani try karo?");
+  });
+  const ctx = newContext();
+  ctx.pendingCartSessions.set("sender-1", { addressId: "addr-1" });
+  const turnInfo = {};
+
+  await runAgentTurn({
+    message: { from: "sender-1", text: "Recommend something else.", fromTap: true },
+    swiggyFoodClient: fakeSwiggyClient({
+      getFoodOrders: async () => ({
+        structured: { orders: [{ orderId: "o1", restaurantId: "r1", restaurantName: "Test Biryani House", orderedItems: "1x Chicken Biryani", isActiveOrder: false }] },
+      }),
+      getRestaurantMenu: async () => ({ structured: { items: [{ id: "i2", name: "Veg Biryani", price: 199, inStock: 1 }] } }),
+    }),
+    ...ctx,
+    agent,
+    client,
+    lang: "hinglish",
+    turnInfo,
+  });
+
+  assert.match(seen[0], /they have been writing in Hinglish in Roman letters/);
+  assert.equal(turnInfo.recommended, true);
 });

@@ -1483,11 +1483,14 @@ test("checkout builds a summary and stores a pending confirmation", async () => 
   assert.match(reply, /Order summary — Test Restaurant/);
   assert.match(reply, /Total to pay: ₹187/);
   assert.match(reply, /Reply YES to place this order, or NO to cancel/);
-  assert.deepEqual(pendingOrderConfirmations.peek("sender-1"), {
+  const { nonce, ...stored } = pendingOrderConfirmations.peek("sender-1");
+  assert.deepEqual(stored, {
     addressId: "addr-1",
     cartId: 1,
     paymentMethod: "Cash",
+    summary: { restaurantName: "Test Restaurant", toPay: 187 },
   });
+  assert.match(nonce, /^[A-Za-z0-9_-]{12}$/);
 });
 
 test("checkout refuses an empty cart", async () => {

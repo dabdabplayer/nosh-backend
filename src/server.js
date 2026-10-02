@@ -9,6 +9,15 @@ import {
   placeConfirmedOrder,
   resolvePendingCartCandidateReply,
 } from "./food-order-orchestrator.js";
+import {
+  beginPlacingOrder,
+  expiredOptionReply,
+  formatPlaceOrderCheck,
+  replyOptionsFor,
+  resolveTap,
+  snapshotPromptState,
+  stopPlacingOrder,
+} from "./interactive-replies.js";
 import { pick, PendingLanguagePreference } from "./language-preference.js";
 import { InProcessMessageIdempotency } from "./message-idempotency.js";
 import { PendingAddressSelections } from "./pending-address-selection.js";
@@ -39,7 +48,7 @@ import {
 } from "./swiggy-oauth.js";
 import { SwiggyAuthFailureError } from "./swiggy-retry.js";
 import { SwiggyTokenStore } from "./swiggy-token-store.js";
-import { sendReadReceipt, sendTextMessage } from "./whatsapp-client.js";
+import { sendReadReceipt, sendReply } from "./whatsapp-client.js";
 import {
   extractInboundTextMessages,
   parseWhatsAppWebhookPayload,
@@ -218,32 +227,68 @@ async function withSwiggyFoodClient(senderId, fn) {
 // Deterministic gate for the one irreversible action (placing a real order):
 // only a literal YES/NO reply to a specific stored order summary can trigger
 // it - never an NLU/LLM judgment call. See food-order-orchestrator.js.
+function cancelPendingOrder(senderId, lang = "en") {
+  pendingOrderConfirmations.clear(senderId);
+  return pick(lang, {
+    en: "Order cancelled. Your cart is still there if you'd like to check out again later.",
+    hi: "ऑर्डर रद्द कर दिया गया। अगर आप बाद में फिर से चेकआउट करना चाहें तो आपकी कार्ट अभी भी वहीं है।",
+    hinglish: "Order cancel kar diya gaya. Agar baad mein phir se checkout karna ho to aapki cart abhi bhi wahi hai.",
+  });
+}
+
+// MUST keep the literal uppercase "YES"/"NO" tokens - parseOrderConfirmationReply's
+// regex and this file's own backstop below are both English-only by
+// design (see AGENTS.md's Commerce Safety section).
+function orderConfirmationReprompt(lang = "en") {
+  return pick(lang, {
+    en: "Please reply YES to place this order, or NO to cancel. To change the order or add a coupon, reply NO first - your cart stays.",
+    hi: "इस ऑर्डर को देने के लिए YES लिखें, या रद्द करने के लिए NO लिखें। ऑर्डर बदलने या कूपन लगाने के लिए पहले NO लिखें - आपकी कार्ट बनी रहेगी।",
+    hinglish: "Is order ko place karne ke liye YES likhein, ya cancel karne ke liye NO likhein. Order badalne ya coupon lagane ke liye pehle NO likhein - aapki cart wahi rahegi.",
+  });
+}
+
 async function buildOrderConfirmationReply(message, pendingConfirmation, lang = "en") {
   const decision = parseOrderConfirmationReply(message.text);
 
   if (decision === "cancel") {
-    pendingOrderConfirmations.clear(message.from);
-    return pick(lang, {
-      en: "Order cancelled. Your cart is still there if you'd like to check out again later.",
-      hi: "ऑर्डर रद्द कर दिया गया। अगर आप बाद में फिर से चेकआउट करना चाहें तो आपकी कार्ट अभी भी वहीं है।",
-      hinglish: "Order cancel kar diya gaya. Agar baad mein phir se checkout karna ho to aapki cart abhi bhi wahi hai.",
-    });
+    return cancelPendingOrder(message.from, lang);
   }
 
   if (decision !== "confirm") {
-    // MUST keep the literal uppercase "YES"/"NO" tokens - parseOrderConfirmationReply's
-    // regex and this file's own backstop below are both English-only by
-    // design (see AGENTS.md's Commerce Safety section).
-    return pick(lang, {
-      en: "Please reply YES to place this order, or NO to cancel. To change the order or add a coupon, reply NO first - your cart stays.",
-      hi: "इस ऑर्डर को देने के लिए YES लिखें, या रद्द करने के लिए NO लिखें। ऑर्डर बदलने या कूपन लगाने के लिए पहले NO लिखें - आपकी कार्ट बनी रहेगी।",
-      hinglish: "Is order ko place karne ke liye YES likhein, ya cancel karne ke liye NO likhein. Order badalne ya coupon lagane ke liye pehle NO likhein - aapki cart wahi rahegi.",
-    });
+    return orderConfirmationReprompt(lang);
   }
 
-  const outcome = await withSwiggyFoodClient(message.from, (swiggyFoodClient) =>
-    placeConfirmedOrder({ swiggyFoodClient, confirmation: pendingConfirmation, lang }),
-  );
+  return placePendingOrder(message, lang);
+}
+
+// The only caller of placeConfirmedOrder. Reached by a typed YES to the
+// order summary, or by the second of the two order buttons (see
+// interactive-replies.js) - never by the agent.
+async function placePendingOrder(message, lang = "en") {
+  // Two quick taps or two YES messages arrive as separate webhooks; only the
+  // first may place the order.
+  const pendingConfirmation = beginPlacingOrder({ senderId: message.from, pendingOrderConfirmations });
+
+  if (!pendingConfirmation) {
+    return pendingOrderConfirmations.peek(message.from)
+      ? pick(lang, {
+          en: "Your order is already being placed - one moment.",
+          hi: "आपका ऑर्डर पहले से दिया जा रहा है - एक पल रुकिए।",
+          hinglish: "Aapka order already place ho raha hai - ek second.",
+        })
+      : expiredOptionReply(lang);
+  }
+
+  let outcome;
+  try {
+    outcome = await withSwiggyFoodClient(message.from, (swiggyFoodClient) =>
+      placeConfirmedOrder({ swiggyFoodClient, confirmation: pendingConfirmation, lang }),
+    );
+  } catch (error) {
+    stopPlacingOrder({ senderId: message.from, pendingOrderConfirmations, confirmation: pendingConfirmation });
+    throw error;
+  }
+
 
   if (!outcome.authenticated) {
     pendingOrderConfirmations.clear(message.from);
@@ -280,13 +325,21 @@ async function buildOrderConfirmationReply(message, pendingConfirmation, lang = 
   return replyText;
 }
 
-async function buildReplyText(message) {
+// `turn` is an optional output object: `recommended` is set when the reply
+// is the agent's own recommendation (see buildReply).
+async function buildReplyText(incoming, turn = {}) {
+  let message = incoming;
+  const isTap = Boolean(incoming.replyId);
+
   // Updated on every inbound message regardless of which path below ends up
   // handling it (see language-preference.js's own header comment) - a
   // no-op when the message carries no real language signal (a bare number,
   // "YES"/"NO"), so a content-free reply never overwrites a real earlier
-  // preference.
-  pendingLanguagePreference.update(message.from, message.text);
+  // preference. A tapped button's label is Nosh's own text, not the user's,
+  // so it never updates the preference either.
+  if (!isTap) {
+    pendingLanguagePreference.update(message.from, message.text);
+  }
   const lang = pendingLanguagePreference.get(message.from);
 
   if (!config.swiggyFood.enabled) {
@@ -297,10 +350,43 @@ async function buildReplyText(message) {
     return PLACEHOLDER_REPLY_TEXT;
   }
 
+  // A tap is routed by its id and checked against current state, before
+  // anything else looks at the message - a button's label must never reach
+  // the YES/NO parser below.
+  let tap;
+
+  if (isTap) {
+    tap = resolveTap({
+      replyId: incoming.replyId,
+      senderId: message.from,
+      pendingAddressSelections,
+      pendingOrderConfirmations,
+      pendingCartSessions,
+    });
+
+    if (tap.kind === "expired") {
+      return expiredOptionReply(lang);
+    }
+    if (tap.kind === "order-check") {
+      return formatPlaceOrderCheck(tap.confirmation, lang);
+    }
+    if (tap.kind === "order-place") {
+      return placePendingOrder(message, lang);
+    }
+    if (tap.kind === "order-cancel") {
+      return cancelPendingOrder(message.from, lang);
+    }
+    if (tap.kind === "text") {
+      message = { ...incoming, text: tap.text, fromTap: tap.forAgent };
+    }
+  }
+
   const pendingConfirmation = pendingOrderConfirmations.peek(message.from);
 
   if (pendingConfirmation) {
-    return buildOrderConfirmationReply(message, pendingConfirmation, lang);
+    // Any other button tapped while an order summary is waiting gets the
+    // same reminder a typed non-answer does.
+    return isTap ? orderConfirmationReprompt(lang) : buildOrderConfirmationReply(message, pendingConfirmation, lang);
   }
 
   // Deterministic backstop, not the primary fix (see the system prompt's
@@ -323,7 +409,7 @@ async function buildReplyText(message) {
   // question the agent asks about something unrelated isn't caught here -
   // nothing else in this app's own text ever emits capitalized "YES"/"NO"
   // together outside that one instructed case.
-  const bareConfirmationDecision = parseOrderConfirmationReply(message.text);
+  const bareConfirmationDecision = isTap ? undefined : parseOrderConfirmationReply(message.text);
 
   if (bareConfirmationDecision === "confirm" || bareConfirmationDecision === "cancel") {
     const history = pendingConversationHistory.peek(message.from);
@@ -394,8 +480,11 @@ async function buildReplyText(message) {
     // next message; anything else (including "haan" or "apply it") goes to
     // the agent, which can still apply it from the conversation.
     const offeredCoupon = takeOfferedCoupon({ senderId: message.from, pendingCartSessions });
+    const agreedToCoupon = isTap
+      ? tap.kind === "coupon-apply" && tap.couponCode === offeredCoupon
+      : parseOrderConfirmationReply(message.text) === "confirm";
 
-    if (offeredCoupon && parseOrderConfirmationReply(message.text) === "confirm") {
+    if (offeredCoupon && agreedToCoupon) {
       return recordTurn(
         await applyCoupon({
           senderId: message.from,
@@ -435,6 +524,7 @@ async function buildReplyText(message) {
         agent: config.agent,
         translator,
         lang,
+        turnInfo: turn,
       });
     } catch (error) {
       if (error instanceof SwiggyAuthFailureError) {
@@ -476,8 +566,26 @@ async function buildReplyText(message) {
 // recognized at all (see PLACEHOLDER_REPLY_TEXT above) - a real answer or
 // error message won't match it. Logging is skipped entirely (not just a
 // no-op append) when it's off, so there's zero Redis traffic either way.
-async function buildReplyTextAndLog(message) {
-  const replyText = await buildReplyText(message);
+// The reply text plus the buttons or list that go with it, if any. The
+// options are worked out from what this turn created (see
+// interactive-replies.js), so no reply-building function has to know about
+// buttons.
+async function buildReply(message) {
+  const stores = { senderId: message.from, pendingAddressSelections, pendingOrderConfirmations, pendingCartSessions };
+  const before = snapshotPromptState(stores);
+  const turn = {};
+  const text = await buildReplyText(message, turn);
+  const options = replyOptionsFor({
+    before,
+    after: snapshotPromptState(stores),
+    lang: pendingLanguagePreference.get(message.from),
+    recommended: turn.recommended === true,
+  });
+  return { text, options };
+}
+
+async function buildReplyAndLog(message) {
+  const { text: replyText, options } = await buildReply(message);
 
   if (conversationLog) {
     // Fire-and-forget: append() never throws (see conversation-log.js), and
@@ -488,13 +596,13 @@ async function buildReplyTextAndLog(message) {
     void conversationLog.append(message.from, { inboundText: message.text, replyText, isPlaceholder });
   }
 
-  return replyText;
+  return { text: replyText, options };
 }
 
 // After a sender finishes connecting their Swiggy account, automatically
 // resume whatever they originally asked for instead of making them repeat
 // themselves - replays their own original message text verbatim through
-// buildReplyTextAndLog (the agent interprets it the same way it would have
+// buildReplyAndLog (the agent interprets it the same way it would have
 // the first time). Best-effort: if the agent is disabled or something goes
 // wrong at this moment, the resume silently falls through to the normal
 // placeholder instead of resuming, same as any other agent outage
@@ -514,12 +622,12 @@ async function resumePendingSearchAfterAuth(senderId) {
   };
 
   try {
-    await sendTextMessage({
+    await sendReply({
       accessToken: config.whatsapp.accessToken,
       apiVersion: config.whatsapp.apiVersion,
       phoneNumberId: pendingAction.phoneNumberId,
       to: senderId,
-      text: await buildReplyTextAndLog(syntheticMessage),
+      ...(await buildReplyAndLog(syntheticMessage)),
     });
   } catch (error) {
     console.error("Failed to resume search after Swiggy auth.", { name: error.name });
@@ -572,12 +680,12 @@ async function replyToIncomingTextMessages(messages) {
         });
 
       try {
-        await sendTextMessage({
+        await sendReply({
           accessToken: config.whatsapp.accessToken,
           apiVersion: config.whatsapp.apiVersion,
           phoneNumberId: message.phoneNumberId,
           to: message.from,
-          text: await buildReplyTextAndLog(message),
+          ...(await buildReplyAndLog(message)),
         });
       } catch (error) {
         console.error("Failed to send WhatsApp reply.", { name: error.name, message: error.message });

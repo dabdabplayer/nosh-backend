@@ -92,3 +92,47 @@ test("rejects malformed and non-WhatsApp webhook bodies", () => {
     undefined,
   );
 });
+
+function interactivePayload(interactive) {
+  return {
+    object: "whatsapp_business_account",
+    entry: [
+      {
+        changes: [
+          {
+            field: "messages",
+            value: {
+              metadata: { phone_number_id: "pn-1" },
+              messages: [{ from: "15550001111", id: "wamid.tap", timestamp: "1714510003", type: "interactive", interactive }],
+            },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+test("extracts a tapped reply button with its id and label", () => {
+  const messages = extractInboundTextMessages(
+    interactivePayload({ type: "button_reply", button_reply: { id: "addr:addr-1", title: "Home" } }),
+  );
+
+  assert.deepEqual(messages, [
+    { from: "15550001111", id: "wamid.tap", phoneNumberId: "pn-1", text: "Home", replyId: "addr:addr-1", timestamp: "1714510003" },
+  ]);
+});
+
+test("extracts a tapped list row with its id and label", () => {
+  const messages = extractInboundTextMessages(
+    interactivePayload({ type: "list_reply", list_reply: { id: "rest:r-2", title: "Pizza Place", description: "4.1" } }),
+  );
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].text, "Pizza Place");
+  assert.equal(messages[0].replyId, "rest:r-2");
+});
+
+test("ignores an interactive message with no usable id or label", () => {
+  assert.deepEqual(extractInboundTextMessages(interactivePayload({ type: "button_reply", button_reply: { id: "", title: "Home" } })), []);
+  assert.deepEqual(extractInboundTextMessages(interactivePayload({ type: "nfm_reply" })), []);
+});

@@ -116,3 +116,125 @@ export async function sendReadReceipt({
   }
   return { typingIndicator };
 }
+
+// Meta's length limits for interactive messages, in characters.
+const LIMITS = Object.freeze({
+  buttonTitle: 20,
+  buttonBody: 1024,
+  maxButtons: 3,
+  listButton: 20,
+  rowTitle: 24,
+  rowDescription: 72,
+  listBody: 4096,
+  maxRows: 10,
+});
+
+// Cuts by code point (never through the middle of an emoji) and marks the
+// cut with an ellipsis.
+export function truncateLabel(text, max) {
+  const characters = [...String(text ?? "").trim()];
+  return characters.length <= max ? characters.join("") : `${characters.slice(0, max - 1).join("")}…`;
+}
+
+// Builds the `interactive` object for reply buttons or a list, or returns
+// undefined when the options don't fit Meta's limits (too many, or the text
+// is too long) - the caller then sends plain text.
+// options: { buttons: [{ id, title }] } or
+//          { list: { button, rows: [{ id, title, description? }] } }
+export function buildInteractive(text, options) {
+  const length = [...text].length;
+
+  if (Array.isArray(options?.buttons) && options.buttons.length > 0) {
+    if (options.buttons.length > LIMITS.maxButtons || length > LIMITS.buttonBody) {
+      return undefined;
+    }
+    return {
+      type: "button",
+      body: { text },
+      action: {
+        buttons: options.buttons.map((button) => ({
+          type: "reply",
+          reply: { id: button.id, title: truncateLabel(button.title, LIMITS.buttonTitle) },
+        })),
+      },
+    };
+  }
+
+  const rows = options?.list?.rows;
+  if (Array.isArray(rows) && rows.length > 0) {
+    if (rows.length > LIMITS.maxRows || length > LIMITS.listBody) {
+      return undefined;
+    }
+    return {
+      type: "list",
+      body: { text },
+      action: {
+        button: truncateLabel(options.list.button, LIMITS.listButton),
+        sections: [
+          {
+            rows: rows.map((row) => ({
+              id: row.id,
+              title: truncateLabel(row.title, LIMITS.rowTitle),
+              ...(row.description ? { description: truncateLabel(row.description, LIMITS.rowDescription) } : {}),
+            })),
+          },
+        ],
+      },
+    };
+  }
+
+  return undefined;
+}
+
+// Sends a reply with tappable buttons or a list. The text is the full
+// message either way, so if the options don't fit, or Meta rejects the
+// interactive message, the same text goes out as a plain message and the
+// user can still type their answer.
+// https://developers.facebook.com/docs/whatsapp/cloud-api/messages/interactive-list-messages
+export async function sendReply({
+  accessToken,
+  apiVersion,
+  phoneNumberId,
+  to,
+  text,
+  options,
+  fetchImpl = fetch,
+}) {
+  const interactive = options ? buildInteractive(text, options) : undefined;
+
+  if (interactive) {
+    let response;
+    try {
+      response = await fetchImpl(`https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${accessToken}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          messaging_product: "whatsapp",
+          recipient_type: "individual",
+          to,
+          type: "interactive",
+          interactive,
+        }),
+      });
+    } catch {
+      response = undefined;
+    }
+
+    if (response?.ok) {
+      reportSuccess(COMPONENTS.whatsapp);
+      const body = await response.json();
+      const message = body?.messages?.[0];
+      return Object.freeze({ id: message?.id, status: message?.message_status, interactive: true });
+    }
+
+    await response?.body?.cancel();
+    console.warn("WhatsApp interactive message was not accepted; sending plain text instead.", {
+      status: response?.status,
+    });
+  }
+
+  return sendTextMessage({ accessToken, apiVersion, phoneNumberId, to, text, fetchImpl });
+}

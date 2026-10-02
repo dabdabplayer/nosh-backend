@@ -5,6 +5,7 @@ import {
   parseAddressSelectionReply,
   toAddressCandidate,
 } from "./food-search-orchestrator.js";
+import { newConfirmationNonce } from "./interactive-replies.js";
 import { pick } from "./language-preference.js";
 import { parseStructuredPayload } from "./swiggy-food-client.js";
 import { isTransientSwiggyFailure } from "./swiggy-retry.js";
@@ -1682,6 +1683,11 @@ async function handleCheckout({
     addressId,
     cartId: cartData.cart_id,
     paymentMethod: "Cash",
+    // For the tap-to-order buttons (see interactive-replies.js): the nonce
+    // ties a button to this exact summary, and the summary line is repeated
+    // in the "place this order?" check.
+    nonce: newConfirmationNonce(),
+    summary: { restaurantName: cartData.restaurant?.name, toPay: cartData.pricing?.to_pay },
   });
 
   return formatOrderSummary(cartData, paymentOptions.cod.displayName ?? "Cash on Delivery", lang);

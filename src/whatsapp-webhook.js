@@ -78,13 +78,37 @@ export function extractInboundTextMessages(payload) {
       const messages = Array.isArray(change.value?.messages) ? change.value.messages : [];
 
       for (const message of messages) {
-        if (
-          message?.type !== "text" ||
-          !isNonEmptyString(message.id) ||
-          !isNonEmptyString(message.from) ||
-          !isNonEmptyString(phoneNumberId) ||
-          !isNonEmptyString(message.text?.body)
-        ) {
+        if (!isNonEmptyString(message?.id) || !isNonEmptyString(message.from) || !isNonEmptyString(phoneNumberId)) {
+          continue;
+        }
+
+        // A tap on a button or list row Nosh sent. `text` is the label the
+        // user saw (for logs and conversation history); `replyId` is the id
+        // Nosh gave that option, which is what the tap is routed by.
+        // https://developers.facebook.com/docs/whatsapp/cloud-api/messages/interactive-reply-buttons-messages
+        const tapped =
+          message.type === "interactive"
+            ? (message.interactive?.button_reply ?? message.interactive?.list_reply)
+            : undefined;
+
+        if (tapped) {
+          if (!isNonEmptyString(tapped.id) || !isNonEmptyString(tapped.title)) {
+            continue;
+          }
+          incomingMessages.push(
+            Object.freeze({
+              from: message.from,
+              id: message.id,
+              phoneNumberId,
+              text: tapped.title,
+              replyId: tapped.id,
+              timestamp: message.timestamp,
+            }),
+          );
+          continue;
+        }
+
+        if (message.type !== "text" || !isNonEmptyString(message.text?.body)) {
           continue;
         }
 

@@ -571,6 +571,7 @@ async function executeTool(name, args, ctx) {
           dataAvailabilityState.anyToolCalled = true;
           if (meta.hasData) {
             dataAvailabilityState.sawRealData = true;
+            dataAvailabilityState.recommendGaveCandidates = true;
           } else {
             dataAvailabilityState.lastNoDataText = text;
           }
@@ -652,11 +653,17 @@ export async function runAgentTurn({
   // English-only when a translator sits in between; otherwise Gemini replies
   // in the user's own language. Only scripts/compare-translation.js passes it.
   systemPrompt = translator ? SYSTEM_PROMPT : OWN_LANGUAGE_SYSTEM_PROMPT,
+  // Optional output object. `recommended` is set when recommend_similar gave
+  // the agent real candidates this turn, so server.js can add "Add it" /
+  // "Something else" buttons to the reply.
+  turnInfo,
 }) {
   const senderId = message.from;
   const history = pendingConversationHistory.peek(senderId);
 
-  const messageLang = detectLanguage(message.text);
+  // A tapped button's text is Nosh's own canned English, not the user's
+  // language - treat it like "Home" or "1" (no language of its own).
+  const messageLang = message.fromTap ? undefined : detectLanguage(message.text);
   const userText = translator ? await translator.toEnglish(message.text, messageLang) : message.text;
   const toUserLanguage = (text) => (translator ? translator.fromEnglish(text, lang) : text);
 
@@ -883,6 +890,15 @@ export async function runAgentTurn({
         cartMutationState.anyToolCalled && !cartMutationState.sawSuccess && cartMutationState.lastFailureText
           ? cartMutationState.lastFailureText
           : recommendSafeText;
+
+      if (turnInfo) {
+        // The reply is the agent's own recommendation only when it wasn't
+        // replaced by a guard above and nothing was added to the cart.
+        turnInfo.recommended =
+          Boolean(dataAvailabilityState.recommendGaveCandidates) &&
+          !cartMutationState.anyToolCalled &&
+          safeFinalText === finalText;
+      }
 
       pendingConversationHistory.append(senderId, { role: "user", content: userText });
       pendingConversationHistory.append(senderId, { role: "assistant", content: safeFinalText });
