@@ -310,6 +310,8 @@ export const config = Object.freeze({
   // "Message Nosh" button opens a chat with.
   publicSite: Object.freeze({
     whatsappNumber: publicWhatsappNumber,
+    // Until this is "true" the website's buttons say "Coming soon".
+    launched: process.env.NOSH_LAUNCHED === "true",
   }),
   rollout: Object.freeze({
     percent: readRolloutPercent(process.env.ROLLOUT_PERCENT),

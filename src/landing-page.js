@@ -15,8 +15,25 @@ function escapeHtml(text) {
 }
 
 // whatsappNumber: digits only, with country code (the wa.me format).
-export function buildLandingPageHtml({ whatsappNumber, year = new Date().getFullYear() }) {
+// launched: until Nosh is officially launched the buttons say "Coming soon"
+// and link nowhere, and the page never shows the WhatsApp number.
+export function buildLandingPageHtml({ whatsappNumber, launched = false, year = new Date().getFullYear() }) {
   const chatUrl = escapeHtml(`https://wa.me/${whatsappNumber}?text=${encodeURIComponent(DEFAULT_GREETING)}`);
+  const chatIcon =
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3C6.5 3 2 6.9 2 11.800c0 2.400 1.100 4.600 2.900 6.200L4 21.500l4.300-1.700c1.200.4 2.400.6 3.700.6 5.500 0 10-3.900 10-8.600S17.500 3 12 3z"/></svg>';
+  const comingSoon = (extraClass = "") =>
+    `<span class="button soon${extraClass}" role="button" aria-disabled="true">Coming soon</span>`;
+  const navButton = launched
+    ? `<a class="button small" href="${chatUrl}" target="_blank" rel="noopener">Order now</a>`
+    : comingSoon(" small");
+  const heroButton = launched
+    ? `<a class="button" href="${chatUrl}" target="_blank" rel="noopener">${chatIcon}Message Nosh on WhatsApp</a>`
+    : comingSoon();
+  const closingButton = launched
+    ? `<a class="button" href="${chatUrl}" target="_blank" rel="noopener">Message Nosh on WhatsApp</a>`
+    : comingSoon();
+  const closingHeading = launched ? "Hungry? Say hi." : "Launching soon.";
+  const closingLead = launched ? "Your next meal is one message away." : "Nosh is getting ready. Ordering opens on WhatsApp shortly.";
 
   return `<!doctype html>
 <html lang="en">
@@ -143,6 +160,9 @@ export function buildLandingPageHtml({ whatsappNumber, year = new Date().getFull
   }
   .button:hover { background: var(--accent-hover); text-decoration: none; }
   .button:active { transform: scale(0.98); }
+  .button.soon { cursor: default; opacity: 0.55; }
+  .button.soon:hover { background: var(--accent); box-shadow: none; }
+  .button.soon:active { transform: none; }
   .button.small { padding: 6px 14px; font-size: 12px; opacity: 1; color: var(--accent-text); }
   .button svg { width: 18px; height: 18px; fill: currentColor; flex: none; }
   .text-link { font-size: 19px; }
@@ -329,7 +349,7 @@ export function buildLandingPageHtml({ whatsappNumber, year = new Date().getFull
       <a href="#ease">Ease of use</a>
       <a href="#privacy">Privacy</a>
       <a href="#security">Security</a>
-      <a class="button small" href="${chatUrl}" target="_blank" rel="noopener">Order now</a>
+      ${navButton}
     </nav>
   </div>
   <div class="progress" aria-hidden="true"></div>
@@ -342,10 +362,7 @@ export function buildLandingPageHtml({ whatsappNumber, year = new Date().getFull
     <h1>Food, ordered<br><em>in a chat.</em></h1>
     <p class="lead">Tell Nosh what you feel like. It finds it on Swiggy, builds your cart and places the order, right inside WhatsApp.</p>
     <div class="hero-actions">
-      <a class="button" href="${chatUrl}" target="_blank" rel="noopener">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3C6.5 3 2 6.9 2 11.800c0 2.400 1.100 4.600 2.900 6.200L4 21.500l4.300-1.700c1.200.4 2.400.6 3.700.6 5.500 0 10-3.900 10-8.600S17.500 3 12 3z"/></svg>
-        Message Nosh on WhatsApp
-      </a>
+      ${heroButton}
       <a class="text-link" href="#how">See how it works</a>
     </div>
 
@@ -503,10 +520,10 @@ export function buildLandingPageHtml({ whatsappNumber, year = new Date().getFull
 
 <section class="center">
   <div class="wrap">
-    <h2 class="reveal">Hungry? Say hi.</h2>
-    <p class="lead reveal">Your next meal is one message away.</p>
+    <h2 class="reveal">${closingHeading}</h2>
+    <p class="lead reveal">${closingLead}</p>
     <div class="hero-actions reveal">
-      <a class="button" href="${chatUrl}" target="_blank" rel="noopener">Message Nosh on WhatsApp</a>
+      ${closingButton}
     </div>
   </div>
 </section>

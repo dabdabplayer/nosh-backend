@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { buildLandingPageHtml } from "../src/landing-page.js";
 
-const html = buildLandingPageHtml({ whatsappNumber: "919220133162", year: 2026 });
+const html = buildLandingPageHtml({ whatsappNumber: "919220133162", launched: true, year: 2026 });
 
 test("the landing page's main button opens a WhatsApp chat with Nosh's number", () => {
   const links = html.match(/href="https:\/\/wa\.me\/[^"]+"/g) ?? [];
@@ -38,7 +38,7 @@ test("the landing page's privacy and security claims match what Nosh does", () =
 });
 
 test("the WhatsApp number is escaped into the page", () => {
-  const odd = buildLandingPageHtml({ whatsappNumber: '1"><script>', year: 2026 });
+  const odd = buildLandingPageHtml({ whatsappNumber: '1"><script>', launched: true, year: 2026 });
   assert.doesNotMatch(odd, /wa\.me\/1"><script>/);
 });
 
@@ -65,4 +65,20 @@ test("the languages card lists the four supported languages and says more are co
     assert.match(html, new RegExp(`<span class="lang">${language}</span>`));
   }
   assert.match(html, /<span class="lang soon">\+ many more to come<\/span>/);
+});
+
+test("before launch every button says Coming soon and the page has no WhatsApp link or number", () => {
+  const prelaunch = buildLandingPageHtml({ whatsappNumber: "919220133162", year: 2026 });
+
+  assert.equal((prelaunch.match(/aria-disabled="true">Coming soon<\/span>/g) ?? []).length, 3);
+  assert.doesNotMatch(prelaunch, /wa\.me/);
+  assert.doesNotMatch(prelaunch, /919220133162/);
+  // No button is a link: the only things with the button style are the
+  // three "Coming soon" labels.
+  assert.doesNotMatch(prelaunch, /<a class="button/);
+  assert.doesNotMatch(prelaunch, /Order now/);
+  assert.match(prelaunch, /Launching soon\./);
+  // The rest of the page is unchanged.
+  assert.match(prelaunch, /href="\/privacy-policy"/);
+  assert.match(prelaunch, /<section id="features"/);
 });

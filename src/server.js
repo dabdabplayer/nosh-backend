@@ -65,7 +65,7 @@ import {
 } from "./whatsapp-webhook.js";
 
 const serviceName = "nosh-backend";
-const LANDING_PAGE_HTML = buildLandingPageHtml({ whatsappNumber: config.publicSite.whatsappNumber });
+const LANDING_PAGE_HTML = buildLandingPageHtml(config.publicSite);
 // The Nosh logo mark, used by the website (nav, chat avatar, browser icon).
 const LOGO_MARK_PNG = readFileSync(new URL("../public/nosh-mark.png", import.meta.url));
 const swiggyOAuthOrigin = new URL(config.swiggyOAuth.redirectUri).origin;

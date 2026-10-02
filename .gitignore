@@ -5,3 +5,5 @@ node_modules/
 npm-debug.log*
 graphify-out/
 data/
+site/
+.firebase/
