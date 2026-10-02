@@ -3,7 +3,9 @@ import test from "node:test";
 import {
   addToCart,
   applyCoupon,
+  autoPickOnlyRestaurant,
   buildReorderUsualReply,
+  changeAddress,
   checkout,
   findCoupons,
   findUsualOrder,
@@ -1387,6 +1389,7 @@ test("findCoupons lists each coupon's code as the title field", async () => {
   pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
 
   const client = fakeClient({
+    getFoodCart: async () => cartPayload({ items: [{ name: "Dosa", quantity: 1, total: 149 }] }),
     fetchFoodCoupons: async () =>
       payload({
         coupon_sections: [
@@ -1404,7 +1407,8 @@ test("findCoupons reports when there are none", async () => {
   const pendingCartSessions = new PendingCartSessions();
   pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1" });
 
-  const client = fakeClient({ fetchFoodCoupons: async () => payload({ coupon_sections: [] }) });
+  const client = fakeClient({ getFoodCart: async () => cartPayload({ items: [{ name: "Dosa", quantity: 1, total: 149 }] }),
+    fetchFoodCoupons: async () => payload({ coupon_sections: [] }) });
 
   const reply = await findCoupons({ senderId: "sender-1", swiggyFoodClient: client, pendingCartSessions });
 
@@ -1435,7 +1439,7 @@ test("applyCoupon never claims a discount when coupon_discount is 0 (suggested, 
   const reply = await applyCoupon({ senderId: "sender-1", couponCode: "SWIGGYIT", swiggyFoodClient: client, pendingCartSessions });
 
   assert.doesNotMatch(reply, /Applied/);
-  assert.match(reply, /isn't giving a discount/);
+  assert.match(reply, /didn't give a discount/);
 });
 
 test("applyCoupon degrades gracefully when the tool rejects the code", async () => {
@@ -2717,6 +2721,7 @@ test("findCoupons offers the first coupon that works on the cart, asks before ap
   pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", cartRestaurantId: "r-1" });
 
   const client = fakeClient({
+    getFoodCart: async () => cartPayload({ items: [{ name: "Dosa", quantity: 1, total: 149 }] }),
     fetchFoodCoupons: async () =>
       payload({
         coupon_sections: [
@@ -2754,7 +2759,8 @@ test("findCoupons says so when no coupon works on the cart, or one is already ap
     senderId: "sender-1",
     pendingCartSessions,
     swiggyFoodClient: fakeClient({
-      fetchFoodCoupons: async () =>
+      getFoodCart: async () => cartPayload({ items: [{ name: "Dosa", quantity: 1, total: 149 }] }),
+    fetchFoodCoupons: async () =>
         payload({ coupon_sections: [{ coupons: [{ title: "BIGSPEND", applicable: false, applicabilityStatus: "NOT_APPLICABLE" }] }] }),
     }),
   });
@@ -2766,7 +2772,8 @@ test("findCoupons says so when no coupon works on the cart, or one is already ap
     pendingCartSessions,
     lang: "hinglish",
     swiggyFoodClient: fakeClient({
-      fetchFoodCoupons: async () =>
+      getFoodCart: async () => cartPayload({ items: [{ name: "Dosa", quantity: 1, total: 149 }] }),
+    fetchFoodCoupons: async () =>
         payload({ coupon_sections: [{ coupons: [{ title: "SAVE10", applicable: true, applicabilityStatus: "APPLIED" }] }] }),
     }),
   });
@@ -2783,7 +2790,8 @@ test("findCoupons with showAll lists every coupon and uses a real code in its ex
     pendingCartSessions,
     showAll: true,
     swiggyFoodClient: fakeClient({
-      fetchFoodCoupons: async () =>
+      getFoodCart: async () => cartPayload({ items: [{ name: "Dosa", quantity: 1, total: 149 }] }),
+    fetchFoodCoupons: async () =>
         payload({ coupon_sections: [{ coupons: [{ title: "SAVE10", description: "10% off" }, { title: "FLAT20", description: "₹20 off" }] }] }),
     }),
   });
@@ -2831,7 +2839,8 @@ test("findCoupons with showAll remembers the listed coupons so they can be shown
     pendingCartSessions,
     showAll: true,
     swiggyFoodClient: fakeClient({
-      fetchFoodCoupons: async () =>
+      getFoodCart: async () => cartPayload({ items: [{ name: "Dosa", quantity: 1, total: 149 }] }),
+    fetchFoodCoupons: async () =>
         payload({ coupon_sections: [{ coupons: [{ title: "SAVE10", description: "10% off" }, { title: "FLAT20", subtitle: "₹20 off" }] }] }),
     }),
   });
@@ -2840,4 +2849,173 @@ test("findCoupons with showAll remembers the listed coupons so they can be shown
     { code: "SAVE10", description: "10% off" },
     { code: "FLAT20", description: "₹20 off" },
   ]);
+});
+
+// --- Flaws found by trying to break the live bot (2026-10-02) ---
+
+const TWO_ADDRESSES = payload({
+  addresses: [
+    { id: "addr-1", addressLine: "1 Main St", addressTag: "Home" },
+    { id: "addr-2", addressLine: "2 Other St", addressTag: "Work" },
+  ],
+  total: 2,
+});
+
+test("addToCart asks which address to use when none is chosen yet, instead of failing the restaurant lookup", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  const pendingAddressSelections = new PendingAddressSelections();
+  let searched = false;
+
+  const reply = await addToCart({
+    senderId: "sender-1",
+    query: "chicken biryani",
+    restaurantNameHint: "Test Kitchen Biryani House",
+    pendingCartSessions,
+    pendingAddressSelections,
+    swiggyFoodClient: fakeClient({
+      getAddresses: async () => TWO_ADDRESSES,
+      searchRestaurants: async () => {
+        searched = true;
+        return payload({ restaurants: [] });
+      },
+    }),
+  });
+
+  assert.match(reply, /which one should I use\?/);
+  assert.doesNotMatch(reply, /couldn't find a restaurant/);
+  assert.equal(searched, false);
+  assert.equal(pendingAddressSelections.peek("sender-1").kind, "add");
+  assert.equal(pendingAddressSelections.peek("sender-1").candidates.length, 2);
+});
+
+test("addToCart uses the only saved address without asking", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  const pendingAddressSelections = new PendingAddressSelections();
+  const searchedWith = [];
+
+  await addToCart({
+    senderId: "sender-1",
+    query: "chicken biryani",
+    pendingCartSessions,
+    pendingAddressSelections,
+    swiggyFoodClient: fakeClient({
+      searchMenu: async (params) => {
+        searchedWith.push(params.addressId);
+        return payload({ items: [] });
+      },
+    }),
+  });
+
+  assert.equal(pendingAddressSelections.peek("sender-1"), undefined);
+  assert.equal(pendingCartSessions.peek("sender-1").addressId, "addr-1");
+  assert.deepEqual([...new Set(searchedWith)], ["addr-1"]);
+});
+
+test("changeAddress re-asks which saved address to use, or says there is only one", async () => {
+  const pendingAddressSelections = new PendingAddressSelections();
+
+  const prompt = await changeAddress({
+    senderId: "sender-1",
+    pendingAddressSelections,
+    swiggyFoodClient: fakeClient({ getAddresses: async () => TWO_ADDRESSES }),
+  });
+  assert.match(prompt, /which one should I use\?/);
+  assert.equal(pendingAddressSelections.peek("sender-1").kind, "change");
+
+  const single = new PendingAddressSelections();
+  const only = await changeAddress({ senderId: "sender-1", pendingAddressSelections: single, swiggyFoodClient: fakeClient() });
+  assert.match(only, /^You have only one saved address \(/);
+  assert.equal(single.peek("sender-1"), undefined);
+});
+
+test("buildReorderUsualReply delivers to the address already chosen and reports a replaced cart", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", { addressId: "addr-2", restaurantId: "rest-9", cartRestaurantId: "rest-9" });
+  const ordersAddress = [];
+  const cartAddress = [];
+  const meta = {};
+
+  await buildReorderUsualReply({
+    senderId: "sender-1",
+    pendingCartSessions,
+    meta,
+    swiggyFoodClient: fakeClient({
+      getAddresses: async () => TWO_ADDRESSES,
+      getFoodOrders: async ({ addressId }) => {
+        ordersAddress.push(addressId);
+        return payload({ orders: [orderSummary({ orderId: "o2" }), orderSummary({ orderId: "o1" })] });
+      },
+      getFoodOrderDetails: async () => orderDetailsPayload(),
+      updateFoodCart: async (params) => {
+        cartAddress.push(params.addressId);
+        return cartPayload(cartData());
+      },
+    }),
+  });
+
+  assert.deepEqual(ordersAddress, ["addr-2"]);
+  assert.deepEqual(cartAddress, ["addr-2"]);
+  assert.equal(meta.replacedEarlierCart, true);
+});
+
+test("findCoupons says the cart is empty instead of offering a coupon for nothing", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", cartRestaurantId: "r-1" });
+  let couponsFetched = false;
+
+  const reply = await findCoupons({
+    senderId: "sender-1",
+    pendingCartSessions,
+    swiggyFoodClient: {
+      ...fakeClient(),
+      getFoodCart: async () => cartPayload({ items: [] }),
+      fetchFoodCoupons: async () => {
+        couponsFetched = true;
+        return payload({ coupon_sections: [{ coupons: [{ title: "SAVE10", applicable: true }] }] });
+      },
+    },
+  });
+
+  assert.match(reply, /Your cart is empty/);
+  assert.equal(couponsFetched, false);
+  assert.equal(takeOfferedCoupon({ senderId: "sender-1", pendingCartSessions }), undefined);
+});
+
+test("adding to the cart warns straight away when the total is over what Nosh can check out", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-pizza", restaurantName: "Fake Pizza Co", itemCandidates: [menuItem({})] });
+
+  const outcome = await resolvePendingCartCandidateReply({
+    message: message("1"),
+    pendingCartSessions,
+    swiggyFoodClient: fakeClient({ updateFoodCart: async () => cartPayload(cartData({ pricing: { item_total: 12450, to_pay: 13113 } })) }),
+  });
+
+  assert.match(outcome.replyText, /Heads up: Nosh can only check out carts up to ₹1000, and this one is ₹13113\./);
+
+  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-pizza", restaurantName: "Fake Pizza Co", itemCandidates: [menuItem({})] });
+  const normal = await resolvePendingCartCandidateReply({
+    message: message("1"),
+    pendingCartSessions,
+    swiggyFoodClient: fakeClient({ updateFoodCart: async () => cartPayload(cartData()) }),
+  });
+  assert.doesNotMatch(normal.replyText, /Heads up/);
+});
+
+test("autoPickOnlyRestaurant goes straight to the dishes when a search found one restaurant, and does nothing for several", async () => {
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", { addressId: "addr-1", searchTerm: "biryani", restaurantCandidates: [{ id: "r-1", name: "Biryani House" }] });
+  const client = fakeClient({ searchMenu: async () => payload({ items: [menuItem({ name: "Chicken Biryani", price: 249 })] }) });
+
+  const reply = await autoPickOnlyRestaurant({ senderId: "sender-1", swiggyFoodClient: client, pendingCartSessions });
+  assert.match(reply, /"biryani" at Biryani House/);
+  assert.match(reply, /1\. Chicken Biryani — ₹249/);
+  assert.equal(pendingCartSessions.peek("sender-1").restaurantId, "r-1");
+
+  pendingCartSessions.set("sender-1", {
+    addressId: "addr-1",
+    searchTerm: "biryani",
+    restaurantCandidates: [{ id: "r-1", name: "Biryani House" }, { id: "r-2", name: "Other" }],
+  });
+  assert.equal(await autoPickOnlyRestaurant({ senderId: "sender-1", swiggyFoodClient: client, pendingCartSessions }), undefined);
 });

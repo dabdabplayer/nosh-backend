@@ -5,6 +5,7 @@ import { resolvePendingAddressReply } from "./food-search-orchestrator.js";
 import {
   parseOrderConfirmationReply,
   applyCoupon,
+  autoPickOnlyRestaurant,
   takeOfferedCoupon,
   placeConfirmedOrder,
   resolvePendingCartCandidateReply,
@@ -13,6 +14,7 @@ import {
   beginPlacingOrder,
   expiredOptionReply,
   formatPlaceOrderCheck,
+  orderOptionsFor,
   replyOptionsFor,
   resolveTap,
   snapshotPromptState,
@@ -386,7 +388,14 @@ async function buildReplyText(incoming, turn = {}) {
   if (pendingConfirmation) {
     // Any other button tapped while an order summary is waiting gets the
     // same reminder a typed non-answer does.
-    return isTap ? orderConfirmationReprompt(lang) : buildOrderConfirmationReply(message, pendingConfirmation, lang);
+    if (isTap) {
+      turn.orderReprompt = true;
+      return orderConfirmationReprompt(lang);
+    }
+    // Anything typed that isn't a yes or no gets the reminder, with the
+    // order buttons again.
+    turn.orderReprompt = parseOrderConfirmationReply(message.text) === undefined;
+    return buildOrderConfirmationReply(message, pendingConfirmation, lang);
   }
 
   // Deterministic backstop, not the primary fix (see the system prompt's
@@ -472,7 +481,18 @@ async function buildReplyText(incoming, turn = {}) {
     };
 
     if (addressOutcome.handled) {
-      return recordTurn(addressOutcome.replyText ?? PLACEHOLDER_REPLY_TEXT);
+      // One restaurant matched the search: go straight to what it has.
+      const onlyRestaurant = await autoPickOnlyRestaurant({
+        senderId: message.from,
+        swiggyFoodClient,
+        pendingCartSessions,
+        lang,
+      });
+      return recordTurn(
+        onlyRestaurant && addressOutcome.addressConfirmation
+          ? `${addressOutcome.addressConfirmation}\n\n${onlyRestaurant}`
+          : (addressOutcome.replyText ?? PLACEHOLDER_REPLY_TEXT),
+      );
     }
 
     // "Best coupon I found... Should I apply it?" followed by a plain yes:
@@ -576,12 +596,10 @@ async function buildReply(message) {
   const before = snapshotPromptState(stores);
   const turn = {};
   const text = await buildReplyText(message, turn);
-  const options = replyOptionsFor({
-    before,
-    after: snapshotPromptState(stores),
-    lang: pendingLanguagePreference.get(message.from),
-    recommended: turn.recommended === true,
-  });
+  const lang = pendingLanguagePreference.get(message.from);
+  const options = turn.orderReprompt
+    ? orderOptionsFor(pendingOrderConfirmations.peek(message.from), lang)
+    : replyOptionsFor({ before, after: snapshotPromptState(stores), lang, recommended: turn.recommended === true });
   return { text, options };
 }
 

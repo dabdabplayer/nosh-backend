@@ -382,6 +382,25 @@ export async function resolvePendingAddressReply({
   // itself, now that pendingCartSessions.addressId is already set. pending.
   // craving is kept in the pending record (unused here) as a documented
   // upgrade path if this inference ever proves unreliable in practice.
+  // An explicit address change ends here, in code: handing the pick back to
+  // the agent made it call change_address again and re-ask (seen in testing).
+  if (pending.kind === "change") {
+    const hadCart = Boolean(pendingCartSessions?.peek(message.from)?.cartRestaurantId);
+    pendingCartSessions?.set(message.from, { addressId });
+    const next = hadCart
+      ? pick(lang, {
+          en: "Your earlier cart was for the other address, so it starts fresh. What would you like to order?",
+          hi: "आपकी पिछली कार्ट दूसरे पते के लिए थी, इसलिए नई कार्ट शुरू होगी। आप क्या ऑर्डर करना चाहेंगे?",
+          hinglish: "Aapki pichli cart doosre address ke liye thi, isliye nayi cart shuru hogi. Aap kya order karna chahenge?",
+        })
+      : pick(lang, {
+          en: "What would you like to order?",
+          hi: "आप क्या ऑर्डर करना चाहेंगे?",
+          hinglish: "Aap kya order karna chahenge?",
+        });
+    return { handled: true, replyText: `${addressConfirmation}\n\n${next}` };
+  }
+
   if (pending.kind !== "search") {
     pendingCartSessions?.set(message.from, { addressId });
     return { handled: false, addressConfirmation };
@@ -396,7 +415,7 @@ export async function resolvePendingAddressReply({
       pendingCartSessions,
       lang,
     );
-    return { handled: true, replyText: `${addressConfirmation}\n\n${replyText}` };
+    return { handled: true, replyText: `${addressConfirmation}\n\n${replyText}`, addressConfirmation };
   } catch (error) {
     console.error("Food search orchestration failed unexpectedly.", { name: error.name });
     return { handled: true, replyText: `${addressConfirmation}\n\n${GENERIC_FALLBACK_REPLY}` };

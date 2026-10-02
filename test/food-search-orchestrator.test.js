@@ -600,3 +600,31 @@ test("formatAddressConfirmation names the address in the user's language", () =>
   assert.equal(formatAddressConfirmation(home, "punjabi"), "📍 Theek aa, Home te delivery hovegi.");
   assert.equal(formatAddressConfirmation({ id: "addr-2", label: "2 Other St" }), "📍 Got it, delivering to 2 Other St.");
 });
+
+test("resolvePendingAddressReply finishes an address change in code and starts a fresh cart", async () => {
+  const pending = new PendingAddressSelections();
+  const pendingCartSessions = new PendingCartSessions();
+  pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", cartRestaurantId: "r-1" });
+  pending.set("sender-1", {
+    kind: "change",
+    candidates: [
+      { id: "addr-1", label: "Home — 1 Main St", tag: "Home" },
+      { id: "addr-2", label: "Work — 2 Other St", tag: "Work" },
+    ],
+  });
+
+  const outcome = await resolvePendingAddressReply({
+    message: message("Work"),
+    swiggyFoodClient: fakeSwiggyFoodClient({}),
+    pendingAddressSelections: pending,
+    pendingCartSessions,
+  });
+
+  assert.equal(outcome.handled, true);
+  assert.equal(
+    outcome.replyText,
+    "📍 Got it, delivering to Work.\n\nYour earlier cart was for the other address, so it starts fresh. What would you like to order?",
+  );
+  assert.deepEqual(pendingCartSessions.peek("sender-1"), { addressId: "addr-2" });
+  assert.equal(pending.peek("sender-1"), undefined);
+});

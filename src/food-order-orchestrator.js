@@ -244,7 +244,11 @@ function buildReorderCartItems(orderItems) {
 // Always shows the freshly-rebuilt cart's live total, never the old order's
 // orderTotal - Swiggy pricing/availability can differ since the order was
 // placed, and AGENTS.md forbids showing stale/fabricated pricing.
-export async function buildReorderUsualReply({ senderId, swiggyFoodClient, pendingCartSessions }) {
+// `meta.replacedEarlierCart` (optional output): set when the rebuilt cart
+// replaced one from a different restaurant, so the agent path can add its
+// fixed "your cart was replaced" note - same as add_to_cart.
+export async function buildReorderUsualReply({ senderId, swiggyFoodClient, pendingCartSessions, meta }) {
+  const sessionBefore = pendingCartSessions.peek(senderId);
   let addressResult;
   try {
     addressResult = await swiggyFoodClient.getAddresses({});
@@ -268,8 +272,10 @@ export async function buildReorderUsualReply({ senderId, swiggyFoodClient, pendi
   // meant to be a one-message shortcut, and that prompt-and-wait flow isn't
   // exported from that module. Falls back to the first saved address - a
   // scoped simplification, not an oversight. (get_addresses' documented
-  // response has no "default address" field to prefer instead.)
-  const addressId = addresses[0]?.id;
+  // response has no "default address" field to prefer instead.) An address
+  // already chosen in this conversation wins: seen live, a reorder used
+  // Home after the user had picked Work.
+  const addressId = sessionBefore?.addressId ?? addresses[0]?.id;
 
   if (!addressId) {
     return GENERIC_FALLBACK_REPLY;
@@ -347,6 +353,11 @@ export async function buildReorderUsualReply({ senderId, swiggyFoodClient, pendi
     addressId,
     cartRestaurantId: order.restaurant_id,
   });
+
+  if (meta) {
+    meta.replacedEarlierCart =
+      Boolean(sessionBefore?.cartRestaurantId) && sessionBefore.cartRestaurantId !== order.restaurant_id;
+  }
 
   return [`Reordering your usual from ${order.restaurant_name}:`, formatCartReply(cartData)].join("\n\n");
 }
@@ -1210,8 +1221,15 @@ async function addResolvedItemToCart({
       ? `Added ${menuItem.name} to a fresh cart at ${restaurantName} — your earlier cart's items were removed.`
       : `Added ${menuItem.name} to your cart.`;
 
+  // Checkout refuses carts over the limit; say so now rather than letting
+  // the user find out at checkout (seen live: 50 biryanis, ₹13,113).
+  const overLimitLine =
+    typeof cartData.pricing?.to_pay === "number" && cartData.pricing.to_pay > BUILDERS_CLUB_CART_CAP
+      ? `Heads up: Nosh can only check out carts up to ₹${BUILDERS_CLUB_CART_CAP}, and this one is ₹${cartData.pricing.to_pay}.`
+      : undefined;
+
   markData(true);
-  return [addedLine, formatCartReply(cartData)].join("\n\n");
+  return [addedLine, formatCartReply(cartData), overLimitLine].filter(Boolean).join("\n\n");
 }
 
 async function handleAddToCart({
@@ -1588,9 +1606,9 @@ async function handleApplyCoupon({ swiggyFoodClient, couponCode, addressId, lang
 
   if (!cartData || discount <= 0) {
     return pick(lang, {
-      en: `"${couponCode}" isn't giving a discount on this order right now — you may need to add more items to qualify.`,
-      hi: `"${couponCode}" पर अभी इस ऑर्डर में कोई छूट नहीं मिल रही — शायद इसके लिए आपको और आइटम जोड़ने होंगे।`,
-      hinglish: `"${couponCode}" par abhi is order mein koi discount nahi mil raha — shayad qualify karne ke liye aur items add karne honge.`,
+      en: `"${couponCode}" didn't give a discount on this order — the code may not be valid, or the order may not qualify for it.`,
+      hi: `"${couponCode}" से इस ऑर्डर पर कोई छूट नहीं मिली — हो सकता है कोड मान्य न हो, या यह ऑर्डर उसके लिए योग्य न हो।`,
+      hinglish: `"${couponCode}" se is order par koi discount nahi mila — ho sakta hai code valid na ho, ya order uske liye qualify na karta ho.`,
     });
   }
 
@@ -1979,6 +1997,27 @@ export async function resolvePendingCartCandidateReply({ message, swiggyFoodClie
   return { handled: false };
 }
 
+// When a search found exactly one open restaurant, asking "which one would
+// you like?" is a wasted step (seen live). This picks it, exactly as if the
+// user had replied "1", and returns what that shows: the matching dishes, or
+// the restaurant's menu. Returns undefined when there isn't exactly one.
+export async function autoPickOnlyRestaurant({ senderId, swiggyFoodClient, pendingCartSessions, lang = "en" }) {
+  const session = pendingCartSessions.peek(senderId);
+
+  if (session?.restaurantCandidates?.length !== 1 || session.itemCandidates) {
+    return undefined;
+  }
+
+  const outcome = await resolvePendingCartCandidateReply({
+    message: { from: senderId, text: "1" },
+    swiggyFoodClient,
+    pendingCartSessions,
+    lang,
+  });
+
+  return outcome.handled ? outcome.replyText : undefined;
+}
+
 // Everything below is a thin tool-facing wrapper: pulls this sender's
 // current cart session (addressId/restaurantId/restaurantName/
 // cartRestaurantId) and delegates to the deterministic Swiggy-calling
@@ -1989,7 +2028,67 @@ export async function resolvePendingCartCandidateReply({ message, swiggyFoodClie
 // placeConfirmedOrder above, only reachable via server.js's deterministic
 // YES/NO gate.
 
+// Looks up the sender's saved addresses and, when there is a real choice,
+// asks which one to use (the same question search and recommend ask).
+// Returns { addressId } when there is exactly one, { prompt } when the
+// question was asked, or { error } with a ready reply otherwise. `kind` is
+// stored with the open question; anything other than "search" means "record
+// the pick and hand back to the agent" (see resolvePendingAddressReply).
+async function resolveAddressOrAsk({ senderId, swiggyFoodClient, pendingAddressSelections, kind, lang }) {
+  let parsedAddresses;
+  try {
+    parsedAddresses = parseStructuredPayload(await swiggyFoodClient.getAddresses({}));
+  } catch {
+    return { error: GENERIC_FALLBACK_REPLY };
+  }
+
+  const addresses = Array.isArray(parsedAddresses?.addresses) ? parsedAddresses.addresses : undefined;
+
+  if (addresses === undefined) {
+    return { error: GENERIC_FALLBACK_REPLY };
+  }
+
+  if (addresses.length === 0) {
+    return { error: NO_SAVED_ADDRESS_REPLY };
+  }
+
+  if (addresses.length === 1 || !pendingAddressSelections) {
+    return addresses[0]?.id ? { addressId: addresses[0].id, addresses } : { error: GENERIC_FALLBACK_REPLY };
+  }
+
+  const candidates = addresses.slice(0, MAX_ADDRESS_CANDIDATES).map(toAddressCandidate);
+  pendingAddressSelections.set(senderId, { kind, candidates });
+  return { prompt: formatAddressPrompt(candidates, lang) };
+}
+
+// Tool implementation for the agent's `change_address` tool: re-asks which
+// saved address to deliver to. The pick replaces the session (a cart belongs
+// to one address), then the agent carries on. Before this, "change my
+// address to Home" was answered with "update it in the Swiggy app" even
+// though the user had Home saved.
+export async function changeAddress({ senderId, swiggyFoodClient, pendingAddressSelections, lang = "en" }) {
+  const outcome = await resolveAddressOrAsk({ senderId, swiggyFoodClient, pendingAddressSelections, kind: "change", lang });
+
+  if (outcome.prompt) {
+    return outcome.prompt;
+  }
+
+  if (outcome.error) {
+    return outcome.error;
+  }
+
+  const label = toAddressCandidate(outcome.addresses[0]).label;
+  return pick(lang, {
+    en: `You have only one saved address (${label}). Add another in the Swiggy app to switch.`,
+    hi: `आपका सिर्फ़ एक पता सेव है (${label})। बदलने के लिए Swiggy ऐप में दूसरा पता जोड़ें।`,
+    hinglish: `Aapka sirf ek address saved hai (${label}). Badalne ke liye Swiggy app mein doosra address add karein.`,
+  });
+}
+
 // `meta`: see addResolvedItemToCart's own comment above.
+// With no delivery address chosen yet (a first message, or after a restart),
+// asks for one first. Before this, the Swiggy lookups ran with no address,
+// failed, and the user was told the restaurant they named doesn't exist.
 export async function addToCart({
   senderId,
   query,
@@ -1997,8 +2096,20 @@ export async function addToCart({
   restaurantNameHint,
   swiggyFoodClient,
   pendingCartSessions,
+  pendingAddressSelections,
+  lang = "en",
   meta,
 }) {
+  if (!pendingCartSessions.peek(senderId)?.addressId) {
+    const outcome = await resolveAddressOrAsk({ senderId, swiggyFoodClient, pendingAddressSelections, kind: "add", lang });
+
+    if (outcome.prompt || outcome.error) {
+      return outcome.prompt ?? outcome.error;
+    }
+
+    pendingCartSessions.set(senderId, { ...pendingCartSessions.peek(senderId), addressId: outcome.addressId });
+  }
+
   const session = pendingCartSessions.peek(senderId);
   return handleAddToCart({
     senderId,
@@ -2304,6 +2415,20 @@ export async function findCoupons({ senderId, swiggyFoodClient, pendingCartSessi
 
   if (!session) {
     return noActiveOrderReply(lang);
+  }
+
+  // "Best coupon for this order" makes no sense with nothing in the cart
+  // (seen live after "remove everything"). The session can outlive the
+  // cart's contents, so check the real cart.
+  let cartItems;
+  try {
+    cartItems = unwrapCartPayload(await swiggyFoodClient.getFoodCart({ addressId: session.addressId }))?.items;
+  } catch {
+    return GENERIC_FALLBACK_REPLY;
+  }
+
+  if (!Array.isArray(cartItems) || cartItems.length === 0) {
+    return emptyCartReply(lang);
   }
 
   const { text, offeredCouponCode, listedCoupons } = await handleFindCoupons({

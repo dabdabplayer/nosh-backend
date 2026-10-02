@@ -83,6 +83,15 @@ function confirmButtons(nonce, lang) {
   };
 }
 
+// The order buttons for a waiting summary, e.g. to repeat them under the
+// "please reply YES or NO" reminder.
+export function orderOptionsFor(confirmation, lang = "en") {
+  if (!confirmation?.nonce) {
+    return undefined;
+  }
+  return confirmation.armed ? confirmButtons(confirmation.nonce, lang) : orderButtons(confirmation.nonce, lang);
+}
+
 // The second-step message after "Place order" is tapped: repeats what is
 // about to be ordered. Deliberately has no uppercase YES/NO wording.
 export function formatPlaceOrderCheck(confirmation, lang = "en") {

@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   beginPlacingOrder,
   formatPlaceOrderCheck,
+  orderOptionsFor,
   replyOptionsFor,
   resolveTap,
   snapshotPromptState,
@@ -278,4 +279,11 @@ test("every button label fits WhatsApp's 20-character limit in every language", 
       assert.ok([...button.title].length <= 20, `${lang}: ${button.title}`);
     }
   }
+});
+
+test("orderOptionsFor repeats the right order buttons for a waiting summary", () => {
+  assert.equal(orderOptionsFor(undefined), undefined);
+  assert.equal(orderOptionsFor({ cartId: 1 }), undefined);
+  assert.equal(orderOptionsFor({ nonce: "n1" }).buttons[0].id, "order:place:n1");
+  assert.equal(orderOptionsFor({ nonce: "n1", armed: true }).buttons[0].id, "order:confirm:n1");
 });

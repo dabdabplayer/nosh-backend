@@ -5,8 +5,10 @@ import { detectLanguage, pick } from "./language-preference.js";
 import { searchFood } from "./food-search-orchestrator.js";
 import {
   addToCart,
+  autoPickOnlyRestaurant,
   applyCoupon,
   buildReorderUsualReply,
+  changeAddress,
   checkout,
   findCoupons,
   recommendSimilar,
@@ -50,7 +52,7 @@ export const SYSTEM_PROMPT = [
   "Replies: plain, casual English only - a separate step translates to and from the user's language, so never translate yourself. Keep names, numbers and prices exactly as tools gave them. One to three short sentences, point first, no apologies or filler, no alternatives nobody asked for. Vary your wording.",
   "Numbered lists from search_food or search_menu: keep every number, name and price, in the same order. Never show recommend_similar's list.",
   "checkout, view_cart, view_orders, find_coupons, apply_coupon and get_restaurant_menu send their result straight to the user and end your turn - you never see it, so don't write anything around them. For cart contents, past orders, prices, coupons or a menu, call these instead of answering from memory or listing dishes yourself.",
-  "Orders: you cannot place or confirm an order; only the user replying YES to checkout's summary does that, outside your view. Never say or imply an order was placed, confirmed or is on its way, even after they say yes. For past orders or order status, call view_orders; for live tracking, suggest the Swiggy app. But when they want to order (\"order it\", \"checkout\", in any language), call checkout - never say ordering isn't possible here.",
+  "Orders: you cannot place or confirm an order; only the user replying YES to checkout's summary does that, outside your view. Never say or imply an order was placed, confirmed or is on its way, even after they say yes. For past orders or order status, call view_orders; for live tracking, suggest the Swiggy app. You can't cancel or refund a placed order: say so and give Swiggy customer care, 080-67466729. To deliver to a different saved address, call change_address - never say it can't be changed here. But when they want to order (\"order it\", \"checkout\", in any language), call checkout - never say ordering isn't possible here.",
   "Choosing: if they named a specific dish or restaurant, search and let them pick. If they only gave a mood, craving, diet or cuisine (\"something good\", \"kuch teekha\", \"something veg\", \"surprise me\"), you decide: call recommend_similar every time (never rely on memory), passing craving only if this message states one. If they named a cuisine or dish, pass exactly that (\"italian ho\" -> \"Italian\"), never a dish you guessed from it; only turn a mood into a concrete dish or cuisine (\"kuch teekha\" -> \"chicken tikka masala\"), never a bare word like \"spicy\". A diet on its own (\"something veg\") is not a craving: pass vegOnly and no craving. Respect any diet they state for the rest of the conversation: pass vegOnly to recommend_similar once they've asked for veg, never suggest an item that breaks it, and if no real item fits, say so. Present ONE real item - name, restaurant, price - that they haven't ordered before (never their last order), and ask if they want it. Call add_to_cart only after they agree, with that exact item and restaurant name - and when they agree and also ask for something more in the same message, add the agreed item first, then handle the rest.",
   "If they reject a pick, call recommend_similar again and choose an item you haven't offered anywhere in this conversation; if none is left, say so. Never claim their order history is thin unless recommend_similar said so this turn.",
 ].join(" ");
@@ -113,7 +115,11 @@ const SEARCH_FOOD_TOOL = Object.freeze({
     parameters: {
       type: "object",
       properties: {
-        query: { type: "string", description: "The dish, cuisine, or restaurant name, as the user said it." },
+        query: {
+          type: "string",
+          description:
+            "ONE dish, cuisine or restaurant name, as the user said it - never a dish and a restaurant together. When they name both (\"X from Y\"), call add_to_cart with restaurantName instead.",
+        },
       },
       required: ["query"],
     },
@@ -142,7 +148,7 @@ const ADD_TO_CART_TOOL = Object.freeze({
   function: {
     name: "add_to_cart",
     description:
-      "Add a dish to the user's cart. Uses the restaurant already established in this conversation unless restaurantName names a different one.",
+      "Add a dish to the user's cart. Uses the restaurant already established in this conversation unless restaurantName names a different one. Works before any search too. If no delivery address is chosen yet, the user is asked which one and nothing is added - call it again after they answer.",
     parameters: {
       type: "object",
       properties: {
@@ -267,6 +273,16 @@ const REORDER_USUAL_TOOL = Object.freeze({
   },
 });
 
+const CHANGE_ADDRESS_TOOL = Object.freeze({
+  type: "function",
+  function: {
+    name: "change_address",
+    description:
+      "Switch the delivery address to another one saved in the user's Swiggy account. Asks the user which saved address to use - its result goes straight to the user. A cart belongs to one address, so the cart starts fresh afterwards.",
+    parameters: { type: "object", properties: {} },
+  },
+});
+
 const RECOMMEND_SIMILAR_TOOL = Object.freeze({
   type: "function",
   function: {
@@ -302,6 +318,7 @@ const TOOLS = Object.freeze([
   APPLY_COUPON_TOOL,
   CHECKOUT_TOOL,
   REORDER_USUAL_TOOL,
+  CHANGE_ADDRESS_TOOL,
   RECOMMEND_SIMILAR_TOOL,
 ]);
 
@@ -391,7 +408,14 @@ async function executeTool(name, args, ctx) {
           lang,
         );
         const addressPromptAfter = pendingAddressSelections.peek(senderId);
-        return { text, terminal: Boolean(addressPromptAfter) && addressPromptAfter !== addressPromptBefore };
+        if (addressPromptAfter && addressPromptAfter !== addressPromptBefore) {
+          return { text, terminal: true };
+        }
+
+        // Exactly one restaurant matched: skip "which one?" and go straight
+        // to what it has.
+        const onlyRestaurant = await autoPickOnlyRestaurant({ senderId, swiggyFoodClient, pendingCartSessions });
+        return { text: onlyRestaurant ?? text, terminal: false };
       }
 
       case "search_menu": {
@@ -431,6 +455,7 @@ async function executeTool(name, args, ctx) {
 
       case "add_to_cart": {
         const meta = {};
+        const addressPromptBefore = pendingAddressSelections.peek(senderId);
         const text = await addToCart({
           senderId,
           query: args.query,
@@ -438,8 +463,17 @@ async function executeTool(name, args, ctx) {
           restaurantNameHint: typeof args.restaurantName === "string" ? args.restaurantName : undefined,
           swiggyFoodClient,
           pendingCartSessions,
+          pendingAddressSelections,
+          lang,
           meta,
         });
+
+        // No address chosen yet: addToCart asked which one to use. That
+        // question goes straight to the user, like search_food's.
+        const addressPromptAfter = pendingAddressSelections.peek(senderId);
+        if (addressPromptAfter && addressPromptAfter !== addressPromptBefore) {
+          return { text, terminal: true };
+        }
 
         // Structural signal for cartMutationState (see its own comment in
         // runAgentTurn) instead of trusting the agent's own free-text claim
@@ -540,8 +574,30 @@ async function executeTool(name, args, ctx) {
           terminal: TERMINAL_TOOLS.has(name),
         };
 
-      case "reorder_usual":
-        return { text: await buildReorderUsualReply({ senderId, swiggyFoodClient, pendingCartSessions }), terminal: false };
+      case "reorder_usual": {
+        const meta = {};
+        const text = await buildReorderUsualReply({ senderId, swiggyFoodClient, pendingCartSessions, meta });
+
+        // Same fixed "your cart was replaced" note add_to_cart gets.
+        if (meta.replacedEarlierCart && cartMutationState) {
+          cartMutationState.replacedEarlierCart = true;
+          return {
+            text: `${text}\n\n(The cart held items from a different restaurant, so those were removed first. Nosh tells the user this itself - don't mention it.)`,
+            terminal: false,
+          };
+        }
+
+        return { text, terminal: false };
+      }
+
+      case "change_address": {
+        const addressPromptBefore = pendingAddressSelections.peek(senderId);
+        const text = await changeAddress({ senderId, swiggyFoodClient, pendingAddressSelections, lang });
+        const addressPromptAfter = pendingAddressSelections.peek(senderId);
+        // Always the tool's own words: either the address question or the
+        // "only one saved address" answer.
+        return { text, terminal: true, askedAddress: Boolean(addressPromptAfter) && addressPromptAfter !== addressPromptBefore };
+      }
 
       case "recommend_similar": {
         // Same before/after pendingAddressSelections check as search_food
