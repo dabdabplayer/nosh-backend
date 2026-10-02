@@ -667,6 +667,8 @@ function replyOutcome(replyText) {
   return Object.values(AGENT_TROUBLE_REPLY).includes(replyText) ? "trouble" : "reply";
 }
 
+const READ_RECEIPT_WAIT_MS = 1500;
+
 async function replyToIncomingTextMessages(messages) {
   if (!config.whatsapp.sendEnabled || messages.length === 0) {
     return;
@@ -687,7 +689,7 @@ async function replyToIncomingTextMessages(messages) {
 
       // Blue ticks and "typing…" straight away, while the reply is being
       // built. Best-effort: a failure here never holds up the reply.
-      sendReadReceipt({
+      const receipt = sendReadReceipt({
         accessToken: config.whatsapp.accessToken,
         apiVersion: config.whatsapp.apiVersion,
         phoneNumberId: message.phoneNumberId,
@@ -699,12 +701,18 @@ async function replyToIncomingTextMessages(messages) {
         });
 
       try {
+        const reply = await buildReplyAndLog(message);
+        // A reply built in code (an address pick, a cart view) can be ready
+        // before Meta has processed the read receipt. Sent in that order, the
+        // "typing…" bubble lands after the reply it was meant to precede. So
+        // the reply waits for the receipt, but never more than a moment.
+        await Promise.race([receipt, new Promise((resolve) => setTimeout(resolve, READ_RECEIPT_WAIT_MS))]);
         await sendReply({
           accessToken: config.whatsapp.accessToken,
           apiVersion: config.whatsapp.apiVersion,
           phoneNumberId: message.phoneNumberId,
           to: message.from,
-          ...(await buildReplyAndLog(message)),
+          ...reply,
         });
       } catch (error) {
         console.error("Failed to send WhatsApp reply.", { name: error.name, message: error.message });
