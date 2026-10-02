@@ -82,3 +82,15 @@ test("before launch every button says Coming soon and the page has no WhatsApp l
   assert.match(prelaunch, /href="\/privacy-policy"/);
   assert.match(prelaunch, /<section id="features"/);
 });
+
+test("the page says, prominently and accurately, that Nosh is free for the user", () => {
+  // A full-width band straight after the hero, before "How it works".
+  const freeAt = html.indexOf('<section id="free"');
+  assert.ok(freeAt > html.indexOf('class="hero"') && freeAt < html.indexOf('<section id="how"'));
+  assert.match(html, /<h2 id="free-heading" class="reveal">Completely free\.<\/h2>/);
+  assert.match(html, /Nosh charges you nothing\. No fees\. No markup\. No subscription\./);
+  // Free means Nosh's own charges: the food itself is still paid for.
+  assert.match(html, /You pay only for your food, at the same prices Swiggy shows you\./);
+  assert.match(html, /<strong>Completely free to use\.<\/strong> You only pay for your food\./);
+  assert.match(html, /<div class="num">₹0<\/div><p>charged by Nosh<\/p>/);
+});

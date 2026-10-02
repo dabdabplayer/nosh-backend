@@ -223,6 +223,15 @@ export function buildLandingPageHtml({ whatsappNumber, launched = false, year = 
   .lang { background: var(--card); border-radius: 980px; padding: 7px 14px; font-size: 15px; }
   .lang.soon { background: transparent; border: 1px dashed var(--muted); color: var(--muted); padding: 6px 14px; }
 
+  /* Free: the one thing that should be impossible to miss. A full-width
+     lime band straight after the hero. */
+  .hero-note { margin-top: 22px; font-size: 17px; color: var(--muted); }
+  .hero-note strong { color: var(--text); font-weight: 600; }
+  .free { background: var(--lime); color: var(--brand); padding: clamp(64px, 10vw, 120px) 0; }
+  .free h2 { font-size: clamp(54px, 13vw, 168px); font-weight: 800; line-height: 0.95; letter-spacing: -0.05em; }
+  .free-lead { font-size: clamp(22px, 3.4vw, 40px); font-weight: 700; line-height: 1.15; letter-spacing: -0.03em; margin-top: 24px; }
+  .free-sub { font-size: clamp(17px, 2vw, 21px); margin-top: 14px; opacity: 0.8; }
+
   /* Ease */
   .facts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-top: 56px; }
   .fact .num { color: var(--link); font-size: clamp(56px, 9vw, 96px); font-weight: 600; letter-spacing: -0.04em; line-height: 1; }
@@ -328,6 +337,7 @@ export function buildLandingPageHtml({ whatsappNumber, launched = false, year = 
       .grid > :nth-child(5) { --i: 2; }
 
       /* The phone drifts back as the hero scrolls away. */
+      .free h2.reveal { animation-name: pop; animation-range: entry 0% cover 35%; }
       .phone-wrap { animation: drift linear both; animation-timeline: scroll(root); animation-range: 0 720px; }
       .progress { animation: progress linear both; animation-timeline: scroll(root); }
     }
@@ -365,6 +375,7 @@ export function buildLandingPageHtml({ whatsappNumber, launched = false, year = 
       ${heroButton}
       <a class="text-link" href="#how">See how it works</a>
     </div>
+    <p class="hero-note"><strong>Completely free to use.</strong> You only pay for your food.</p>
 
     <div class="phone-wrap">
     <div class="phone" role="img" aria-label="Example WhatsApp conversation with Nosh: a request for vegetarian food, a recommendation with buttons, and the item added to the cart.">
@@ -392,6 +403,14 @@ export function buildLandingPageHtml({ whatsappNumber, launched = false, year = 
       <p class="caption">Example conversation. Real prices, ratings and delivery times come from Swiggy.</p>
     </div>
     </div>
+  </div>
+</section>
+
+<section id="free" class="free center" aria-labelledby="free-heading">
+  <div class="wrap">
+    <h2 id="free-heading" class="reveal">Completely free.</h2>
+    <p class="free-lead reveal">Nosh charges you nothing. No fees. No markup. No subscription.</p>
+    <p class="free-sub reveal">You pay only for your food, at the same prices Swiggy shows you.</p>
   </div>
 </section>
 
@@ -461,7 +480,7 @@ export function buildLandingPageHtml({ whatsappNumber, launched = false, year = 
     <p class="lead reveal">If you can send a WhatsApp message, you can order with Nosh.</p>
     <div class="facts">
       <div class="fact reveal"><div class="num">0</div><p>apps to install</p></div>
-      <div class="fact reveal"><div class="num">1</div><p>chat for everything</p></div>
+      <div class="fact reveal"><div class="num">₹0</div><p>charged by Nosh</p></div>
       <div class="fact reveal"><div class="num">4</div><p>languages understood</p></div>
     </div>
   </div>
