@@ -87,7 +87,8 @@ test("the page says, prominently and accurately, that Nosh is free for the user"
   // A full-width band straight after the hero, before "How it works".
   const freeAt = html.indexOf('<section id="free"');
   assert.ok(freeAt > html.indexOf('class="hero"') && freeAt < html.indexOf('<section id="how"'));
-  assert.match(html, /<h2 id="free-heading" class="reveal">Completely free\.<\/h2>/);
+  // "completely" small and lowercase, "FREE" as the stamp.
+  assert.match(html, /<h2 id="free-heading" class="reveal"><span class="free-word">completely<\/span> <span class="stamp">FREE<\/span><\/h2>/);
   assert.match(html, /Nosh charges you nothing\. No fees\. No markup\. No subscription\./);
   // Free means Nosh's own charges: the food itself is still paid for.
   assert.match(html, /You pay only for your food, at the same prices Swiggy shows you\./);

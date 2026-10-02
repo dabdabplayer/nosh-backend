@@ -228,8 +228,22 @@ export function buildLandingPageHtml({ whatsappNumber, launched = false, year = 
   .hero-note { margin-top: 22px; font-size: 17px; color: var(--muted); }
   .hero-note strong { color: var(--text); font-weight: 600; }
   .free { background: var(--lime); color: var(--brand); padding: clamp(64px, 10vw, 120px) 0; }
-  .free h2 { font-size: clamp(54px, 13vw, 168px); font-weight: 800; line-height: 0.95; letter-spacing: -0.05em; }
-  .free-lead { font-size: clamp(22px, 3.4vw, 40px); font-weight: 700; line-height: 1.15; letter-spacing: -0.03em; margin-top: 24px; }
+  .free h2 { display: flex; flex-direction: column; align-items: center; gap: clamp(10px, 1.6vw, 20px); }
+  .free-word { font-size: clamp(24px, 3.6vw, 44px); font-weight: 600; letter-spacing: -0.02em; text-transform: lowercase; }
+  /* FREE, as a rubber stamp: heavy capitals in a double frame, pressed on at
+     an angle, with a little ink missing here and there. */
+  .stamp {
+    position: relative; display: inline-block;
+    font-size: clamp(88px, 20vw, 240px); font-weight: 900; line-height: 0.86;
+    letter-spacing: 0.05em; text-transform: uppercase;
+    padding: 0.14em 0.2em 0.1em 0.25em;
+    border: 0.065em solid currentColor; border-radius: 0.13em;
+    rotate: -7deg;
+    -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='300'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.55' numOctaves='3' seed='7'/%3E%3CfeColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 -3.4 2.75'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='300'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.55' numOctaves='3' seed='7'/%3E%3CfeColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 -3.4 2.75'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+  .stamp::after { content: ""; position: absolute; inset: 0.045em; border: 0.02em solid currentColor; border-radius: 0.085em; }
+  .free-lead { font-size: clamp(22px, 3.4vw, 40px); font-weight: 700; line-height: 1.15; letter-spacing: -0.03em; margin-top: clamp(36px, 5vw, 60px); }
   .free-sub { font-size: clamp(17px, 2vw, 21px); margin-top: 14px; opacity: 0.8; }
 
   /* Ease */
@@ -276,6 +290,7 @@ export function buildLandingPageHtml({ whatsappNumber, launched = false, year = 
   @keyframes dot { 0%, 60%, 100% { transform: none; opacity: 0.45; } 30% { transform: translateY(-3px); opacity: 1; } }
   @keyframes drift { to { transform: translateY(70px) scale(0.965); } }
   @keyframes progress { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+  @keyframes stamp { 0% { opacity: 0; scale: 1.9; } 70% { opacity: 1; scale: 0.96; } 100% { opacity: 1; scale: 1; } }
   @keyframes float { 0%, 100% { translate: 0 0; } 50% { translate: 0 -6px; } }
 
   /* Lime underline that draws itself under "in a chat." */
@@ -337,7 +352,8 @@ export function buildLandingPageHtml({ whatsappNumber, launched = false, year = 
       .grid > :nth-child(5) { --i: 2; }
 
       /* The phone drifts back as the hero scrolls away. */
-      .free h2.reveal { animation-name: pop; animation-range: entry 0% cover 35%; }
+      /* The stamp comes down onto the page as it scrolls into view. */
+      .stamp { animation: stamp linear both; animation-timeline: view(); animation-range: entry 10% cover 32%; }
       .phone-wrap { animation: drift linear both; animation-timeline: scroll(root); animation-range: 0 720px; }
       .progress { animation: progress linear both; animation-timeline: scroll(root); }
     }
@@ -408,7 +424,7 @@ export function buildLandingPageHtml({ whatsappNumber, launched = false, year = 
 
 <section id="free" class="free center" aria-labelledby="free-heading">
   <div class="wrap">
-    <h2 id="free-heading" class="reveal">Completely free.</h2>
+    <h2 id="free-heading" class="reveal"><span class="free-word">completely</span> <span class="stamp">FREE</span></h2>
     <p class="free-lead reveal">Nosh charges you nothing. No fees. No markup. No subscription.</p>
     <p class="free-sub reveal">You pay only for your food, at the same prices Swiggy shows you.</p>
   </div>
