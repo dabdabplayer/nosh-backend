@@ -506,6 +506,7 @@ async function buildReplyText(incoming, turn = {}) {
       : (parseOrderConfirmationReply(message.text) === "confirm" ? offeredCoupon : undefined);
 
     if (couponToApply) {
+      turn.cartShown = true;
       return recordTurn(
         await applyCoupon({
           senderId: message.from,
@@ -530,6 +531,8 @@ async function buildReplyText(incoming, turn = {}) {
     });
 
     if (candidateOutcome.handled) {
+      // Picking a dish off a numbered list adds it to the cart.
+      turn.cartShown = true;
       return recordTurn(candidateOutcome.replyText ?? PLACEHOLDER_REPLY_TEXT);
     }
 
@@ -599,7 +602,13 @@ async function buildReply(message) {
   const lang = pendingLanguagePreference.get(message.from);
   const options = turn.orderReprompt
     ? orderOptionsFor(pendingOrderConfirmations.peek(message.from), lang)
-    : replyOptionsFor({ before, after: snapshotPromptState(stores), lang, recommended: turn.recommended === true });
+    : replyOptionsFor({
+        before,
+        after: snapshotPromptState(stores),
+        lang,
+        recommended: turn.recommended === true,
+        cartShown: turn.cartShown === true,
+      });
   return { text, options };
 }
 

@@ -997,6 +997,7 @@ test("showRestaurantMenu resolves a named restaurant from search_food's candidat
     restaurantId: "r-sushi",
     restaurantName: "Sushi Central (Mock)",
     cartRestaurantId: "r-old",
+    menuItems: [{ id: "i-1", name: "Miso Ramen", price: 329 }],
   });
 });
 

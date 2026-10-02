@@ -28,6 +28,11 @@ const ORDER_CONFIRM_PREFIX = "order:confirm:";
 const ORDER_CANCEL_PREFIX = "order:cancel:";
 const COUPON_APPLY_PREFIX = "coupon:apply:";
 const COUPON_ALL = "coupon:all";
+const MENU_PREFIX = "menu:";
+const CART_CHECKOUT = "cart:checkout";
+const CART_VIEW = "cart:view";
+const CART_COUPONS = "cart:coupons";
+const MAX_LIST_ROWS = 10;
 const RECOMMEND_ADD = "rec:add";
 const RECOMMEND_OTHER = "rec:other";
 
@@ -54,6 +59,7 @@ export function snapshotPromptState({ senderId, pendingAddressSelections, pendin
     confirmation: pendingOrderConfirmations.peek(senderId),
     offeredCouponCode: session?.offeredCouponCode,
     listedCoupons: session?.listedCoupons,
+    menuItems: session?.menuItems,
     restaurantCandidates: session?.restaurantCandidates,
     itemCandidates: session?.itemCandidates,
   };
@@ -108,8 +114,10 @@ export function formatPlaceOrderCheck(confirmation, lang = "en") {
 
 // Which buttons or list go with the reply just built. `before` and `after`
 // are snapshotPromptState results; `recommended` is true when the agent just
-// presented a recommendation. Returns undefined for a plain text reply.
-export function replyOptionsFor({ before, after, lang = "en", recommended = false }) {
+// presented a recommendation; `cartShown` when the reply is about the cart
+// (an item added, the cart shown, a coupon applied). Returns undefined for a
+// plain text reply.
+export function replyOptionsFor({ before, after, lang = "en", recommended = false, cartShown = false }) {
   const confirmation = after.confirmation;
   if (confirmation && confirmation !== before.confirmation && confirmation.nonce) {
     return confirmation.armed ? confirmButtons(confirmation.nonce, lang) : orderButtons(confirmation.nonce, lang);
@@ -197,6 +205,32 @@ export function replyOptionsFor({ before, after, lang = "en", recommended = fals
     };
   }
 
+  // A restaurant's menu: each row adds that dish. WhatsApp lists hold ten
+  // rows; a longer menu shows the first ten and the rest are asked for by name.
+  if (Array.isArray(after.menuItems) && after.menuItems !== before.menuItems && after.menuItems.length > 0) {
+    return {
+      list: {
+        button: pick(lang, { en: "Add a dish", hi: "डिश जोड़ें", hinglish: "Dish add karein" }),
+        rows: after.menuItems.slice(0, MAX_LIST_ROWS).map((item, index) => ({
+          id: `${MENU_PREFIX}${item.id ?? `#${index}`}`,
+          title: item.name,
+          ...(typeof item.price === "number" ? { description: `₹${item.price}` } : {}),
+        })),
+      },
+    };
+  }
+
+  // After the cart changes or is shown: the usual next steps.
+  if (cartShown && after.session?.cartRestaurantId) {
+    return {
+      buttons: [
+        { id: CART_CHECKOUT, title: pick(lang, { en: "Checkout", hi: "चेकआउट", hinglish: "Checkout" }) },
+        { id: CART_VIEW, title: pick(lang, { en: "View cart", hi: "कार्ट देखें", hinglish: "Cart dekhein" }) },
+        { id: CART_COUPONS, title: pick(lang, { en: "Coupons", hi: "कूपन", hinglish: "Coupons" }) },
+      ],
+    };
+  }
+
   if (recommended) {
     return {
       buttons: [
@@ -277,6 +311,28 @@ export function resolveTap({ replyId, senderId, pendingAddressSelections, pendin
     const candidates = session?.restaurantCandidates ?? [];
     const index = candidates.findIndex((restaurant) => restaurant.id === id.slice(RESTAURANT_PREFIX.length));
     return index === -1 ? { kind: "expired" } : { kind: "text", text: String(index + 1), forAgent: false };
+  }
+
+  // A dish on a menu Nosh showed: add it, through the agent (which resolves
+  // sizes and add-ons and replies in the user's language). Only for the menu
+  // currently on record, so an old menu's rows can't add from another
+  // restaurant.
+  if (id.startsWith(MENU_PREFIX)) {
+    const items = session?.menuItems ?? [];
+    const item = items.find((candidate, index) => String(candidate.id ?? `#${index}`) === id.slice(MENU_PREFIX.length));
+    return item && session.restaurantName
+      ? { kind: "text", text: `Add ${item.name} from ${session.restaurantName} to my cart.`, forAgent: true }
+      : { kind: "expired" };
+  }
+
+  if (id === CART_CHECKOUT) {
+    return { kind: "text", text: "Checkout.", forAgent: true };
+  }
+  if (id === CART_VIEW) {
+    return { kind: "text", text: "Show my cart.", forAgent: true };
+  }
+  if (id === CART_COUPONS) {
+    return { kind: "text", text: "Any coupons?", forAgent: true };
   }
 
   // Quick replies: the agent picked the dish, so code can't act on these

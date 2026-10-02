@@ -2268,13 +2268,19 @@ export async function showRestaurantMenu({ senderId, restaurantName, swiggyFoodC
   // lists are dropped so a bare "2" can't be resolved against a stale
   // restaurant/item list by resolvePendingCartCandidateReply; cartRestaurantId
   // is kept so add_to_cart only flushes the cart on a genuine restaurant switch.
-  const { restaurantCandidates, itemCandidates, searchTerm, ...rest } = session;
-  pendingCartSessions.set(senderId, { ...rest, restaurantId, restaurantName: displayName });
+  const shown = inStockItems.slice(0, MAX_MENU_ITEMS);
+  // menuItems lets the menu be shown as tappable rows (interactive-replies.js).
+  const { restaurantCandidates, itemCandidates, searchTerm, menuItems, ...rest } = session;
+  pendingCartSessions.set(senderId, {
+    ...rest,
+    restaurantId,
+    restaurantName: displayName,
+    menuItems: shown.map((item) => ({ id: item.id, name: item.name, price: item.price })),
+  });
   if (meta) {
     meta.shown = true;
   }
 
-  const shown = inStockItems.slice(0, MAX_MENU_ITEMS);
   const lines = shown.map((item, index) => {
     const price = typeof item.price === "number" ? ` — ₹${item.price}` : "";
     return `${index + 1}. ${item.name}${price}`;

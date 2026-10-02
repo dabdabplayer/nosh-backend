@@ -287,3 +287,55 @@ test("orderOptionsFor repeats the right order buttons for a waiting summary", ()
   assert.equal(orderOptionsFor({ nonce: "n1" }).buttons[0].id, "order:place:n1");
   assert.equal(orderOptionsFor({ nonce: "n1", armed: true }).buttons[0].id, "order:confirm:n1");
 });
+
+test("a restaurant menu becomes tappable rows that add the dish through the agent", () => {
+  const s = stores();
+  s.pendingCartSessions.set("sender-1", { addressId: "addr-1" });
+  const menuItems = Array.from({ length: 12 }, (_, n) => ({ id: `i-${n + 1}`, name: `Dish ${n + 1}`, price: 100 + n }));
+  const options = optionsAfter(s, () =>
+    s.pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", restaurantName: "Sushi Central", menuItems }),
+  );
+
+  assert.equal(options.list.button, "Add a dish");
+  assert.equal(options.list.rows.length, 10);
+  assert.deepEqual(options.list.rows[0], { id: "menu:i-1", title: "Dish 1", description: "₹100" });
+
+  assert.deepEqual(resolveTap({ ...s, replyId: "menu:i-2" }), {
+    kind: "text",
+    text: "Add Dish 2 from Sushi Central to my cart.",
+    forAgent: true,
+  });
+  // A row from a menu that is no longer the one on record.
+  assert.deepEqual(resolveTap({ ...s, replyId: "menu:i-99" }), { kind: "expired" });
+
+  // The same menu carried along on a later session write isn't shown again.
+  assert.equal(
+    optionsAfter(s, () => s.pendingCartSessions.set("sender-1", { ...s.pendingCartSessions.peek("sender-1"), cartRestaurantId: "r-1" })),
+    undefined,
+  );
+});
+
+test("a reply about the cart gets Checkout, View cart and Coupons buttons when there is a cart", () => {
+  const s = stores();
+  s.pendingCartSessions.set("sender-1", { addressId: "addr-1", restaurantId: "r-1", cartRestaurantId: "r-1" });
+  const state = snapshotPromptState(s);
+
+  assert.deepEqual(replyOptionsFor({ before: state, after: state, cartShown: true, lang: "hinglish" }), {
+    buttons: [
+      { id: "cart:checkout", title: "Checkout" },
+      { id: "cart:view", title: "Cart dekhein" },
+      { id: "cart:coupons", title: "Coupons" },
+    ],
+  });
+  assert.equal(replyOptionsFor({ before: state, after: state }), undefined);
+
+  // No cart yet: no cart buttons.
+  const empty = stores();
+  empty.pendingCartSessions.set("sender-1", { addressId: "addr-1" });
+  const emptyState = snapshotPromptState(empty);
+  assert.equal(replyOptionsFor({ before: emptyState, after: emptyState, cartShown: true }), undefined);
+
+  assert.deepEqual(resolveTap({ ...s, replyId: "cart:checkout" }), { kind: "text", text: "Checkout.", forAgent: true });
+  assert.deepEqual(resolveTap({ ...s, replyId: "cart:view" }), { kind: "text", text: "Show my cart.", forAgent: true });
+  assert.deepEqual(resolveTap({ ...s, replyId: "cart:coupons" }), { kind: "text", text: "Any coupons?", forAgent: true });
+});

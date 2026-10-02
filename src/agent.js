@@ -954,6 +954,9 @@ export async function runAgentTurn({
           Boolean(dataAvailabilityState.recommendGaveCandidates) &&
           !cartMutationState.anyToolCalled &&
           safeFinalText === finalText;
+        // The cart was changed this turn: the reply gets Checkout / View
+        // cart / Coupons buttons.
+        turnInfo.cartShown = cartMutationState.sawSuccess;
       }
 
       pendingConversationHistory.append(senderId, { role: "user", content: userText });
@@ -1015,6 +1018,9 @@ export async function runAgentTurn({
 
       if (result.terminal && terminalResultText === undefined) {
         terminalResultText = result.text;
+        if (turnInfo && (toolCall.function.name === "view_cart" || toolCall.function.name === "apply_coupon")) {
+          turnInfo.cartShown = true;
+        }
       }
     }
 
