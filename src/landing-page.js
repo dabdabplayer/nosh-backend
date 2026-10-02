@@ -201,6 +201,7 @@ export function buildLandingPageHtml({ whatsappNumber, year = new Date().getFull
   .card .big { font-size: clamp(28px, 3.6vw, 40px); line-height: 1.1; font-weight: 600; letter-spacing: -0.03em; }
   .langs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 22px; }
   .lang { background: var(--card); border-radius: 980px; padding: 7px 14px; font-size: 15px; }
+  .lang.soon { background: transparent; border: 1px dashed var(--muted); color: var(--muted); padding: 6px 14px; }
 
   /* Ease */
   .facts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-top: 56px; }
@@ -410,7 +411,7 @@ export function buildLandingPageHtml({ whatsappNumber, year = new Date().getFull
       <div class="card reveal">
         <h3>Speaks your language.</h3>
         <p>Write the way you talk. Nosh replies the same way.</p>
-        <div class="langs"><span class="lang">English</span><span class="lang">हिन्दी</span><span class="lang">Hinglish</span><span class="lang">ਪੰਜਾਬੀ</span></div>
+        <div class="langs"><span class="lang">English</span><span class="lang">हिन्दी</span><span class="lang">Hinglish</span><span class="lang">ਪੰਜਾਬੀ</span><span class="lang soon">+ many more to come</span></div>
       </div>
       <div class="card reveal">
         <h3>Knows what you like.</h3>

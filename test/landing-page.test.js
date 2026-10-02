@@ -59,3 +59,10 @@ test("the landing page's motion is CSS only and is switched off for reduced-moti
   assert.match(html, /@supports \(animation-timeline: view\(\)\)/);
   assert.doesNotMatch(html, /\.reveal \{[^}]*opacity: 0/);
 });
+
+test("the languages card lists the four supported languages and says more are coming", () => {
+  for (const language of ["English", "हिन्दी", "Hinglish", "ਪੰਜਾਬੀ"]) {
+    assert.match(html, new RegExp(`<span class="lang">${language}</span>`));
+  }
+  assert.match(html, /<span class="lang soon">\+ many more to come<\/span>/);
+});
