@@ -290,7 +290,16 @@ export function buildLandingPageHtml({ whatsappNumber, launched = false, year = 
   @keyframes dot { 0%, 60%, 100% { transform: none; opacity: 0.45; } 30% { transform: translateY(-3px); opacity: 1; } }
   @keyframes drift { to { transform: translateY(70px) scale(0.965); } }
   @keyframes progress { from { transform: scaleX(0); } to { transform: scaleX(1); } }
-  @keyframes stamp { 0% { opacity: 0; scale: 1.9; } 70% { opacity: 1; scale: 0.96; } 100% { opacity: 1; scale: 1; } }
+  /* The stamp is brought down hard: it drops from large and tilted, hits,
+     squashes a little, and the band under it jolts. */
+  @keyframes stamp {
+    0% { opacity: 0; scale: 3; rotate: -20deg; animation-timing-function: cubic-bezier(0.55, 0, 1, 0.45); }
+    42% { opacity: 1; scale: 0.9; rotate: -5.5deg; animation-timing-function: ease-out; }
+    58% { scale: 1.06; rotate: -7.6deg; }
+    76% { scale: 0.985; rotate: -6.8deg; }
+    100% { opacity: 1; scale: 1; rotate: -7deg; }
+  }
+  @keyframes jolt { 0%, 40% { translate: 0 0; } 44% { translate: 0 7px; } 52% { translate: -3px -3px; } 62% { translate: 2px 2px; } 74%, 100% { translate: 0 0; } }
   @keyframes float { 0%, 100% { translate: 0 0; } 50% { translate: 0 -6px; } }
 
   /* "₹0 charged by Nosh": the amount races up to ₹1000, then drops straight
@@ -298,16 +307,34 @@ export function buildLandingPageHtml({ whatsappNumber, launched = false, year = 
      it reads 0 wherever that isn't supported and before it plays. */
   @property --count { syntax: "<integer>"; initial-value: 0; inherits: false; }
   @keyframes count-up {
-    0% { --count: 0; animation-timing-function: cubic-bezier(0.35, 0, 0.75, 1); }
-    86% { --count: 1000; animation-timing-function: step-end; }
-    86.01%, 100% { --count: 0; }
+    0% { --count: 0; animation-timing-function: cubic-bezier(0.3, 0, 0.6, 1); }
+    36% { --count: 1000; animation-timing-function: step-end; }
+    71% { --count: 1000; animation-timing-function: step-end; }
+    71.01%, 100% { --count: 0; }
   }
-  @keyframes thud { 0%, 85% { scale: 1; } 87% { scale: 1.18; } 100% { scale: 1; } }
+  /* It sits at ₹1000 for a moment, swells, collapses into a point, and ₹0
+     bounces out of where it was. */
+  @keyframes implode {
+    0%, 62% { scale: 1; filter: none; opacity: 1; }
+    66% { scale: 1.14; filter: none; opacity: 1; animation-timing-function: cubic-bezier(0.6, 0, 0.9, 0.3); }
+    71% { scale: 0; filter: blur(6px); opacity: 0; animation-timing-function: cubic-bezier(0.2, 1.4, 0.4, 1); }
+    82% { scale: 1.22; filter: none; opacity: 1; }
+    91% { scale: 0.95; }
+    100% { scale: 1; filter: none; opacity: 1; }
+  }
   .num { font-variant-numeric: tabular-nums; }
   .count { counter-reset: amount var(--count); }
   .count::after { content: counter(amount); }
-  .count.play { animation: count-up 2.3s linear 0.15s both; }
-  .num:has(.count.play) { animation: thud 2.3s ease-out 0.15s both; }
+  .count.play { animation: count-up 5s linear 0.15s both; }
+  .num:has(.count.play) { animation: implode 5s linear 0.15s both; }
+
+  /* The stamp waits off the page until it scrolls into view, but only when
+     the script that will bring it down is running (html.js). */
+  @media (prefers-reduced-motion: no-preference) {
+    .js .stamp:not(.play) { opacity: 0; }
+    .stamp.play { animation: stamp 0.75s linear both; }
+    .free:has(.stamp.play) .wrap { animation: jolt 0.75s linear both; }
+  }
 
   /* Lime underline that draws itself under "in a chat." */
   h1 em { font-style: normal; background: linear-gradient(var(--lime), var(--lime)) no-repeat 0 96% / 100% 0.13em; padding-bottom: 0.04em; }
@@ -368,8 +395,6 @@ export function buildLandingPageHtml({ whatsappNumber, launched = false, year = 
       .grid > :nth-child(5) { --i: 2; }
 
       /* The phone drifts back as the hero scrolls away. */
-      /* The stamp comes down onto the page as it scrolls into view. */
-      .stamp { animation: stamp linear both; animation-timeline: view(); animation-range: entry 10% cover 32%; }
       .phone-wrap { animation: drift linear both; animation-timeline: scroll(root); animation-range: 0 720px; }
       .progress { animation: progress linear both; animation-timeline: scroll(root); }
     }
@@ -597,15 +622,19 @@ export function buildLandingPageHtml({ whatsappNumber, launched = false, year = 
 </footer>
 
 <script>
-  // Starts the "₹1000 to ₹0" count when it scrolls into view. The page works
-  // without this: the number simply reads 0.
+  // Plays the stamp and the "₹1000 to ₹0" count when each scrolls into view.
+  // The page works without this: the stamp is simply there and the number
+  // reads 0.
   (function () {
-    var count = document.querySelector(".count");
-    if (!count) return;
-    if (!("IntersectionObserver" in window)) { count.classList.add("play"); return; }
-    new IntersectionObserver(function (entries, observer) {
-      if (entries[0].isIntersecting) { count.classList.add("play"); observer.disconnect(); }
-    }, { threshold: 0.6 }).observe(count);
+    var targets = document.querySelectorAll(".stamp, .count");
+    if (!("IntersectionObserver" in window)) return;
+    document.documentElement.classList.add("js");
+    var observer = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (entry.isIntersecting) { entry.target.classList.add("play"); observer.unobserve(entry.target); }
+      });
+    }, { threshold: 0.55 });
+    targets.forEach(function (target) { observer.observe(target); });
   })();
 </script>
 

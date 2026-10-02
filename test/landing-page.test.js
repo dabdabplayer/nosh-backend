@@ -97,6 +97,17 @@ test("the page says, prominently and accurately, that Nosh is free for the user"
   assert.match(html, /<strong>Completely free to use\.<\/strong> You only pay for your food\./);
   // The amount is read out as "₹0"; visually it counts up to ₹1000 and drops to zero.
   assert.match(html, /<div class="num" role="img" aria-label="₹0">₹<span class="count" aria-hidden="true"><\/span><\/div><p>charged by Nosh<\/p>/);
-  assert.match(html, /86% \{ --count: 1000;/);
-  assert.match(html, /86\.01%, 100% \{ --count: 0; \}/);
+  // Up to 1000, held there (36% to 71% of 5s is about 1.75s), then zero.
+  assert.match(html, /36% \{ --count: 1000;/);
+  assert.match(html, /71% \{ --count: 1000;/);
+  assert.match(html, /71\.01%, 100% \{ --count: 0; \}/);
+  assert.match(html, /\.count\.play \{ animation: count-up 5s/);
+});
+
+test("the FREE stamp is only hidden while a running script is about to stamp it", () => {
+  // Hidden before it plays only under html.js (set by the script itself) and
+  // only when motion is allowed - never by default.
+  assert.match(html, /\.js \.stamp:not\(\.play\) \{ opacity: 0; \}/);
+  assert.doesNotMatch(html, /\n  \.stamp \{[^}]*opacity: 0/);
+  assert.match(html, /\.stamp\.play \{ animation: stamp 0\.75s/);
 });
