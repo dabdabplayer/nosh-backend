@@ -11,7 +11,9 @@ const DEFAULT_SWIGGY_OAUTH_BASE_URL = "https://mcp.swiggy.com/auth";
 // There is no real per-app client identity yet, so this is just the value
 // their server hands back; it is not a secret.
 const DEFAULT_SWIGGY_OAUTH_CLIENT_ID = "swiggy-mcp";
-const DEFAULT_SWIGGY_OAUTH_REDIRECT_URI = "https://whatsapp-test-webhook-low-latency.onrender.com/oauth/swiggy/callback";
+// Must match, character for character, the redirect URI registered with
+// Swiggy for Nosh.
+const DEFAULT_SWIGGY_OAUTH_REDIRECT_URI = "https://nosh.arysha.app/oauth/swiggy/callback";
 const DEFAULT_SWIGGY_TOKEN_STORE_PATH = "data/swiggy-tokens.json";
 // Sarvam is now used only to translate Hindi/Hinglish to English for the
 // agent and the agent's English replies back (src/sarvam-translator.js).
