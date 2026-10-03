@@ -32,6 +32,12 @@ export function buildLandingPageHtml({ whatsappNumber, launched = false, year = 
   const closingButton = launched
     ? `<a class="button" href="${chatUrl}" target="_blank" rel="noopener">Message Nosh on WhatsApp</a>`
     : comingSoon();
+  // The small print about ordering only appears once orders are being taken.
+  const orderingNotes = launched
+    ? `    <p>Nosh currently supports Cash on Delivery and orders up to ₹1,000. Restaurant availability, prices and delivery times are provided by Swiggy and depend on your address.</p>
+    <p>Nosh is an independent service. Orders are placed through your own Swiggy account. Swiggy and WhatsApp are trademarks of their respective owners.</p>
+`
+    : "";
   const closingHeading = launched ? "Hungry? Say hi." : "Launching soon.";
   const closingLead = launched ? "Your next meal is one message away." : "Nosh is getting ready. Ordering opens on WhatsApp shortly.";
 
@@ -269,7 +275,8 @@ export function buildLandingPageHtml({ whatsappNumber, launched = false, year = 
   /* Footer */
   footer { background: var(--bg-alt); color: var(--muted); font-size: 12px; line-height: 1.5; letter-spacing: -0.01em; padding: 28px 0 40px; }
   footer p + p { margin-top: 8px; }
-  .foot-row { display: flex; flex-wrap: wrap; gap: 8px 24px; justify-content: space-between; border-top: 1px solid var(--line); margin-top: 18px; padding-top: 16px; }
+  .foot-row { display: flex; flex-wrap: wrap; gap: 8px 24px; justify-content: space-between; }
+  p + .foot-row { border-top: 1px solid var(--line); margin-top: 18px; padding-top: 16px; }
   .foot-links { display: flex; flex-wrap: wrap; gap: 8px 22px; }
   footer a { color: var(--text); opacity: 0.85; }
 
@@ -618,9 +625,7 @@ export function buildLandingPageHtml({ whatsappNumber, launched = false, year = 
 
 <footer>
   <div class="wrap">
-    <p>Nosh currently supports Cash on Delivery and orders up to ₹1,000. Restaurant availability, prices and delivery times are provided by Swiggy and depend on your address.</p>
-    <p>Nosh is an independent service. Orders are placed through your own Swiggy account. Swiggy and WhatsApp are trademarks of their respective owners.</p>
-    <div class="foot-row">
+${orderingNotes}    <div class="foot-row">
       <span>Copyright © ${year} Nosh Labs. All rights reserved.</span>
       <span class="foot-links">
         <a href="/privacy-policy">Privacy Policy</a>

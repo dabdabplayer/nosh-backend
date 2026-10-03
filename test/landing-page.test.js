@@ -80,6 +80,8 @@ test("before launch every button says Coming soon and the page has no WhatsApp l
   assert.doesNotMatch(prelaunch, /<a class="button/);
   assert.doesNotMatch(prelaunch, /Order now/);
   assert.match(prelaunch, /Launching soon\./);
+  // No small print about ordering while orders aren't being taken.
+  assert.doesNotMatch(prelaunch, /Cash on Delivery|orders up to|independent service|trademarks/);
   // The rest of the page is unchanged.
   assert.match(prelaunch, /href="\/privacy-policy"/);
   assert.match(prelaunch, /<section id="features"/);
