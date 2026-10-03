@@ -301,3 +301,57 @@ export async function downloadMedia({
 
   return { bytes, mimeType: info.mime_type };
 }
+
+// Sends a voice note: uploads the OGG/Opus audio, then sends it as an audio
+// message marked as a voice message (the play-button bubble).
+// https://developers.facebook.com/documentation/business-messaging/whatsapp/messages/audio-messages
+export async function sendVoiceNote({ accessToken, apiVersion, phoneNumberId, to, audio, fetchImpl = fetch }) {
+  const form = new FormData();
+  form.set("messaging_product", "whatsapp");
+  form.set("type", "audio/ogg");
+  form.set("file", new Blob([audio], { type: "audio/ogg" }), "reply.ogg");
+
+  let upload;
+  try {
+    upload = await fetchImpl(`https://graph.facebook.com/${apiVersion}/${phoneNumberId}/media`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${accessToken}` },
+      body: form,
+    });
+  } catch (error) {
+    throw new WhatsAppSendError(undefined, error);
+  }
+  if (!upload.ok) {
+    await upload.body?.cancel();
+    throw new WhatsAppSendError(upload.status);
+  }
+
+  const mediaId = (await upload.json())?.id;
+  if (!mediaId) {
+    throw new WhatsAppSendError(upload.status);
+  }
+
+  let response;
+  try {
+    response = await fetchImpl(`https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        recipient_type: "individual",
+        to,
+        type: "audio",
+        audio: { id: mediaId, voice: true },
+      }),
+    });
+  } catch (error) {
+    throw new WhatsAppSendError(undefined, error);
+  }
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw new WhatsAppSendError(response.status);
+  }
+
+  const message = (await response.json())?.messages?.[0];
+  return Object.freeze({ id: message?.id });
+}

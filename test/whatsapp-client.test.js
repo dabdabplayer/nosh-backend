@@ -5,6 +5,7 @@ import {
   downloadMedia,
   sendReadReceipt,
   sendReply,
+  sendVoiceNote,
   sendTextMessage,
   truncateLabel,
   WhatsAppMediaError,
@@ -293,4 +294,56 @@ test("downloadMedia refuses a file that turns out larger than the cap, or a look
     downloadMedia({ accessToken: "token", apiVersion: "v26.0", phoneNumberId: "pn-1", mediaId: "m", maxBytes: 1000, fetchImpl: failed.fetchImpl }),
     (error) => error.reason === "lookup_failed" && error.status === 404,
   );
+});
+
+test("sendVoiceNote uploads the audio, then sends it as a voice message", async () => {
+  const calls = [];
+  const result = await sendVoiceNote({
+    accessToken: "token",
+    apiVersion: "v26.0",
+    phoneNumberId: "pn-1",
+    to: "15550001111",
+    audio: Buffer.from("OggS-reply"),
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init });
+      return url.endsWith("/media")
+        ? new Response(JSON.stringify({ id: "media-9" }), { status: 200 })
+        : new Response(JSON.stringify({ messages: [{ id: "wamid.voice" }] }), { status: 200 });
+    },
+  });
+
+  assert.equal(calls[0].url, "https://graph.facebook.com/v26.0/pn-1/media");
+  assert.equal(calls[0].init.headers.authorization, "Bearer token");
+  assert.equal(calls[0].init.body.get("messaging_product"), "whatsapp");
+  assert.equal(calls[0].init.body.get("type"), "audio/ogg");
+  assert.equal(Buffer.from(await calls[0].init.body.get("file").arrayBuffer()).toString(), "OggS-reply");
+
+  assert.equal(calls[1].url, "https://graph.facebook.com/v26.0/pn-1/messages");
+  assert.deepEqual(JSON.parse(calls[1].init.body), {
+    messaging_product: "whatsapp",
+    recipient_type: "individual",
+    to: "15550001111",
+    type: "audio",
+    audio: { id: "media-9", voice: true },
+  });
+  assert.equal(result.id, "wamid.voice");
+});
+
+test("sendVoiceNote stops when the upload is rejected", async () => {
+  const calls = [];
+  await assert.rejects(
+    sendVoiceNote({
+      accessToken: "token",
+      apiVersion: "v26.0",
+      phoneNumberId: "pn-1",
+      to: "15550001111",
+      audio: Buffer.from("x"),
+      fetchImpl: async (url) => {
+        calls.push(url);
+        return new Response("{}", { status: 400 });
+      },
+    }),
+    (error) => error instanceof WhatsAppSendError && error.status === 400,
+  );
+  assert.equal(calls.length, 1);
 });

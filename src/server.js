@@ -57,8 +57,9 @@ import {
 import { SwiggyAuthFailureError } from "./swiggy-retry.js";
 import { SwiggyTokenStore } from "./swiggy-token-store.js";
 import { createVertexTokenProvider } from "./vertex-auth.js";
+import { createVoiceSpeaker } from "./voice-speaker.js";
 import { createVoiceTranscriber } from "./voice-transcriber.js";
-import { downloadMedia, sendReadReceipt, sendReply, WhatsAppMediaError } from "./whatsapp-client.js";
+import { downloadMedia, sendReadReceipt, sendReply, sendVoiceNote, WhatsAppMediaError } from "./whatsapp-client.js";
 import {
   extractInboundTextMessages,
   parseWhatsAppWebhookPayload,
@@ -169,18 +170,36 @@ const AGENT_TROUBLE_REPLY = {
 // Voice notes: transcribed, then handled like a typed message (see
 // transcribeVoiceNote below). Undefined when no transcription endpoint is
 // configured.
+const googleAuthHeaders = config.agent.serviceAccount
+  ? (() => {
+      const getToken = createVertexTokenProvider(config.agent.serviceAccount);
+      // Fetch the first access token at startup, so the first voice note
+      // doesn't wait for it.
+      if (config.voice.enabled) {
+        getToken().catch(() => {});
+      }
+      return async () => ({ Authorization: `Bearer ${await getToken()}` });
+    })()
+  : async () => ({ "x-goog-api-key": config.agent.apiKey });
+
 const voiceTranscriber = config.voice.enabled
   ? createVoiceTranscriber({
       url: config.voice.transcriptionUrl,
-      getAuthHeaders: config.agent.serviceAccount
-        ? (() => {
-            const getToken = createVertexTokenProvider(config.agent.serviceAccount);
-            // Fetch the first access token at startup, so the first voice
-            // note doesn't wait for it.
-            getToken().catch(() => {});
-            return async () => ({ Authorization: `Bearer ${await getToken()}` });
-          })()
-        : async () => ({ "x-goog-api-key": config.agent.apiKey }),
+      getAuthHeaders: googleAuthHeaders,
+      timeoutMs: config.agent.timeoutMs,
+    })
+  : undefined;
+
+// Speaks Nosh's reply back as a voice note when the user sent one. The text
+// reply always goes out too. Undefined when spoken replies are off.
+const voiceSpeaker = config.voice.replies.enabled
+  ? createVoiceSpeaker({
+      getAuthHeaders: async () => ({
+        ...(await googleAuthHeaders()),
+        ...(config.voice.replies.projectId ? { "x-goog-user-project": config.voice.replies.projectId } : {}),
+      }),
+      model: config.voice.replies.model,
+      voiceName: config.voice.replies.voiceName,
       timeoutMs: config.agent.timeoutMs,
     })
   : undefined;
@@ -865,6 +884,7 @@ async function replyToIncomingTextMessages(messages) {
 
       try {
         let reply;
+        let spokenReply;
         if (message.audio) {
           // A voice note: write down what was said, then treat it as typed.
           // The reply starts with what Nosh heard, so a mishearing is visible.
@@ -872,6 +892,11 @@ async function replyToIncomingTextMessages(messages) {
           if (heard.message) {
             const built = await buildReplyAndLog(heard.message);
             reply = { ...built, text: `🎤 "${heard.message.text}"\n\n${built.text}` };
+            // The same answer, spoken. Started now so it is ready soon after
+            // the text; a failure only means there is no voice note.
+            spokenReply = voiceSpeaker
+              ?.speak({ text: built.text, lang: pendingLanguagePreference.get(message.from) })
+              .catch(() => undefined);
           } else {
             reply = { text: heard.replyText };
           }
@@ -890,6 +915,21 @@ async function replyToIncomingTextMessages(messages) {
           to: message.from,
           ...reply,
         });
+
+        // The text (with its buttons) is already with the user; the voice
+        // note follows as soon as it is ready.
+        const audio = await spokenReply;
+        if (audio) {
+          await sendVoiceNote({
+            accessToken: config.whatsapp.accessToken,
+            apiVersion: config.whatsapp.apiVersion,
+            phoneNumberId: message.phoneNumberId,
+            to: message.from,
+            audio,
+          }).catch((error) => {
+            console.warn("Failed to send WhatsApp voice reply.", { name: error.name, status: error.status });
+          });
+        }
       } catch (error) {
         console.error("Failed to send WhatsApp reply.", { name: error.name, message: error.message });
       }

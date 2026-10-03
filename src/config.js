@@ -209,6 +209,15 @@ const voiceTranscriptionUrl =
         ? `https://generativelanguage.googleapis.com/v1beta/models/${configuredAgentModel}:generateContent`
         : undefined;
 
+// Spoken replies to voice notes. VOICE_REPLY_MODEL is a Gemini speech model;
+// set it to "none" to use VOICE_REPLY_VOICE as a plain Google voice instead
+// (e.g. VOICE_REPLY_VOICE=Chirp3-HD-Kore, which answers in about a third of
+// the time). VOICE_REPLIES=off sends text only.
+const DEFAULT_VOICE_REPLY_MODEL = "gemini-3.1-flash-tts-preview";
+const DEFAULT_VOICE_REPLY_VOICE = "Kore";
+const voiceReplyModelSetting = process.env.VOICE_REPLY_MODEL || DEFAULT_VOICE_REPLY_MODEL;
+const voiceReplyVoice = process.env.VOICE_REPLY_VOICE || DEFAULT_VOICE_REPLY_VOICE;
+
 const agentTimeoutMs = readPositiveInteger(process.env.AGENT_TIMEOUT_MS, "AGENT_TIMEOUT_MS", DEFAULT_AGENT_TIMEOUT_MS);
 const agentReasoningEffort = process.env.AGENT_REASONING_EFFORT || DEFAULT_AGENT_REASONING_EFFORT;
 
@@ -382,6 +391,12 @@ export const config = Object.freeze({
     enabled: Boolean(voiceTranscriptionUrl),
     transcriptionUrl: voiceTranscriptionUrl,
     maxBytes: voiceNoteMaxBytes,
+    replies: Object.freeze({
+      enabled: Boolean(voiceTranscriptionUrl) && process.env.VOICE_REPLIES !== "off",
+      model: voiceReplyModelSetting === "none" ? undefined : voiceReplyModelSetting,
+      voiceName: voiceReplyVoice,
+      projectId: vertexProjectId,
+    }),
   }),
   swiggyOAuth: Object.freeze({
     authBaseUrl: swiggyOAuthBaseUrl,
