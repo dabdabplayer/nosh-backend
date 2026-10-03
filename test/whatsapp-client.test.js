@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildInteractive,
+  downloadMedia,
   sendReadReceipt,
   sendReply,
   sendTextMessage,
   truncateLabel,
+  WhatsAppMediaError,
   WhatsAppSendError,
 } from "../src/whatsapp-client.js";
 
@@ -227,4 +229,68 @@ test("sendReply sends plain text when there are no options", async () => {
   });
 
   assert.deepEqual(bodies.map((body) => body.type), ["text"]);
+});
+
+function mediaFetch({ info, bytes = Buffer.from("OggS-audio"), lookupStatus = 200, downloadStatus = 200 }) {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, authorization: init?.headers?.authorization });
+    if (url.startsWith("https://graph.facebook.com/")) {
+      return new Response(JSON.stringify(info), { status: lookupStatus });
+    }
+    return new Response(bytes, { status: downloadStatus });
+  };
+  return { fetchImpl, calls };
+}
+
+test("downloadMedia looks up the media id, then downloads the file, sending the token both times", async () => {
+  const { fetchImpl, calls } = mediaFetch({
+    info: { url: "https://lookaside.fbsbx.com/whatsapp_business/attachments/?mid=1", mime_type: "audio/ogg; codecs=opus", file_size: 10 },
+  });
+
+  const media = await downloadMedia({
+    accessToken: "token",
+    apiVersion: "v26.0",
+    phoneNumberId: "pn-1",
+    mediaId: "media-1",
+    maxBytes: 1000,
+    fetchImpl,
+  });
+
+  assert.equal(calls[0].url, "https://graph.facebook.com/v26.0/media-1?phone_number_id=pn-1");
+  assert.equal(calls[1].url, "https://lookaside.fbsbx.com/whatsapp_business/attachments/?mid=1");
+  assert.deepEqual(calls.map((call) => call.authorization), ["Bearer token", "Bearer token"]);
+  assert.equal(media.bytes.toString(), "OggS-audio");
+  assert.equal(media.mimeType, "audio/ogg; codecs=opus");
+});
+
+test("downloadMedia refuses a file over the size cap without downloading it", async () => {
+  const { fetchImpl, calls } = mediaFetch({ info: { url: "https://lookaside.fbsbx.com/x", mime_type: "audio/ogg", file_size: 5000 } });
+
+  await assert.rejects(
+    downloadMedia({ accessToken: "token", apiVersion: "v26.0", phoneNumberId: "pn-1", mediaId: "m", maxBytes: 1000, fetchImpl }),
+    (error) => error instanceof WhatsAppMediaError && error.reason === "too_large",
+  );
+  assert.equal(calls.length, 1);
+});
+
+test("downloadMedia refuses a file that turns out larger than the cap, or a lookup with no usable URL", async () => {
+  const big = mediaFetch({ info: { url: "https://lookaside.fbsbx.com/x", mime_type: "audio/ogg" }, bytes: Buffer.alloc(2000) });
+  await assert.rejects(
+    downloadMedia({ accessToken: "token", apiVersion: "v26.0", phoneNumberId: "pn-1", mediaId: "m", maxBytes: 1000, fetchImpl: big.fetchImpl }),
+    (error) => error.reason === "too_large",
+  );
+
+  const noUrl = mediaFetch({ info: { url: "http://insecure.example/x" } });
+  await assert.rejects(
+    downloadMedia({ accessToken: "token", apiVersion: "v26.0", phoneNumberId: "pn-1", mediaId: "m", maxBytes: 1000, fetchImpl: noUrl.fetchImpl }),
+    (error) => error.reason === "lookup_failed",
+  );
+  assert.equal(noUrl.calls.length, 1);
+
+  const failed = mediaFetch({ info: {}, lookupStatus: 404 });
+  await assert.rejects(
+    downloadMedia({ accessToken: "token", apiVersion: "v26.0", phoneNumberId: "pn-1", mediaId: "m", maxBytes: 1000, fetchImpl: failed.fetchImpl }),
+    (error) => error.reason === "lookup_failed" && error.status === 404,
+  );
 });

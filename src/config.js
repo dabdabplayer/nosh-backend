@@ -1,4 +1,4 @@
-import { parseServiceAccountKey, vertexModelName, vertexOpenAiBaseUrl } from "./vertex-auth.js";
+import { parseServiceAccountKey, vertexGenerateContentUrl, vertexModelName, vertexOpenAiBaseUrl } from "./vertex-auth.js";
 
 const DEFAULT_PORT = 3000;
 const DEFAULT_WHATSAPP_WEBHOOK_PATH = "/webhooks/whatsapp";
@@ -191,6 +191,24 @@ const agentBaseUrl =
   (vertexServiceAccount
     ? vertexOpenAiBaseUrl({ projectId: vertexProjectId, location: vertexLocation })
     : DEFAULT_AGENT_BASE_URL);
+// Voice notes are transcribed by the same Gemini model through its native
+// endpoint. Off when AGENT_BASE_URL points somewhere custom (no native
+// endpoint can be derived) or with VOICE_NOTES=off.
+const DEFAULT_VOICE_NOTE_MAX_BYTES = 1_500_000; // several minutes of WhatsApp Opus audio
+const voiceNoteMaxBytes = readPositiveInteger(
+  process.env.VOICE_NOTE_MAX_BYTES,
+  "VOICE_NOTE_MAX_BYTES",
+  DEFAULT_VOICE_NOTE_MAX_BYTES,
+);
+const voiceTranscriptionUrl =
+  process.env.AGENT_BASE_URL || process.env.VOICE_NOTES === "off"
+    ? undefined
+    : vertexServiceAccount
+      ? vertexGenerateContentUrl({ projectId: vertexProjectId, location: vertexLocation, model: configuredAgentModel })
+      : agentApiKey
+        ? `https://generativelanguage.googleapis.com/v1beta/models/${configuredAgentModel}:generateContent`
+        : undefined;
+
 const agentTimeoutMs = readPositiveInteger(process.env.AGENT_TIMEOUT_MS, "AGENT_TIMEOUT_MS", DEFAULT_AGENT_TIMEOUT_MS);
 const agentReasoningEffort = process.env.AGENT_REASONING_EFFORT || DEFAULT_AGENT_REASONING_EFFORT;
 
@@ -359,6 +377,11 @@ export const config = Object.freeze({
     model: agentModel,
     timeoutMs: agentTimeoutMs,
     reasoningEffort: agentReasoningEffort,
+  }),
+  voice: Object.freeze({
+    enabled: Boolean(voiceTranscriptionUrl),
+    transcriptionUrl: voiceTranscriptionUrl,
+    maxBytes: voiceNoteMaxBytes,
   }),
   swiggyOAuth: Object.freeze({
     authBaseUrl: swiggyOAuthBaseUrl,

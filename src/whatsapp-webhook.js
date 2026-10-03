@@ -108,6 +108,26 @@ export function extractInboundTextMessages(payload) {
           continue;
         }
 
+        // A voice note (or any audio file). It has no text yet: server.js
+        // downloads and transcribes it, then handles it like a typed message.
+        // https://developers.facebook.com/documentation/business-messaging/whatsapp/webhooks/reference/messages/audio
+        if (message.type === "audio") {
+          if (!isNonEmptyString(message.audio?.id)) {
+            continue;
+          }
+          incomingMessages.push(
+            Object.freeze({
+              from: message.from,
+              id: message.id,
+              phoneNumberId,
+              audio: Object.freeze({ id: message.audio.id, mimeType: message.audio.mime_type }),
+              fromVoice: true,
+              timestamp: message.timestamp,
+            }),
+          );
+          continue;
+        }
+
         if (message.type !== "text" || !isNonEmptyString(message.text?.body)) {
           continue;
         }

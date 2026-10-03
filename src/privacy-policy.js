@@ -34,7 +34,7 @@ export const PRIVACY_POLICY_HTML = `<!doctype html>
 </head>
 <body>
 <h1>Nosh Privacy Policy</h1>
-<p class="updated">Last updated: 29 September 2026</p>
+<p class="updated">Last updated: 3 October 2026</p>
 
 <p>Nosh Labs ("Nosh", "we", "us") operates Nosh, a WhatsApp-based conversational
 assistant that helps you search for restaurants, build a cart, and place
@@ -45,6 +45,9 @@ message Nosh on WhatsApp and how we handle it.</p>
 <ul>
   <li><strong>WhatsApp data.</strong> Your WhatsApp phone number and the text of
   messages you send to Nosh, received via the WhatsApp Business Platform.</li>
+  <li><strong>Voice notes.</strong> If you send Nosh a voice note, the recording
+  is converted to text so Nosh can act on it. Nosh does not store the
+  recording; the text is then handled exactly like a message you typed.</li>
   <li><strong>Swiggy account data.</strong> Once you connect your Swiggy account
   (via Swiggy's own sign-in), Nosh can read information needed to act on your
   requests: saved addresses, restaurant and menu search results, your cart,
@@ -82,7 +85,8 @@ message Nosh on WhatsApp and how we handle it.</p>
   purpose beyond fulfilling it.</li>
   <li><strong>Google Cloud (Gemini on Vertex AI)</strong> - the AI model that
   interprets your request, decides what to look up on Swiggy, and writes
-  Nosh's replies. To do that it receives the text of your messages and the
+  Nosh's replies. It also converts voice notes you send into text, for which
+  it receives the recording. To do that it receives the text of your messages and the
   Swiggy data needed for the current request, such as restaurant and menu
   results, your cart, and the labels of your saved addresses. Under Google
   Cloud's terms, Google does not use this data to train its models.</li>

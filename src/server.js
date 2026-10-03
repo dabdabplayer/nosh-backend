@@ -4,6 +4,7 @@ import { config } from "./config.js";
 import { ConversationLog } from "./conversation-log.js";
 import { resolvePendingAddressReply } from "./food-search-orchestrator.js";
 import {
+  decidePendingOrderReply,
   parseOrderConfirmationReply,
   applyCoupon,
   autoPickOnlyRestaurant,
@@ -55,7 +56,9 @@ import {
 } from "./swiggy-oauth.js";
 import { SwiggyAuthFailureError } from "./swiggy-retry.js";
 import { SwiggyTokenStore } from "./swiggy-token-store.js";
-import { sendReadReceipt, sendReply } from "./whatsapp-client.js";
+import { createVertexTokenProvider } from "./vertex-auth.js";
+import { createVoiceTranscriber } from "./voice-transcriber.js";
+import { downloadMedia, sendReadReceipt, sendReply, WhatsAppMediaError } from "./whatsapp-client.js";
 import {
   extractInboundTextMessages,
   parseWhatsAppWebhookPayload,
@@ -162,6 +165,116 @@ const AGENT_TROUBLE_REPLY = {
   hi: "माफ़ कीजिए, अभी मुझे कुछ दिक्कत हो रही है। कृपया एक मिनट में फिर कोशिश करें।",
   hinglish: "Sorry, abhi mujhe thodi dikkat ho rahi hai. Ek minute mein phir try karein.",
 };
+
+// Voice notes: transcribed, then handled like a typed message (see
+// transcribeVoiceNote below). Undefined when no transcription endpoint is
+// configured.
+const voiceTranscriber = config.voice.enabled
+  ? createVoiceTranscriber({
+      url: config.voice.transcriptionUrl,
+      getAuthHeaders: config.agent.serviceAccount
+        ? (() => {
+            const getToken = createVertexTokenProvider(config.agent.serviceAccount);
+            // Fetch the first access token at startup, so the first voice
+            // note doesn't wait for it.
+            getToken().catch(() => {});
+            return async () => ({ Authorization: `Bearer ${await getToken()}` });
+          })()
+        : async () => ({ "x-goog-api-key": config.agent.apiKey }),
+      timeoutMs: config.agent.timeoutMs,
+    })
+  : undefined;
+
+const VOICE_REPLIES = {
+  unsupported: {
+    en: "I can't listen to voice notes yet. Please type your message.",
+    hi: "मैं अभी वॉइस नोट नहीं सुन सकता। कृपया अपना संदेश लिखकर भेजें।",
+    hinglish: "Main abhi voice notes nahi sun sakta. Please apna message type karke bhejein.",
+  },
+  tooLong: {
+    en: "That voice note is too long for me. Please send a shorter one, or type it.",
+    hi: "यह वॉइस नोट मेरे लिए बहुत लंबा है। कृपया छोटा भेजें, या लिखकर बताएं।",
+    hinglish: "Yeh voice note mere liye bahut lamba hai. Please chhota bhejein, ya type kar dein.",
+  },
+  unclear: {
+    en: "I couldn't make out that voice note. Please try again, or type it.",
+    hi: "मैं यह वॉइस नोट समझ नहीं पाया। कृपया दोबारा भेजें, या लिखकर बताएं।",
+    hinglish: "Main yeh voice note samajh nahi paya. Please dobara bhejein, ya type kar dein.",
+  },
+  failed: {
+    en: "I couldn't listen to that voice note just now. Please try again, or type it.",
+    hi: "अभी मैं यह वॉइस नोट नहीं सुन पाया। कृपया दोबारा भेजें, या लिखकर बताएं।",
+    hinglish: "Abhi main yeh voice note nahi sun paya. Please dobara bhejein, ya type kar dein.",
+  },
+  // MUST keep the literal uppercase "YES" - see orderConfirmationReprompt.
+  cannotConfirm: {
+    en: "A voice note can't place an order, in case I mishear you. Tap Place order, or type YES. To cancel, tap Cancel or type NO.",
+    hi: "वॉइस नोट से ऑर्डर नहीं दिया जा सकता, ताकि गलत सुनने पर गलती न हो। Place order दबाएं, या YES लिखें। रद्द करने के लिए Cancel दबाएं या NO लिखें।",
+    hinglish: "Voice note se order place nahi ho sakta, taaki galat sunne par galti na ho. Place order tap karein, ya YES likhein. Cancel karne ke liye Cancel tap karein ya NO likhein.",
+  },
+};
+
+// What the sender was last asked to choose between, if anything: saved
+// address labels, or the restaurants or dishes on a list Nosh showed. Helps
+// the transcriber with short answers like "Home".
+function expectedAnswers(senderId) {
+  const addresses = pendingAddressSelections.peek(senderId)?.candidates ?? [];
+  const session = pendingCartSessions.peek(senderId);
+  return [
+    ...addresses.map((candidate) => candidate.tag ?? candidate.label),
+    ...(session?.restaurantCandidates ?? []).map((restaurant) => restaurant.name),
+    ...(session?.itemCandidates ?? []).map((item) => item.name),
+    ...(session?.menuItems ?? []).map((item) => item.name),
+  ].filter(Boolean);
+}
+
+// Downloads and transcribes a voice note. Returns { message } - the same
+// message with `text` set to what was said - or { replyText } when it could
+// not be turned into text (too long, unclear, a failure).
+async function transcribeVoiceNote(message) {
+  const lang = pendingLanguagePreference.get(message.from);
+
+  if (!voiceTranscriber) {
+    return { replyText: pick(lang, VOICE_REPLIES.unsupported) };
+  }
+
+  let media;
+  try {
+    media = await downloadMedia({
+      accessToken: config.whatsapp.accessToken,
+      apiVersion: config.whatsapp.apiVersion,
+      phoneNumberId: message.phoneNumberId,
+      mediaId: message.audio.id,
+      maxBytes: config.voice.maxBytes,
+    });
+  } catch (error) {
+    const tooLarge = error instanceof WhatsAppMediaError && error.reason === "too_large";
+    if (!tooLarge) {
+      console.warn("Failed to download WhatsApp voice note.", { name: error?.name, reason: error?.reason, status: error?.status });
+    }
+    return { replyText: pick(lang, tooLarge ? VOICE_REPLIES.tooLong : VOICE_REPLIES.failed) };
+  }
+
+  let transcript;
+  try {
+    transcript = await voiceTranscriber.transcribe({
+      audio: media.bytes,
+      mimeType: media.mimeType ?? message.audio.mimeType,
+      // People who type in Devanagari or Gurmukhi get their words back in
+      // that script; everyone else gets Roman letters (Hinglish).
+      script: lang === "hi" || lang === "pa" ? "native" : "roman",
+      expected: expectedAnswers(message.from),
+    });
+  } catch {
+    return { replyText: pick(lang, VOICE_REPLIES.failed) };
+  }
+
+  if (!transcript) {
+    return { replyText: pick(lang, VOICE_REPLIES.unclear) };
+  }
+
+  return { message: { ...message, text: transcript } };
+}
 
 const PLACEHOLDER_REPLY_TEXT =
   "Thanks for messaging Nosh! We're still setting things up — full replies are coming soon.";
@@ -340,6 +453,10 @@ async function placePendingOrder(message, lang = "en") {
 async function buildReplyText(incoming, turn = {}) {
   let message = incoming;
   const isTap = Boolean(incoming.replyId);
+  // A transcribed voice note. It is handled like typed text everywhere
+  // except the order confirmation: speech recognition can mishear, and
+  // placing an order can't be undone.
+  const isVoice = Boolean(incoming.fromVoice);
 
   // Updated on every inbound message regardless of which path below ends up
   // handling it (see language-preference.js's own header comment) - a
@@ -402,18 +519,20 @@ async function buildReplyText(incoming, turn = {}) {
   const pendingConfirmation = pendingOrderConfirmations.peek(message.from);
 
   if (pendingConfirmation) {
-    // Any other button tapped while an order summary is waiting gets the
-    // same reminder a typed non-answer does.
-    if (isTap) {
+    // Only a typed yes or no (or the order buttons, handled above) can place
+    // or cancel. A voice note never does, and anything else gets the
+    // reminder with the order buttons again.
+    const action = decidePendingOrderReply(incoming);
+    if (action === "voice") {
+      turn.orderReprompt = true;
+      return pick(lang, VOICE_REPLIES.cannotConfirm);
+    }
+    if (action === "reminder") {
       turn.orderReprompt = true;
       return orderConfirmationReprompt(lang);
     }
-    // Anything typed that isn't a yes or no gets the reminder, with the
-    // order buttons again.
-    const typedDecision = parseOrderConfirmationReply(message.text);
-    turn.orderReprompt = typedDecision === undefined;
-    turn.home = typedDecision === "confirm";
-    turn.cartShown = typedDecision === "cancel";
+    turn.home = action === "place";
+    turn.cartShown = action === "cancel";
     return buildOrderConfirmationReply(message, pendingConfirmation, lang);
   }
 
@@ -437,7 +556,7 @@ async function buildReplyText(incoming, turn = {}) {
   // question the agent asks about something unrelated isn't caught here -
   // nothing else in this app's own text ever emits capitalized "YES"/"NO"
   // together outside that one instructed case.
-  const bareConfirmationDecision = isTap ? undefined : parseOrderConfirmationReply(message.text);
+  const bareConfirmationDecision = isTap || isVoice ? undefined : parseOrderConfirmationReply(message.text);
 
   if (bareConfirmationDecision === "confirm" || bareConfirmationDecision === "cancel") {
     const history = pendingConversationHistory.peek(message.from);
@@ -524,9 +643,10 @@ async function buildReplyText(incoming, turn = {}) {
     // the agent, which can still apply it from the conversation.
     const offeredCoupon = takeOfferedCoupon({ senderId: message.from, pendingCartSessions });
     // A tapped Apply names its own coupon; a typed yes means the one offered.
+    // A spoken yes goes to the agent instead, which can still apply it.
     const couponToApply = isTap
       ? (tap.kind === "coupon-apply" ? tap.couponCode : undefined)
-      : (parseOrderConfirmationReply(message.text) === "confirm" ? offeredCoupon : undefined);
+      : (!isVoice && parseOrderConfirmationReply(message.text) === "confirm" ? offeredCoupon : undefined);
 
     if (couponToApply) {
       turn.cartShown = true;
@@ -649,7 +769,10 @@ async function buildReplyAndLog(message) {
     // lTrim + expire) to every user-visible reply. The reply goes out
     // immediately; the log write lands a moment later.
     const isPlaceholder = replyText === PLACEHOLDER_REPLY_TEXT;
-    void conversationLog.append(message.from, { inboundText: message.text, replyText, isPlaceholder });
+    // A voice note is logged as its transcript, marked as spoken. The audio
+    // itself is never stored.
+    const inboundText = message.fromVoice ? `🎤 ${message.text}` : message.text;
+    void conversationLog.append(message.from, { inboundText, replyText, isPlaceholder });
   }
 
   return { text: replyText, options };
@@ -714,6 +837,9 @@ async function replyToIncomingTextMessages(messages) {
   await Promise.allSettled(
     messages.map(async (message) => {
       if (isLoadTestSender(message.from)) {
+        if (message.audio) {
+          return;
+        }
         const startedAt = Date.now();
         try {
           const replyText = await buildReplyText(message);
@@ -738,7 +864,20 @@ async function replyToIncomingTextMessages(messages) {
         });
 
       try {
-        const reply = await buildReplyAndLog(message);
+        let reply;
+        if (message.audio) {
+          // A voice note: write down what was said, then treat it as typed.
+          // The reply starts with what Nosh heard, so a mishearing is visible.
+          const heard = await transcribeVoiceNote(message);
+          if (heard.message) {
+            const built = await buildReplyAndLog(heard.message);
+            reply = { ...built, text: `🎤 "${heard.message.text}"\n\n${built.text}` };
+          } else {
+            reply = { text: heard.replyText };
+          }
+        } else {
+          reply = await buildReplyAndLog(message);
+        }
         // A reply built in code (an address pick, a cart view) can be ready
         // before Meta has processed the read receipt. Sent in that order, the
         // "typing…" bubble lands after the reply it was meant to precede. So

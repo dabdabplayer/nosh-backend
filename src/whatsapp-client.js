@@ -238,3 +238,66 @@ export async function sendReply({
 
   return sendTextMessage({ accessToken, apiVersion, phoneNumberId, to, text, fetchImpl });
 }
+
+export class WhatsAppMediaError extends Error {
+  constructor(reason, status) {
+    super(`WhatsApp media download failed: ${reason}.`);
+    this.name = "WhatsAppMediaError";
+    this.reason = reason;
+    this.status = status;
+  }
+}
+
+// Downloads media a user sent (here: a voice note). Two steps, both with the
+// access token: look up the media id to get a short-lived URL (5 minutes),
+// then fetch the bytes. Anything over maxBytes is refused before and after
+// downloading - reason "too_large".
+// https://developers.facebook.com/docs/whatsapp/cloud-api/reference/media
+export async function downloadMedia({
+  accessToken,
+  apiVersion,
+  phoneNumberId,
+  mediaId,
+  maxBytes,
+  fetchImpl = fetch,
+}) {
+  const headers = { authorization: `Bearer ${accessToken}` };
+  const lookupUrl = `https://graph.facebook.com/${apiVersion}/${encodeURIComponent(mediaId)}?phone_number_id=${encodeURIComponent(phoneNumberId)}`;
+
+  let lookup;
+  try {
+    lookup = await fetchImpl(lookupUrl, { headers });
+  } catch {
+    throw new WhatsAppMediaError("lookup_failed");
+  }
+  if (!lookup.ok) {
+    await lookup.body?.cancel();
+    throw new WhatsAppMediaError("lookup_failed", lookup.status);
+  }
+
+  const info = await lookup.json();
+  if (typeof info?.url !== "string" || !info.url.startsWith("https://")) {
+    throw new WhatsAppMediaError("lookup_failed");
+  }
+  if (typeof info.file_size === "number" && info.file_size > maxBytes) {
+    throw new WhatsAppMediaError("too_large");
+  }
+
+  let download;
+  try {
+    download = await fetchImpl(info.url, { headers });
+  } catch {
+    throw new WhatsAppMediaError("download_failed");
+  }
+  if (!download.ok) {
+    await download.body?.cancel();
+    throw new WhatsAppMediaError("download_failed", download.status);
+  }
+
+  const bytes = Buffer.from(await download.arrayBuffer());
+  if (bytes.length > maxBytes) {
+    throw new WhatsAppMediaError("too_large");
+  }
+
+  return { bytes, mimeType: info.mime_type };
+}

@@ -136,3 +136,43 @@ test("ignores an interactive message with no usable id or label", () => {
   assert.deepEqual(extractInboundTextMessages(interactivePayload({ type: "button_reply", button_reply: { id: "", title: "Home" } })), []);
   assert.deepEqual(extractInboundTextMessages(interactivePayload({ type: "nfm_reply" })), []);
 });
+
+function audioPayload(audio) {
+  return {
+    object: "whatsapp_business_account",
+    entry: [
+      {
+        changes: [
+          {
+            field: "messages",
+            value: {
+              metadata: { phone_number_id: "pn-1" },
+              messages: [{ from: "15550001111", id: "wamid.voice", timestamp: "1714510003", type: "audio", audio }],
+            },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+test("extracts a voice note as an audio message with no text yet", () => {
+  const messages = extractInboundTextMessages(
+    audioPayload({ id: "media-1", mime_type: "audio/ogg; codecs=opus", sha256: "abc", voice: true }),
+  );
+
+  assert.deepEqual(messages, [
+    {
+      from: "15550001111",
+      id: "wamid.voice",
+      phoneNumberId: "pn-1",
+      audio: { id: "media-1", mimeType: "audio/ogg; codecs=opus" },
+      fromVoice: true,
+      timestamp: "1714510003",
+    },
+  ]);
+});
+
+test("ignores an audio message with no media id", () => {
+  assert.deepEqual(extractInboundTextMessages(audioPayload({ mime_type: "audio/ogg" })), []);
+});

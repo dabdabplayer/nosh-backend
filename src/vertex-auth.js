@@ -35,6 +35,14 @@ export function vertexOpenAiBaseUrl({ projectId, location }) {
   return `https://${host}/v1/projects/${projectId}/locations/${location}/endpoints/openapi`;
 }
 
+// The model's native generateContent URL (used for voice notes: it accepts
+// WhatsApp's OGG/Opus audio, which the OpenAI-compatible endpoint rejects).
+export function vertexGenerateContentUrl({ projectId, location, model }) {
+  const host = location === "global" ? "aiplatform.googleapis.com" : `${location}-aiplatform.googleapis.com`;
+  const modelId = model.replace(/^google\//, "");
+  return `https://${host}/v1/projects/${projectId}/locations/${location}/publishers/google/models/${modelId}:generateContent`;
+}
+
 // Vertex names Google's models with a publisher prefix ("google/...").
 export function vertexModelName(model) {
   return model.includes("/") ? model : `google/${model}`;

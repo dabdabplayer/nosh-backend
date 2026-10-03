@@ -5,6 +5,7 @@ import {
   applyCoupon,
   autoPickOnlyRestaurant,
   buildReorderUsualReply,
+  decidePendingOrderReply,
   changeAddress,
   checkout,
   findCoupons,
@@ -3019,4 +3020,21 @@ test("autoPickOnlyRestaurant goes straight to the dishes when a search found one
     restaurantCandidates: [{ id: "r-1", name: "Biryani House" }, { id: "r-2", name: "Other" }],
   });
   assert.equal(await autoPickOnlyRestaurant({ senderId: "sender-1", swiggyFoodClient: client, pendingCartSessions }), undefined);
+});
+
+// --- Voice notes and the order confirmation ---
+
+test("a voice note never places or cancels a waiting order, whatever was said", () => {
+  for (const text of ["YES", "yes", "confirm", "place it", "NO", "cancel", "haan kar do"]) {
+    assert.equal(decidePendingOrderReply({ text, fromVoice: true }), "voice", text);
+  }
+});
+
+test("only typed text places or cancels a waiting order; other taps and text get the reminder", () => {
+  assert.equal(decidePendingOrderReply({ text: "YES" }), "place");
+  assert.equal(decidePendingOrderReply({ text: "no" }), "cancel");
+  assert.equal(decidePendingOrderReply({ text: "show my cart" }), "reminder");
+  // A tapped button whose label happens to read like a yes.
+  assert.equal(decidePendingOrderReply({ text: "Yes", replyId: "cart:view" }), "reminder");
+  assert.equal(decidePendingOrderReply({ text: "Cancel", replyId: "coupon:all" }), "reminder");
 });

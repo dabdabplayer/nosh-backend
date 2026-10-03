@@ -86,3 +86,15 @@ test("createVertexTokenProvider starts over after a failed token fetch", async (
   await assert.rejects(getToken());
   assert.equal(await getToken(), "token");
 });
+
+test("vertexGenerateContentUrl builds the model's native URL, with or without the google/ prefix", async () => {
+  const { vertexGenerateContentUrl } = await import("../src/vertex-auth.js");
+  assert.equal(
+    vertexGenerateContentUrl({ projectId: "p1", location: "global", model: "google/gemini-3.5-flash-lite" }),
+    "https://aiplatform.googleapis.com/v1/projects/p1/locations/global/publishers/google/models/gemini-3.5-flash-lite:generateContent",
+  );
+  assert.equal(
+    vertexGenerateContentUrl({ projectId: "p1", location: "asia-south1", model: "gemini-3.5-flash-lite" }),
+    "https://asia-south1-aiplatform.googleapis.com/v1/projects/p1/locations/asia-south1/publishers/google/models/gemini-3.5-flash-lite:generateContent",
+  );
+});

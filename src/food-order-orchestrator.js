@@ -872,6 +872,27 @@ export async function recommendSimilar({
   return [header, vegNote, ...blocks, RECOMMEND_CLOSING_INSTRUCTIONS].filter(Boolean).join("\n");
 }
 
+// What a message means while an order summary is waiting for its answer.
+// Only typed text can place or cancel the order:
+//   "place" / "cancel"  a typed yes / no (parseOrderConfirmationReply)
+//   "voice"             a voice note - never places or cancels, however it
+//                       was transcribed, because speech recognition can
+//                       mishear and an order can't be undone
+//   "reminder"          a tapped button that isn't an order button, or any
+//                       other typed text
+// (The order buttons themselves are handled before this, by their own ids -
+// see resolveTap in interactive-replies.js.)
+export function decidePendingOrderReply(message) {
+  if (message.replyId) {
+    return "reminder";
+  }
+  if (message.fromVoice) {
+    return "voice";
+  }
+  const decision = parseOrderConfirmationReply(message.text ?? "");
+  return decision === "confirm" ? "place" : decision === "cancel" ? "cancel" : "reminder";
+}
+
 // Auto-picks each variant group's Swiggy-marked default (falling back to the
 // first option) so a plain "add a margherita pizza" doesn't require
 // interrogating the user about crust/size first. Never invents a selection
